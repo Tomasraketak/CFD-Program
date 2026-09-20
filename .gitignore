@@ -1,0 +1,25 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.coverage
+htmlcov/
+.ruff_cache/
+
+# Simulation artefacts
+*.su2
+*.vtu
+*.vtm
+*.cgns
+*.dat
+restart_*.csv
+solution_*.csv
+surface_*.csv
+forces_breakdown.dat
+history*.csv
+run_output/
+renders/

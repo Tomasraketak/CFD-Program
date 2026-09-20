@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aerothermalstudio"
+version = "0.1.0"
+description = "Native Windows 11 CFD and conjugate heat transfer platform for rocket aerodynamics and sensor microclimate analysis"
+requires-python = ">=3.11"
+dynamic = ["dependencies"]
+
+[project.scripts]
+aerothermalstudio = "run_app:main"
+
+[tool.setuptools]
+packages = ["core", "backend", "gui"]
+
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements.txt"] }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.ruff]
+line-length = 90
+target-version = "py311"
