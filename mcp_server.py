@@ -59,7 +59,9 @@ from core.project import (
 from core.project import list_projects as _list_project_files
 from core.project import projects_directory
 from core.settings import AppSettings, load_settings, save_settings
+from core.step_inspect import StepInspectionError, suggest_scale_to_meters
 from core.store import RecordNotFoundError, RunStore, default_store
+from core.workspace import active_geometry, set_active_geometry
 
 SERVER_NAME = "aerothermalstudio"
 
@@ -128,7 +130,7 @@ def _ok(**payload: Any) -> dict[str, Any]:
     ),
 )
 def set_geometry_and_mesh(
-    step_file_path: str,
+    step_file_path: str = "",
     nose_vector: list[float] | None = None,
     nose_direction: str = "+X",
     reference_origin: list[float] | None = None,
@@ -138,7 +140,7 @@ def set_geometry_and_mesh(
     track: str = "aerodynamic",
     boundary_layers: int = 7,
     target_yplus: float = 45.0,
-    scale_to_meters: float = 1.0,
+    scale_to_meters: float | None = None,
     sizing_mach: float = 1.0,
     sizing_altitude_m: float = 0.0,
     max_targeting_iterations: int = 4,
@@ -148,7 +150,9 @@ def set_geometry_and_mesh(
     Parameters
     ----------
     step_file_path:
-        Absolute path to the .step/.stp file.
+        Absolute path to the .step/.stp file. Leave it out to mesh the file
+        currently loaded in the desktop application; get_active_geometry
+        reports what that is.
     nose_vector:
         Arbitrary forward direction [nx, ny, nz] in CAD coordinates. Takes
         precedence over nose_direction when given.
@@ -171,11 +175,40 @@ def set_geometry_and_mesh(
         y+ at the first cell centroid; 30-60 keeps wall functions valid.
     scale_to_meters:
         Multiplier converting CAD units to metres (0.001 for millimetres).
+        Omit it to use the unit the file declares, checked against the
+        model's size; the reply says which was used and why.
     sizing_mach, sizing_altitude_m:
         Flight condition the boundary layer is sized for.
     max_targeting_iterations:
         Remesh attempts allowed to reach the target cell band.
     """
+    loaded = active_geometry()
+    scale_note = ""
+    if not step_file_path:
+        if loaded is None:
+            return _error(
+                "no STEP file given and none is loaded. Pass step_file_path, "
+                "or open a file in the application's Rocket Aerodynamics tab "
+                "and call get_active_geometry to confirm it."
+            )
+        step_file_path = loaded.step_file_path
+        if nose_vector is None and nose_direction == "+X":
+            nose_direction = loaded.nose_direction
+        if scale_to_meters is None:
+            scale_to_meters = loaded.scale_to_meters
+            scale_note = loaded.scale_reason
+
+    if scale_to_meters is None:
+        # Reading the file's declared unit beats assuming metres: a
+        # millimetre model taken at face value is a kilometre-long rocket,
+        # and nothing downstream would flag it.
+        try:
+            decision = suggest_scale_to_meters(step_file_path)
+            scale_to_meters = decision.scale
+            scale_note = decision.reason
+        except StepInspectionError as error:
+            return _error(f"could not read '{step_file_path}': {error}")
+
     try:
         multipliers = domain_multipliers or {}
         geometry = GeometryParams(
@@ -211,6 +244,17 @@ def set_geometry_and_mesh(
     except Exception as error:
         return _error(f"invalid parameters: {error}")
 
+    # Whichever surface named the file, both now agree on it: the operator
+    # sees the assistant's choice in the interface, and a later call needs
+    # no path.
+    if loaded is None or loaded.step_file_path != step_file_path:
+        set_active_geometry(
+            step_file_path,
+            scale_to_meters=scale_to_meters,
+            nose_direction=nose_direction if nose_vector is None else None,
+            source="mcp",
+        )
+
     store = _store()
     record = store.create("mesh", {"step_file_path": step_file_path})
 
@@ -237,6 +281,9 @@ def set_geometry_and_mesh(
     return _ok(
         mesh_id=record.record_id,
         mesh_path=str(record.path("mesh.su2")),
+        step_file_path=step_file_path,
+        scale_to_meters=scale_to_meters,
+        scale_note=scale_note,
         cell_count=result.cell_count,
         node_count=result.node_count,
         target_band=list(result.target_band),
@@ -799,6 +846,58 @@ def check_environment() -> dict[str, Any]:
     return _ok(**probe_environment(probe_versions=True).as_dict())
 
 
+@server.tool(
+    name="get_active_geometry",
+    description=(
+        "Report the CAD file the operator currently has loaded in the "
+        "desktop application, with the length unit read from the file and "
+        "the model's overall size. Call this before asking the user for a "
+        "path: when a STEP file has been imported in the interface, "
+        "set_geometry_and_mesh can mesh it with no path at all. Also use it "
+        "to record a file an agent was given, so the interface and later "
+        "tool calls agree on which geometry is being worked on."
+    ),
+)
+def get_active_geometry(
+    step_file_path: str | None = None,
+    nose_direction: str | None = None,
+    scale_to_meters: float | None = None,
+) -> dict[str, Any]:
+    """Read, or set, the CAD file being worked on.
+
+    Parameters
+    ----------
+    step_file_path:
+        When given, record this file as the loaded one and report it.
+        When omitted, report whatever is already loaded.
+    nose_direction:
+        Forward axis to record alongside the file.
+    scale_to_meters:
+        Override the unit. Omit to read the file's own declaration.
+    """
+    if step_file_path:
+        record = set_active_geometry(
+            step_file_path,
+            scale_to_meters=scale_to_meters,
+            nose_direction=nose_direction,
+            source="mcp",
+        )
+        return _ok(loaded=True, geometry=record.as_dict())
+
+    record = active_geometry()
+    if record is None:
+        return _ok(
+            loaded=False,
+            geometry=None,
+            detail=(
+                "no CAD file is loaded. The operator can import one in the "
+                "Rocket Aerodynamics tab, or you can pass step_file_path to "
+                "this tool or to set_geometry_and_mesh."
+            ),
+        )
+    return _ok(loaded=True, geometry=record.as_dict())
+
+
 # ---------------------------------------------------------------------------
 # Project and settings tools
 # ---------------------------------------------------------------------------
@@ -1127,6 +1226,7 @@ TOOL_FUNCTIONS: dict[str, Any] = {
     "run_parametric_sweep": run_parametric_sweep_tool,
     "list_runs": list_runs,
     "check_environment": check_environment,
+    "get_active_geometry": get_active_geometry,
     "save_project": save_project,
     "load_project": load_project,
     "list_saved_projects": list_saved_projects,

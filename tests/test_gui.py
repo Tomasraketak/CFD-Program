@@ -187,6 +187,86 @@ def test_aero_tab_builds_every_control(aero_tab):
     assert aero_tab.card_cd and aero_tab.card_torque
 
 
+def test_importing_a_step_file_reads_its_units_and_tells_the_assistant(
+    aero_tab, tmp_path
+):
+    """Importing CAD sets the scale and hands the file to the assistant.
+
+    Both halves matter. A millimetre model left at scale 1.0 is a
+    kilometre-long rocket, and a file the assistant cannot see is a path the
+    operator has to type twice.
+    """
+    from core.workspace import active_geometry
+    from tests.test_step_inspect import MILLIMETRES, write_step
+
+    path = write_step(
+        tmp_path / "Sapphire.step",
+        MILLIMETRES,
+        [(0.0, 0.0, 0.0), (1320.0, 92.5, 92.5)],
+    )
+    aero_tab.step_path.setText(path)
+    aero_tab._on_step_path_changed()
+
+    assert aero_tab.scale.value() == pytest.approx(1e-3)
+    assert "millimetres" in aero_tab.geometry_note.text()
+    assert "1.32 m" in aero_tab.geometry_note.text()
+
+    loaded = active_geometry()
+    assert loaded is not None
+    assert loaded.step_file_path == path
+    assert loaded.source == "gui"
+
+
+def test_the_nose_axis_travels_with_the_imported_file(aero_tab, tmp_path):
+    """The assistant should not have to re-ask which way the rocket points."""
+    from core.workspace import active_geometry
+    from tests.test_step_inspect import MILLIMETRES, write_step
+
+    path = write_step(
+        tmp_path / "rocket.step", MILLIMETRES, [(0, 0, 0), (1320.0, 92.5, 92.5)]
+    )
+    for button in aero_tab.axis_buttons.buttons():
+        button.setChecked(button.text() == "+Y")
+    aero_tab.step_path.setText(path)
+    aero_tab._on_step_path_changed()
+
+    assert active_geometry().nose_direction == "+Y"
+
+
+def test_clearing_the_path_box_empties_the_bench(aero_tab, tmp_path):
+    """Removing the file means nothing is loaded, not the previous file."""
+    from core.workspace import active_geometry
+    from tests.test_step_inspect import MILLIMETRES, write_step
+
+    path = write_step(tmp_path / "r.step", MILLIMETRES, [(0, 0, 0), (1320, 92, 92)])
+    aero_tab.step_path.setText(path)
+    aero_tab._on_step_path_changed()
+    aero_tab.step_path.setText("")
+    aero_tab._on_step_path_changed()
+
+    assert active_geometry() is None
+    assert "No CAD file" in aero_tab.geometry_note.text()
+
+
+def test_a_path_that_is_not_on_disk_is_reported_not_guessed_at(aero_tab, tmp_path):
+    """A typo should say so rather than quietly leave the old scale."""
+    aero_tab.step_path.setText(str(tmp_path / "absent.step"))
+    aero_tab._on_step_path_changed()
+    assert "not on disk" in aero_tab.geometry_note.text()
+
+
+def test_an_unconfident_unit_asks_the_operator_to_check(aero_tab, tmp_path):
+    """A guessed scale must not look like a settled one."""
+    from tests.test_step_inspect import write_step
+
+    path = write_step(
+        tmp_path / "mystery.step", "#20=NOTHING();", [(0, 0, 0), (2.0, 0.1, 0.1)]
+    )
+    aero_tab.step_path.setText(path)
+    aero_tab._on_step_path_changed()
+    assert "check the scale" in aero_tab.geometry_note.text()
+
+
 def test_nose_axis_buttons_cover_all_six_directions(aero_tab):
     """Plus and minus X, Y and Z are all offered."""
     labels = {button.text() for button in aero_tab.axis_buttons.buttons()}

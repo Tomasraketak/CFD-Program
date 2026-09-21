@@ -45,6 +45,7 @@ from core.project import (
     projects_directory,
 )
 from core.settings import AppSettings, load_settings, save_settings
+from core.workspace import clear_active_geometry, set_active_geometry
 from core.store import RunStore, default_store
 from gui.ai_panel import AITab
 from gui.form_builder import LabelledSlider
@@ -391,12 +392,21 @@ class AerodynamicsTab(QtWidgets.QWidget):
 
         self.step_path = QtWidgets.QLineEdit()
         self.step_path.setPlaceholderText("Drag a .step file here, or browse ...")
+        # Whatever puts a path in the box -- browsing, a drop, a project, the
+        # sample generator -- goes through one handler, so the file is always
+        # inspected and always handed to the assistant.
+        self.step_path.editingFinished.connect(self._on_step_path_changed)
         browse = QtWidgets.QPushButton("Browse")
         browse.clicked.connect(self._browse_step)
         row = QtWidgets.QHBoxLayout()
         row.addWidget(self.step_path, 1)
         row.addWidget(browse)
         layout.addRow("STEP file", _wrap(row))
+
+        self.geometry_note = QtWidgets.QLabel("No CAD file loaded.")
+        self.geometry_note.setObjectName("hint")
+        self.geometry_note.setWordWrap(True)
+        layout.addRow("", self.geometry_note)
 
         self.axis_buttons = QtWidgets.QButtonGroup(self)
         axis_row = QtWidgets.QHBoxLayout()
@@ -634,7 +644,7 @@ class AerodynamicsTab(QtWidgets.QWidget):
             path = Path(url.toLocalFile())
             if path.suffix.lower() in (".step", ".stp"):
                 self.step_path.setText(str(path))
-                self.append_log(f"Loaded {path.name}")
+                self._on_step_path_changed()
                 break
 
     def _browse_step(self) -> None:
@@ -644,6 +654,49 @@ class AerodynamicsTab(QtWidgets.QWidget):
         )
         if path:
             self.step_path.setText(path)
+            self._on_step_path_changed()
+
+    def _on_step_path_changed(self, keep_scale: bool = False) -> None:
+        """Inspect a newly chosen CAD file and publish it to the assistant.
+
+        Two things happen here that the operator would otherwise have to do
+        by hand. The file's declared length unit is read and the scale box
+        set from it -- a millimetre model taken as metres is a kilometre-long
+        rocket, and no later step would notice. And the choice is recorded
+        where the AI assistant can see it, so "mesh the file I just imported"
+        needs no path typed back in.
+
+        ``keep_scale`` keeps the scale already in the form, for when a
+        project supplies it: a saved study's unit is a decision, not a
+        guess to be overwritten.
+        """
+        path = self.step_path.text().strip()
+        if not path:
+            self.geometry_note.setText("No CAD file loaded.")
+            clear_active_geometry()
+            return
+
+        axes = list(AxisDirection)
+        checked = self.axis_buttons.checkedId()
+        direction = axes[checked].value if 0 <= checked < len(axes) else "+X"
+        record = set_active_geometry(
+            path,
+            scale_to_meters=self.scale.value() if keep_scale else None,
+            nose_direction=direction,
+            source="gui",
+        )
+        if not record.exists():
+            self.geometry_note.setText("That file is not on disk.")
+            return
+
+        if not keep_scale:
+            self.scale.setValue(record.scale_to_meters)
+        note = record.summary()
+        if not record.scale_is_confident and record.scale_reason:
+            note = f"{note}. {record.scale_reason[0].upper()}{record.scale_reason[1:]} - check the scale below."
+        self.geometry_note.setText(note)
+        self.append_log(f"Loaded {Path(path).name}: {note}")
+        self.statusMessage.emit(note)
 
     def _on_velocity_type(self) -> None:
         """Rescale the speed slider when the unit changes."""
@@ -825,6 +878,9 @@ class AerodynamicsTab(QtWidgets.QWidget):
             elif geometry.nose_direction is not None:
                 for button in self.axis_buttons.buttons():
                     button.setChecked(button.text() == geometry.nose_direction.value)
+            # After the scale and the nose axis, so the project's own values
+            # are what reach the assistant.
+            self._on_step_path_changed(keep_scale=True)
 
         domain = project.domain
         index = self.domain_shape.findText(domain.shape.value)
@@ -1819,6 +1875,7 @@ class MainWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.warning(self, APP_NAME, str(error))
             return
         self.aero_tab.step_path.setText(str(path))
+        self.aero_tab._on_step_path_changed()
         self.aero_tab.append_log(f"Created sample rocket: {path}")
         self.tabs.setCurrentWidget(self.aero_tab)
 

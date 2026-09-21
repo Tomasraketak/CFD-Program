@@ -20,7 +20,7 @@ Jak program ovládat z AI asistenta a kompletní přehled nástrojů.
 
 Model Context Protocol (MCP) je standardní způsob, jak AI asistenti volají
 externí nástroje. AeroThermalStudio obsahuje MCP server, který vystavuje
-**dvanáct nástrojů** pokrývajících vše, co umí program: import CAD, síťování,
+**třináct nástrojů** pokrývajících vše, co umí program: import CAD, síťování,
 aerodynamickou i tepelnou simulaci, vykreslování, parametrické studie a správu
 projektů a nastavení.
 
@@ -116,7 +116,7 @@ asistent pracuje.
 
 ## 3. Přehled nástrojů
 
-Všech dvanáct nástrojů vrací JSON objekt s polem `ok`. Při selhání je
+Všech třináct nástrojů vrací JSON objekt s polem `ok`. Při selhání je
 `ok: false` a `error` nese zprávu určenou k jednání.
 
 ### 3.1 `set_geometry_and_mesh`
@@ -257,7 +257,36 @@ Slouží k dohledání `mesh_id` z dřívější relace.
 Vypíše nalezené nástroje. Volejte jako první, když simulace hlásí chybějící
 řešič.
 
-### 3.8 `save_project`
+### 3.8 `get_active_geometry`
+
+Vrátí — nebo nastaví — CAD soubor, který má operátor právě otevřený
+v grafickém rozhraní.
+
+| Parametr | Typ | Výchozí |
+|---|---|---|
+| `step_file_path` | string | null (jen čte; když je zadán, zapíše ten soubor) |
+| `nose_direction` | string | null |
+| `scale_to_meters` | float | null (přečte se ze souboru) |
+
+Rozhraní si pamatuje každý STEP, který v něm byl otevřen, včetně jednotky
+délky vyčtené ze souboru a celkového rozměru modelu. Volejte tenhle nástroj
+dřív, než se operátora zeptáte na cestu: když je něco načteno,
+`set_geometry_and_mesh` to vysíťuje úplně bez cesty.
+
+```
+get_active_geometry()
+   └─ loaded = true
+      geometry.step_file_path = "C:\\Users\\...\\Sapphire.step"
+      geometry.units = "millimetres"
+      geometry.largest_extent_m = 1.32
+      geometry.scale_is_confident = true
+```
+
+Když je `scale_is_confident` false, řekněte to dřív, než se utratí čas
+řešiče: soubor jednotku nedeklaroval, nebo deklaroval takovou, která
+neodpovídá jeho vlastní velikosti.
+
+### 3.9 `save_project`
 
 Zapíše kompletní nastavení do souboru `.atsproj`, který otevře grafické
 rozhraní.
@@ -266,16 +295,16 @@ Přijímá stejné parametry jako síťovací a simulační nástroje, plus `nam
 `path`, `description`, `author`, `notes`, `sweep_parameter`, `sweep_values`,
 `thermal` (objekt) a `mesh_id`.
 
-### 3.9 `load_project`
+### 3.10 `load_project`
 
 Načte soubor projektu. Přijímá `path`; vrací všechny sekce plus
 `last_mesh_id`.
 
-### 3.10 `list_saved_projects`
+### 3.11 `list_saved_projects`
 
 Vypíše dostupné projekty s jednořádkovým shrnutím. Volitelně `directory`.
 
-### 3.11 `get_settings` / 3.12 `update_settings`
+### 3.12 `get_settings` / 3.13 `update_settings`
 
 Čtení a změna trvalých předvoleb: `default_mpi_ranks`, `default_colormap`,
 `default_render_resolution`, `default_mesh_resolution` a přepínače chování.
@@ -486,7 +515,7 @@ kontextem, ne jako měření.
 
 ## 9. Vestavěný asistent
 
-Těchto dvanáct nástrojů pohání i asistenta **přímo v programu**, v záložce
+Těchto třináct nástrojů pohání i asistenta **přímo v programu**, v záložce
 **AI Assistant**. Je pro obsluhu, která chce napsat požadavek a nechat ho
 provést, aniž by vůbec spouštěla externího MCP klienta.
 

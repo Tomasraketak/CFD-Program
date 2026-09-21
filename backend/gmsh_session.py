@@ -22,6 +22,30 @@ _GMSH_LOCK = threading.RLock()
 _DEFAULT_VERBOSITY = 1
 
 
+def _initialise() -> None:
+    """Start Gmsh in a way that survives being called off the main thread.
+
+    ``gmsh.initialize`` installs a SIGINT handler by default, and Python
+    refuses to set a signal handler from anything but the main thread of the
+    main interpreter. Meshing is exactly the kind of work that runs on a
+    worker -- the GUI does it, and so does the AI assistant -- so the default
+    turns the first meshing request of a session into ``ValueError: signal
+    only works in main thread of the main interpreter``. The library is
+    left initialised when that happens, which is why the *second* attempt
+    appears to work and the bug reads as a transient one.
+
+    Ctrl+C interruption of the mesher is no loss here: nothing in this
+    application runs Gmsh interactively from a terminal.
+    """
+    try:
+        gmsh.initialize(interruptible=False)
+    except TypeError:
+        # Older Gmsh builds have no interruptible flag. On the main thread
+        # the default is harmless; off it, this raises and the caller sees
+        # a real error rather than a half-initialised library.
+        gmsh.initialize()
+
+
 @contextmanager
 def gmsh_session(
     model_name: str,
@@ -49,7 +73,7 @@ def gmsh_session(
     with _GMSH_LOCK:
         already_initialised = gmsh.isInitialized()
         if not already_initialised:
-            gmsh.initialize()
+            _initialise()
         try:
             gmsh.option.setNumber("General.Terminal", 1 if verbosity >= 2 else 0)
             gmsh.option.setNumber("General.Verbosity", verbosity)

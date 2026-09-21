@@ -91,9 +91,9 @@ def test_documented_tool_count_matches_reality():
     import mcp_server
 
     count = len(asyncio.run(mcp_server.server.list_tools()))
-    assert count == 12, (
-        f"the documentation says twelve tools but the server exposes {count}; "
-        "update docs/en/MCP_AI_GUIDE.md and docs/cs/MCP_AI_GUIDE.md"
+    assert count == 13, (
+        f"the documentation says thirteen tools but the server exposes "
+        f"{count}; update docs/en/MCP_AI_GUIDE.md and docs/cs/MCP_AI_GUIDE.md"
     )
 
 

@@ -96,8 +96,29 @@ Násobek převádějící jednotky CAD na metry.
 | Centimetry | `0.01` |
 | Palce | `0.0254` |
 
+**Tohle se vyplní samo.** Při importu STEP souboru se z něj přečte
+deklarovaná jednotka a doplní se sem; řádek pod názvem souboru pak říká, co
+se našlo — *„Sapphire.step, read as millimetres — 1.32 m across"*. Tu větu si
+přečtěte. Když rozměr neodpovídá očekávání, je jednotka špatně a nic dalšího
+si toho nevšimne.
+
+Deklaraci program věří jen potud, pokud dává smysl. Některé exportéry,
+OpenCASCADE mezi nimi, zapíšou milimetrovou hlavičku do modelu, jehož
+souřadnice jsou zjevně v metrech; slepé následování by z metrové rakety
+udělalo milimetrovou. Když deklarovaná jednotka a vlastní velikost modelu
+nesouhlasí, vyhrává velikost a poznámka to uvede. Když soubor nedeklaruje
+nic, poznámka vyzve ke kontrole.
+
 Chybná hodnota škáluje Reynoldsovo číslo stejným poměrem a znehodnotí
 všechno. Zkontrolujte referenční délku ve zprávě o síti proti očekávání.
+
+### Předání souboru asistentovi
+
+Import STEP souboru zároveň řekne vestavěnému asistentovi, o který soubor
+jde. Můžete pak napsat *„vysíťuj model, co jsem právě naimportoval, špička
+podél +Y, coarse"* a cestu znovu psát nemusíte — asistent použije tentýž
+soubor i tutéž jednotku, jakou vidíte ve formuláři. V odpovědi potvrdí, který
+soubor použil.
 
 ---
 
@@ -461,7 +482,7 @@ spuštění.
 ## 12. AI asistent
 
 Záložka **AI Assistant** umožňuje napsat běžnou větou, co chcete, a nechat to
-program udělat. Asistent sahá na program přesně přes těch dvanáct nástrojů,
+program udělat. Asistent sahá na program přesně přes těch třináct nástrojů,
 které vystavuje MCP server — umí tedy to, co umíte vy přes rozhraní, a nic
 víc.
 

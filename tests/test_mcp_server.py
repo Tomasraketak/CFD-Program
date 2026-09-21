@@ -32,6 +32,7 @@ SPECIFIED_TOOLS = {
 SUPPORTING_TOOLS = {
     "list_runs",
     "check_environment",
+    "get_active_geometry",
     "save_project",
     "load_project",
     "list_saved_projects",
@@ -154,6 +155,140 @@ def test_a_tool_can_be_called_directly_by_name():
 def test_long_running_tools_are_registered_tools():
     """A stale name here would disable a confirmation prompt silently."""
     assert server_module.LONG_RUNNING_TOOLS <= set(server_module.TOOL_FUNCTIONS)
+
+
+# ---------------------------------------------------------------------------
+# The geometry hand-off
+# ---------------------------------------------------------------------------
+
+
+def loaded_rocket(tmp_path):
+    """A millimetre STEP file, as an exporter would write one."""
+    from tests.test_step_inspect import MILLIMETRES, write_step
+
+    return write_step(
+        tmp_path / "Sapphire.step",
+        MILLIMETRES,
+        [(0.0, 0.0, 0.0), (1320.0, 92.5, 92.5)],
+    )
+
+
+def test_the_assistant_can_see_that_nothing_is_loaded():
+    """An empty bench is reported, with what to do about it."""
+    reply = call(server_module.get_active_geometry)
+    assert reply["ok"] is True
+    assert reply["loaded"] is False
+    assert "step_file_path" in reply["detail"]
+
+
+def test_the_assistant_reads_back_the_file_the_operator_imported(tmp_path):
+    """The whole point: no path is typed twice."""
+    from core.workspace import set_active_geometry
+
+    path = loaded_rocket(tmp_path)
+    set_active_geometry(path, nose_direction="+Y", source="gui")
+
+    reply = call(server_module.get_active_geometry)
+    assert reply["loaded"] is True
+    geometry = reply["geometry"]
+    assert geometry["step_file_path"] == path
+    assert geometry["nose_direction"] == "+Y"
+    assert geometry["units"] == "millimetres"
+    assert geometry["largest_extent_m"] == pytest.approx(1.32)
+
+
+def test_an_agent_can_put_a_file_on_the_bench_itself(tmp_path):
+    """A path an agent was given becomes visible in the interface too."""
+    from core.workspace import active_geometry
+
+    path = loaded_rocket(tmp_path)
+    reply = call(server_module.get_active_geometry, step_file_path=path)
+
+    assert reply["loaded"] is True
+    assert reply["geometry"]["scale_to_meters"] == pytest.approx(1e-3)
+    stored = active_geometry()
+    assert stored is not None and stored.step_file_path == path
+    assert stored.source == "mcp"
+
+
+def test_meshing_without_a_path_and_without_a_loaded_file_says_what_to_do():
+    """The failure an agent can act on, rather than a traceback."""
+    reply = call(server_module.set_geometry_and_mesh)
+    assert reply["ok"] is False
+    assert "no STEP file given" in reply["error"]
+    assert "get_active_geometry" in reply["error"]
+
+
+def test_meshing_without_a_path_uses_the_loaded_file(tmp_path, monkeypatch):
+    """'Mesh what I just imported' reaches the mesher with the right file."""
+    from core.workspace import set_active_geometry
+
+    path = loaded_rocket(tmp_path)
+    set_active_geometry(path, nose_direction="+Y", source="gui")
+
+    seen = {}
+
+    def fake_generate(request, output_path):
+        seen["step_file_path"] = request.geometry.step_file_path
+        seen["scale"] = request.geometry.scale_to_meters
+        seen["nose"] = request.geometry.nose_direction
+        raise RuntimeError("stopped before meshing")
+
+    monkeypatch.setattr(server_module, "generate_mesh", fake_generate)
+    call(server_module.set_geometry_and_mesh)
+
+    assert seen["step_file_path"] == path
+    # The unit came from the file, not from the 1.0 default.
+    assert seen["scale"] == pytest.approx(1e-3)
+    assert seen["nose"].value == "+Y"
+
+
+def test_an_explicit_path_still_has_its_units_read(tmp_path, monkeypatch):
+    """An agent that names a file should not also have to name its unit."""
+    path = loaded_rocket(tmp_path)
+    seen = {}
+
+    def fake_generate(request, output_path):
+        seen["scale"] = request.geometry.scale_to_meters
+        raise RuntimeError("stopped before meshing")
+
+    monkeypatch.setattr(server_module, "generate_mesh", fake_generate)
+    call(server_module.set_geometry_and_mesh, step_file_path=path)
+    assert seen["scale"] == pytest.approx(1e-3)
+
+
+def test_an_explicit_scale_overrides_the_file(tmp_path, monkeypatch):
+    """The operator has the last word on units."""
+    path = loaded_rocket(tmp_path)
+    seen = {}
+
+    def fake_generate(request, output_path):
+        seen["scale"] = request.geometry.scale_to_meters
+        raise RuntimeError("stopped before meshing")
+
+    monkeypatch.setattr(server_module, "generate_mesh", fake_generate)
+    call(
+        server_module.set_geometry_and_mesh,
+        step_file_path=path,
+        scale_to_meters=0.0254,
+    )
+    assert seen["scale"] == pytest.approx(0.0254)
+
+
+def test_meshing_an_explicit_path_puts_it_on_the_bench(tmp_path, monkeypatch):
+    """After an agent meshes a file, the interface shows that file."""
+    from core.workspace import active_geometry
+
+    path = loaded_rocket(tmp_path)
+    monkeypatch.setattr(
+        server_module,
+        "generate_mesh",
+        lambda request, output_path: (_ for _ in ()).throw(RuntimeError("stop")),
+    )
+    call(server_module.set_geometry_and_mesh, step_file_path=path)
+
+    stored = active_geometry()
+    assert stored is not None and stored.step_file_path == path
 
 
 def test_tools_carry_thorough_descriptions():

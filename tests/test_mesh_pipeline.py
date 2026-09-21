@@ -19,7 +19,10 @@ from backend.mesh_pipeline import (
     MARKER_FARFIELD,
     MARKER_WALL_FINS,
     MARKER_WALL_ROCKET,
+    HealingReport,
     MeshPipelineError,
+    _is_closed_face_failure,
+    _split_closed_faces,
     classify_wall_surfaces,
     compact_triangulation,
     generate_mesh,
@@ -310,6 +313,122 @@ def test_cell_count_targeting_reaches_the_requested_band(capsule_step, tmp_path)
         f"after {tuned.targeting_iterations} iterations"
     )
     assert band[0] <= tuned.cell_count <= band[1]
+
+
+@pytest.mark.slow
+def test_a_millimetre_model_measures_the_same_as_its_metre_twin(tmp_path):
+    """The same body drawn in millimetres yields the same metres out.
+
+    Most CAD exports are in millimetres, and the geometry stage meshes in
+    whatever unit the file uses -- converting the CAD instead fails on
+    spline surfaces and, at metre scale, on Gmsh's periodic-surface mesher.
+    The conversion happens on the finished node array, and this is what
+    proves it lands in the same place.
+    """
+    path = tmp_path / "capsule_mm.step"
+    with gmsh_session("capsule_mm"):
+        occ = gmsh.model.occ
+        barrel = occ.addCylinder(0.0, 0.0, 0.0, 500.0, 0.0, 0.0, 40.0)
+        nose = occ.addSphere(0.0, 0.0, 0.0, 40.0)
+        tail = occ.addSphere(500.0, 0.0, 0.0, 40.0)
+        occ.fuse([(3, barrel)], [(3, nose), (3, tail)])
+        occ.synchronize()
+        gmsh.write(str(path))
+
+    result = generate_mesh(
+        capsule_request(path, geometry={"scale_to_meters": 0.001}),
+        tmp_path / "capsule_mm.su2",
+    )
+
+    # 580 mm long, 80 mm across -- the same capsule the metre tests use.
+    assert result.reference_length_m == pytest.approx(0.58, rel=0.05)
+    assert result.reference_diameter_m == pytest.approx(0.08, rel=0.1)
+    assert result.first_cell_height_m < 1.0e-3
+    assert result.cell_count > 0
+
+
+@pytest.mark.slow
+def test_a_surface_only_body_that_closes_is_sewn_into_a_solid(tmp_path):
+    """CAD exported as a skin is repaired rather than refused.
+
+    A file with faces but no solid is a common export mistake. When those
+    faces do enclose a volume, sewing and capping them costs nothing and
+    saves a round trip through the operator's CAD package.
+    """
+    path = tmp_path / "shell_only.step"
+    with gmsh_session("shell"):
+        occ = gmsh.model.occ
+        solid = occ.addCylinder(0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.04)
+        occ.synchronize()
+        # Drop the volume, keep its faces: a skin, exactly as a surfacing
+        # tool would write one.
+        gmsh.model.occ.remove([(3, solid)], recursive=False)
+        occ.synchronize()
+        assert not gmsh.model.getEntities(3)
+        gmsh.write(str(path))
+
+    result = generate_mesh(capsule_request(path), tmp_path / "shell.su2")
+    assert result.reference_length_m == pytest.approx(0.5, rel=0.05)
+    assert result.cell_count > 0
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Impossible to mesh periodic surface 8",
+        "The 1D mesh seems not to be forming a closed loop",
+    ],
+)
+def test_gmsh_closed_face_failures_are_recognised(message):
+    """These two messages are the trigger for the split retry.
+
+    They are matched on text because Gmsh raises the same exception type
+    for every meshing failure, so a wording change here silently turns a
+    recoverable geometry into a hard error.
+    """
+    assert _is_closed_face_failure(Exception(message))
+    assert not _is_closed_face_failure(Exception("boundary layer inverted"))
+
+
+def test_splitting_divides_a_body_without_changing_it():
+    """The split is a repair; it must not cost any of the geometry."""
+    report = HealingReport()
+    with gmsh_session("split"):
+        occ = gmsh.model.occ
+        solid = occ.addCylinder(0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.05)
+        occ.synchronize()
+        before = occ.getMass(3, solid)
+
+        assert _split_closed_faces([solid], report)
+
+        pieces = [tag for _, tag in gmsh.model.getEntities(3)]
+        assert len(pieces) > 1
+        after = sum(occ.getMass(3, tag) for tag in pieces)
+        assert after == pytest.approx(before, rel=1e-6)
+    assert any("cut along two axial planes" in note for note in report.notes)
+
+
+def test_a_split_that_loses_part_of_the_body_is_refused(monkeypatch):
+    """A boolean that eats half the rocket must not reach the solver.
+
+    This is the dangerous failure mode: the remains still mesh, and every
+    force computed from them is quietly wrong.
+    """
+    report = HealingReport()
+    with gmsh_session("split_loss"):
+        occ = gmsh.model.occ
+        keep = occ.addBox(0.0, -0.05, -0.05, 0.5, 0.1, 0.1)
+        drop = occ.addBox(0.6, -0.05, -0.05, 0.5, 0.1, 0.1)
+        occ.synchronize()
+
+        def eat_half(objects, tools, **kwargs):
+            """Stand in for a boolean that discards part of the body."""
+            gmsh.model.occ.remove([(3, drop)], recursive=True)
+            return [(3, keep)], []
+
+        monkeypatch.setattr(gmsh.model.occ, "fragment", eat_half)
+        with pytest.raises(MeshPipelineError, match="changed its extent"):
+            _split_closed_faces([keep, drop], report)
 
 
 def test_missing_step_file_is_reported_clearly(tmp_path):

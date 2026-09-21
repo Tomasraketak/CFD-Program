@@ -94,9 +94,29 @@ Multiplier converting CAD units to metres.
 | Centimetres | `0.01` |
 | Inches | `0.0254` |
 
+**This is filled in for you.** When you import a STEP file, the unit it
+declares is read out of the file and put in this box, and the line under the
+file name says what was found — *"Sapphire.step, read as millimetres — 1.32 m
+across"*. Check that sentence. If the size is not what you expect, the unit
+is wrong and nothing downstream will notice.
+
+The declaration is believed only as far as it is plausible. Some exporters,
+OpenCASCADE among them, write a millimetre header onto a model whose
+coordinates are plainly metres; following that blindly would shrink a 1 m
+rocket to 1 mm. When the declared unit and the model's own size disagree,
+the size wins and the note says so. When the file declares nothing at all,
+the box says to check it.
+
 A wrong value here scales the Reynolds number by the same factor and
 invalidates everything. Check the reference length in the mesh report against
 what you expect.
+
+### Handing the file to the assistant
+
+Importing a STEP file also tells the built-in assistant about it. You can
+then write *"mesh the model I just imported, nose along +Y, coarse"* without
+typing the path again, and the assistant will use the same file and the same
+unit you see in the form. It confirms which file it used in its reply.
 
 ---
 
@@ -465,7 +485,7 @@ startup.
 
 The **AI Assistant** tab lets you say what you want in ordinary language and
 have the program do it. The assistant reaches the platform through exactly the
-same twelve tools the MCP server exposes — it can do what you can do through
+same thirteen tools the MCP server exposes — it can do what you can do through
 the interface, and nothing else.
 
 It runs on a model of your choice through [OpenRouter](https://openrouter.ai),

@@ -23,3 +23,6 @@ forces_breakdown.dat
 history*.csv
 run_output/
 renders/
+
+# Gmsh drops these beside the working directory when a mesh fails.
+debug*.pos

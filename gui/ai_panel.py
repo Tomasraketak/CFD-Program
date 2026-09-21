@@ -49,7 +49,8 @@ EXAMPLE_PROMPTS = (
     "Jak přesný bude BMP580 na střeše tramvaje při 900 W/m² a rychlosti 3 m/s?",
     "Zkontroluj prostředí a řekni mi, jestli můžu spustit výpočet.",
     "Porovnej chybu senzoru pro bílou a černou krabičku.",
-    "Vysíťuj C:\\models\\rocket.step se špičkou podél +X, rozlišení coarse.",
+    "Vysíťuj naimportovanou raketu, špička podél +Y, rozlišení coarse.",
+    "Spusť mi na naimportovaném modelu sweep přes Mach 0.3, 0.6 a 1.3.",
 )
 
 
@@ -357,6 +358,9 @@ class AITab(QtWidgets.QWidget):
                  simulation, sweeps, rendering, projects and settings.</p>
               <p>For example:</p>
               <ul>{examples}</ul>
+              <p>A STEP file opened in the Rocket Aerodynamics tab is
+                 already known to me, so you can say "mesh the model I just
+                 imported" without typing its path.</p>
               <p>I cannot run shell commands or read files outside the
                  program's own tools.</p>
             </div>

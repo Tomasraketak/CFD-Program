@@ -89,6 +89,25 @@ class GeometryMetrics:
     surface_area_m2: float
     volume_m3: float
 
+    def scaled(self, factor: float) -> "GeometryMetrics":
+        """The same measurements converted from CAD units to metres.
+
+        Lengths scale linearly, areas with the square and volumes with the
+        cube, which is why this is one method rather than a multiplication
+        at each use site.
+        """
+        if factor == 1.0:
+            return self
+        return GeometryMetrics(
+            reference_length_m=self.reference_length_m * factor,
+            reference_diameter_m=self.reference_diameter_m * factor,
+            reference_area_m2=self.reference_area_m2 * factor**2,
+            bounding_box_min=tuple(v * factor for v in self.bounding_box_min),
+            bounding_box_max=tuple(v * factor for v in self.bounding_box_max),
+            surface_area_m2=self.surface_area_m2 * factor**2,
+            volume_m3=self.volume_m3 * factor**3,
+        )
+
     def as_dict(self) -> dict[str, float | list[float]]:
         """JSON-serialisable form for the mesh report."""
         return {
@@ -186,19 +205,20 @@ def _apply_alignment(
     entities: list[tuple[int, int]],
     nose_vector: tuple[float, float, float],
     reference_origin: tuple[float, float, float],
-    scale: float,
 ) -> np.ndarray:
-    """Scale, translate and rotate the model into wind-tunnel coordinates.
+    """Translate and rotate the model into wind-tunnel coordinates.
 
     The body axis ends up along +X with the reference origin at (0, 0, 0),
     which is the frame the domain, the solver's AoA convention and the force
     integration all assume.
+
+    Both the model and ``reference_origin`` stay in the CAD file's own
+    units here; the conversion to metres happens once the geometry has
+    become a triangulation. See :func:`_mesh_once`.
     """
     occ = gmsh.model.occ
-    if scale != 1.0:
-        occ.dilate(entities, 0.0, 0.0, 0.0, scale, scale, scale)
 
-    origin = np.asarray(reference_origin, dtype=float) * scale
+    origin = np.asarray(reference_origin, dtype=float)
     if np.any(origin != 0.0):
         occ.translate(entities, *(-origin))
 
@@ -233,35 +253,119 @@ def _apply_alignment(
 # ---------------------------------------------------------------------------
 
 
-def _import_and_heal(step_path: Path, heal: bool, tolerance: float) -> HealingReport:
+# OpenCASCADE options that change what an import produces. They are global
+# and sticky, so every import sets all of them rather than trusting whatever
+# a previous call left behind.
+_OCC_IMPORT_FIXES = (
+    "Geometry.OCCSewFaces",
+    "Geometry.OCCFixDegenerated",
+    "Geometry.OCCFixSmallEdges",
+    "Geometry.OCCFixSmallFaces",
+)
+
+
+def _plain_import(step_path: Path, tolerance: float, sew: bool) -> None:
+    """Import a STEP file into the current model under known options.
+
+    ``sew`` is off for the first attempt and that is deliberate. Sewing
+    rebuilds the faces into a shell, and OpenCASCADE does not promote that
+    shell back to a solid: turning it on for a file that already contains a
+    solid throws the solid away. It is a repair for surface-only CAD, not a
+    routine safety measure.
+    """
+    gmsh.option.setNumber("Geometry.Tolerance", tolerance)
+    for option in _OCC_IMPORT_FIXES:
+        gmsh.option.setNumber(option, 1 if sew else 0)
+    # Sticky and global. The reader can convert units itself, and must not:
+    # the pipeline meshes in the file's own units on purpose (see _mesh_once).
+    gmsh.option.setString("Geometry.OCCTargetUnit", "")
+    try:
+        gmsh.model.occ.importShapes(str(step_path))
+    except Exception as error:  # pragma: no cover - depends on the CAD file
+        raise MeshPipelineError(
+            f"could not import '{step_path.name}': {error}"
+        ) from error
+    gmsh.model.occ.synchronize()
+
+
+def _rebuild_volume_from_shell(
+    step_path: Path, tolerance: float, report: HealingReport
+) -> bool:
+    """Sew a surface-only import into a closed shell and cap it with a volume.
+
+    This is the rescue path for CAD exported as a skin rather than a solid.
+    It only succeeds when the sewn faces actually close; an open shell makes
+    OpenCASCADE refuse, which is the correct answer for geometry that has a
+    hole in it.
+    """
+    gmsh.model.remove()
+    gmsh.model.add("aerothermal_mesh")
+    _plain_import(step_path, tolerance, sew=True)
+
+    surfaces = [tag for _, tag in gmsh.model.getEntities(2)]
+    if not surfaces:
+        return False
+    try:
+        loop = gmsh.model.occ.addSurfaceLoop(surfaces)
+        gmsh.model.occ.addVolume([loop])
+        gmsh.model.occ.synchronize()
+    except Exception as error:
+        report.notes.append(f"could not close the surface model: {error}")
+        return False
+
+    volumes = [tag for _, tag in gmsh.model.getEntities(3)]
+    if not volumes:
+        return False
+
+    # OpenCASCADE will happily build a "volume" from a shell that encloses
+    # nothing -- a single flat face becomes a solid of zero content. Such a
+    # body meshes into a sheet of degenerate cells, so measure it instead of
+    # trusting that a volume entity exists.
+    box = gmsh.model.getBoundingBox(-1, -1)
+    diagonal = math.dist(box[:3], box[3:])
+    content = 0.0
+    for tag in volumes:
+        try:
+            content += float(gmsh.model.occ.getMass(3, tag))
+        except Exception:  # pragma: no cover - degenerate solid
+            continue
+    if content <= 1.0e-9 * diagonal**3:
+        report.notes.append(
+            "the sewn surfaces enclose no volume; they do not form a closed body"
+        )
+        return False
+
+    report.notes.append(
+        f"no solid in the file; its {len(surfaces)} faces were sewn into a "
+        "closed shell and filled to make one"
+    )
+    return True
+
+
+def _import_and_heal(
+    step_path: Path, heal: bool, tolerance: float
+) -> HealingReport:
     """Import a STEP file and optionally run OpenCASCADE healing."""
     if not step_path.is_file():
         raise MeshPipelineError(f"STEP file not found: {step_path}")
 
     occ = gmsh.model.occ
-    try:
-        occ.importShapes(str(step_path))
-    except Exception as error:  # pragma: no cover - depends on the CAD file
-        raise MeshPipelineError(
-            f"could not import '{step_path.name}': {error}"
-        ) from error
-    occ.synchronize()
-
     report = HealingReport()
+    _plain_import(step_path, tolerance, sew=False)
+
     volumes = gmsh.model.getEntities(3)
-    if not volumes:
+    if not volumes and not _rebuild_volume_from_shell(
+        step_path, tolerance, report
+    ):
         raise MeshPipelineError(
-            f"'{step_path.name}' contains no solid volumes. The pipeline needs "
-            "a closed solid; surface-only CAD must be sewn into a solid first."
+            f"'{step_path.name}' contains no solid volumes, and its surfaces "
+            "do not close into one. The pipeline needs a watertight body: "
+            "re-export from CAD as a solid, or sew and cap the surfaces there."
         )
+    volumes = gmsh.model.getEntities(3)
     report.volumes_imported = len(volumes)
 
     if heal:
-        gmsh.option.setNumber("Geometry.Tolerance", tolerance)
-        gmsh.option.setNumber("Geometry.OCCSewFaces", 1)
-        gmsh.option.setNumber("Geometry.OCCFixDegenerated", 1)
-        gmsh.option.setNumber("Geometry.OCCFixSmallEdges", 1)
-        gmsh.option.setNumber("Geometry.OCCFixSmallFaces", 1)
         before_surfaces = len(gmsh.model.getEntities(2))
         try:
             occ.healShapes(
@@ -270,7 +374,8 @@ def _import_and_heal(step_path: Path, heal: bool, tolerance: float) -> HealingRe
                 fixDegenerated=True,
                 fixSmallEdges=True,
                 fixSmallFaces=True,
-                sewFaces=True,
+                # Never sew a body that is already solid; see _plain_import.
+                sewFaces=False,
             )
             occ.synchronize()
             report.healed = True
@@ -280,14 +385,13 @@ def _import_and_heal(step_path: Path, heal: bool, tolerance: float) -> HealingRe
         except Exception as error:  # pragma: no cover - CAD dependent
             report.notes.append(f"healing skipped: {error}")
 
-        # Healing can destroy the solid outright -- OpenCASCADE does exactly
-        # this to a plain sphere -- so verify afterwards and fall back to the
-        # unhealed import rather than proceeding with an empty model.
+        # Healing can still destroy the solid outright -- OpenCASCADE does
+        # exactly this to a plain sphere -- so verify afterwards and fall back
+        # to the unhealed import rather than proceeding with an empty model.
         if not gmsh.model.getEntities(3):
             gmsh.model.remove()
             gmsh.model.add("aerothermal_mesh")
-            occ.importShapes(str(step_path))
-            occ.synchronize()
+            _plain_import(step_path, tolerance, sew=False)
             report.healed = False
             report.removed_degenerate = 0
             report.notes.append(
@@ -756,16 +860,143 @@ def generate_mesh(
     )
 
 
-def _mesh_once(
-    request: MeshRequest, size_scale: float, notify: callable
-) -> dict:
-    """Run one complete meshing attempt at a given characteristic size."""
+# Gmsh's wording when its periodic-surface path gives up. The message is the
+# only signal it offers: the exception type is the same for every meshing
+# failure.
+_CLOSED_FACE_FAILURES = (
+    "periodic surface",
+    "closed loop",
+)
+
+
+def _is_closed_face_failure(error: Exception) -> bool:
+    """True when a meshing failure looks like a self-closing face."""
+    text = str(error).lower()
+    return any(phrase in text for phrase in _CLOSED_FACE_FAILURES)
+
+
+@dataclass
+class SurfaceStage:
+    """What the CAD half of the pipeline hands to the numerical half.
+
+    Everything in it is in metres; nothing in it refers to a Gmsh entity, so
+    the session can close before the prism stack is built.
+    """
+
+    wall_points: np.ndarray
+    wall_triangles: np.ndarray
+    airframe_triangle_count: int
+    fin_triangle_count: int
+    metrics: GeometryMetrics
+    airframe_radius: float
+    healing: HealingReport
+
+
+def _split_closed_faces(volumes: list[int], report: HealingReport) -> bool:
+    """Cut the body along two axial planes so no face closes on itself.
+
+    Gmsh meshes a surface of revolution through a separate periodic path
+    that needs the seam to resolve cleanly, and on an imported body whose
+    faces are interrupted by fin roots it can fail outright -- "Impossible
+    to mesh periodic surface". Splitting the solid on the y=0 and z=0 planes
+    replaces each closed face with open quarters that the ordinary mesher
+    handles.
+
+    The cut runs along the body axis, so the pieces meet on planes the flow
+    is symmetric about anyway, and the interface faces are interior: the
+    wall extraction takes the boundary of the combined solid and never sees
+    them.
+
+    Returns True when the body was actually split.
+    """
+    occ = gmsh.model.occ
+    box = np.asarray(
+        [gmsh.model.getBoundingBox(3, tag) for tag in volumes], dtype=float
+    ).reshape(-1, 6)
+    low = box[:, :3].min(axis=0)
+    high = box[:, 3:].max(axis=0)
+    span = high - low
+    pad = 0.2 * float(np.max(span)) + 1.0e-9
+    low, high = low - pad, high + pad
+
+    try:
+        # The body axis is +X by this point, so both planes contain it.
+        horizontal = occ.addRectangle(
+            low[0], low[1], 0.0, high[0] - low[0], high[1] - low[1]
+        )
+        vertical = occ.addRectangle(
+            low[0], low[2], 0.0, high[0] - low[0], high[2] - low[2]
+        )
+        occ.rotate([(2, vertical)], 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, math.pi / 2.0)
+        occ.synchronize()
+        occ.fragment(
+            [(3, tag) for tag in volumes], [(2, horizontal), (2, vertical)]
+        )
+        occ.synchronize()
+    except Exception as error:
+        report.notes.append(f"could not split the closed faces: {error}")
+        return False
+
+    pieces = [tag for _, tag in gmsh.model.getEntities(3)]
+    if not pieces:
+        raise MeshPipelineError(
+            "splitting the body along its axis left no solid; the geometry "
+            "cannot be prepared for meshing"
+        )
+
+    # A boolean that swallows part of the body is the dangerous failure
+    # here, because the result still meshes and every force computed from
+    # it is quietly wrong. Measure rather than assume: the pieces must
+    # together occupy exactly the space the body did.
+    after = np.asarray(
+        [gmsh.model.getBoundingBox(3, tag) for tag in pieces], dtype=float
+    ).reshape(-1, 6)
+    grown = np.concatenate([after[:, :3].min(axis=0), after[:, 3:].max(axis=0)])
+    original = np.concatenate([low + pad, high - pad])
+    # A tenth of a percent of the body: far tighter than any feature worth
+    # losing, far looser than the fraction of a millimetre OpenCASCADE pads
+    # a spline's bounding box by.
+    if not np.allclose(grown, original, rtol=0.0, atol=1.0e-3 * float(np.max(span))):
+        raise MeshPipelineError(
+            "splitting the body along its axis changed its extent, from "
+            f"{np.round(original, 6).tolist()} to {np.round(grown, 6).tolist()}. "
+            "The CAD kernel dropped part of the geometry instead of dividing "
+            "it, so no mesh is built from it."
+        )
+
+    report.notes.append(
+        f"the body was cut along two axial planes into {len(pieces)} pieces, "
+        "because a face that closes on itself could not be meshed as imported"
+    )
+    return True
+
+
+def _build_surface_mesh(
+    request: MeshRequest, size_scale: float, notify: callable, split: bool
+) -> SurfaceStage:
+    """Import the CAD and surface-mesh the body, in the file's own units.
+
+    The CAD stage works in the units the file was drawn in and converts to
+    metres at the end, once the body is a triangulation. Rescaling the CAD
+    instead is worse twice over: OpenCASCADE cannot reliably transform
+    trimmed spline surfaces, and Gmsh's periodic-surface mesher fails on a
+    metre-scale model whose seam tolerances were built at millimetre scale --
+    it refuses a body that meshes without complaint in the units it was drawn
+    in. Scaling a node array has neither failure mode.
+    """
     geometry = request.geometry
     step_path = Path(geometry.step_file_path)
+    scale = geometry.scale_to_meters
 
     with gmsh_session("aerothermal_mesh", threads=0):
+        # Healing subdivides faces, and a subdivided body confuses the
+        # boolean that splits it -- on the rocket this cost the nose cone,
+        # 200 mm of it, silently. The split is itself a repair, so when one
+        # is needed the healing pass is skipped rather than fought.
         healing = _import_and_heal(
-            step_path, geometry.heal_geometry, geometry.heal_tolerance_m
+            step_path,
+            geometry.heal_geometry and not split,
+            geometry.heal_tolerance_m / scale,
         )
 
         body_volumes = [tag for _, tag in gmsh.model.getEntities(3)]
@@ -773,20 +1004,33 @@ def _mesh_once(
             [(3, tag) for tag in body_volumes],
             geometry.resolved_nose_vector(),
             tuple(geometry.reference_origin),
-            geometry.scale_to_meters,
         )
 
+        if split:
+            notify("splitting closed faces along the body axis")
+            _split_closed_faces(
+                [tag for _, tag in gmsh.model.getEntities(3)], healing
+            )
+
         body_volumes = [tag for _, tag in gmsh.model.getEntities(3)]
-        metrics = _measure_geometry(body_volumes)
+        cad_metrics = _measure_geometry(body_volumes)
+        metrics = cad_metrics.scaled(scale)
 
         wall_tags = _wall_surface_tags(body_volumes)
-        airframe_tags, fin_tags, airframe_radius = classify_wall_surfaces(wall_tags)
+        airframe_tags, fin_tags, cad_airframe_radius = classify_wall_surfaces(
+            wall_tags
+        )
+        airframe_radius = cad_airframe_radius * scale
         notify(
             f"classified {len(airframe_tags)} airframe and {len(fin_tags)} fin "
             f"faces (airframe radius {airframe_radius * 1000:.1f} mm)"
         )
 
-        _apply_sizing_fields(airframe_tags, fin_tags, metrics, request, size_scale)
+        # Sizing fields live in the model's coordinates, so they are built
+        # from the unscaled measurements.
+        _apply_sizing_fields(
+            airframe_tags, fin_tags, cad_metrics, request, size_scale
+        )
 
         notify("generating surface mesh")
         gmsh.model.mesh.generate(2)
@@ -800,19 +1044,54 @@ def _mesh_once(
         if all_triangles.size == 0:
             raise MeshPipelineError("surface meshing produced no wall triangles")
 
-        wall_points, wall_triangles, kept = compact_triangulation(
-            points, all_triangles
-        )
+        wall_points, wall_triangles, _ = compact_triangulation(points, all_triangles)
+        # Everything from here on is metres: prism heights come from y+, the
+        # farfield from the reference length, and the solver reads SI.
+        if scale != 1.0:
+            wall_points = wall_points * scale
 
         # Which compacted triangles belong to fins, for marker tagging.
         fin_triangle_count = sum(
             len(per_surface[tag]) for tag in fin_tags if tag in per_surface
         )
-        airframe_triangle_count = len(all_triangles) - fin_triangle_count
 
-        notify(f"extruding prism layers from {len(wall_triangles)} wall triangles")
-        first_height = _first_layer_height(request, metrics)
-        prisms = _extrude(request, wall_points, wall_triangles, first_height)
+    return SurfaceStage(
+        wall_points=wall_points,
+        wall_triangles=wall_triangles,
+        airframe_triangle_count=len(all_triangles) - fin_triangle_count,
+        fin_triangle_count=fin_triangle_count,
+        metrics=metrics,
+        airframe_radius=airframe_radius,
+        healing=healing,
+    )
+
+
+def _mesh_once(
+    request: MeshRequest, size_scale: float, notify: callable
+) -> dict:
+    """Run one complete meshing attempt at a given characteristic size."""
+    try:
+        stage = _build_surface_mesh(request, size_scale, notify, split=False)
+    except Exception as error:
+        if not _is_closed_face_failure(error):
+            raise
+        # Worth one more attempt: this failure is Gmsh declining a face that
+        # closes on itself, not a defect in the geometry.
+        notify(f"surface meshing failed ({error}); retrying on a split body")
+        stage = _build_surface_mesh(request, size_scale, notify, split=True)
+
+    metrics = stage.metrics
+    notify(
+        f"extruding prism layers from {len(stage.wall_triangles)} wall triangles"
+    )
+    first_height = _first_layer_height(request, metrics)
+    prisms = _extrude(
+        request, stage.wall_points, stage.wall_triangles, first_height
+    )
+    healing = stage.healing
+    airframe_radius = stage.airframe_radius
+    airframe_triangle_count = stage.airframe_triangle_count
+    fin_triangle_count = stage.fin_triangle_count
 
     # The prism shell is handed to a fresh session for the tet region, so the
     # farfield is meshed against the outer layer rather than the body.

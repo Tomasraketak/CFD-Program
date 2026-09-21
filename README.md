@@ -286,9 +286,20 @@ bundles a whole setup into a `.atsproj` JSON document — plain text, diffable,
 and worth committing beside the CAD it refers to — so a study can be put down,
 handed over, and picked up weeks later.
 
+The same principle covers the smaller hand-off. Importing a STEP file in the
+interface records it in `core/workspace.py`, so "mesh the model I just
+imported" reaches the assistant as a real file rather than a request for a
+path. `core/step_inspect.py` reads the unit the file declares while it is
+being imported and checks it against the model's own size — CAD is usually
+exported in millimetres, the solver works in metres, and a body scaled wrong
+by three orders of magnitude meshes and solves without a single warning. The
+size check is not pedantry: OpenCASCADE writes a millimetre header onto a
+model whose coordinates are plainly metres, this repository's own sample
+rocket among them.
+
 ```
 core/       models  store  units  atmosphere  platform_env
-            project  settings  credentials
+            project  settings  credentials  workspace  step_inspect
 backend/    mesh_pipeline  prism_layers  su2_mesh  sample_geometry
             aero_solver  thermal_solver  su2_config  su2_parser
             runner  sweep  visualizer  ai_agent
@@ -334,6 +345,19 @@ The surrounding pipeline bisects the characteristic cell size until the count
 lands inside the target band — that loop is what makes the cell-count
 guarantee real rather than a hope. On the reference rocket it converges in
 3 iterations to **252,303 cells inside the 250k–400k band at y⁺ 45.0.**
+
+Real exported CAD adds three more failure modes, all of them found on one
+operator's rocket and all handled without asking them to re-export:
+
+| Problem | Cause | Fix |
+|---|---|---|
+| `Impossible to mesh periodic surface` | Gmsh meshes a face that closes on itself through a separate path, which gives up on an imported airframe whose seam is interrupted by fin roots | Cut the body on two planes through its axis and mesh the open quarters; the cut faces are interior and never reach the wall markers |
+| Import reported no solid, on a file that plainly has one | Sewing was enabled for the import, and sewing a solid's faces yields a shell — OpenCASCADE does not promote it back | Sew only when the plain import finds no solid, then cap the shell and check that it encloses a volume |
+| A healed body lost its nose cone to the axial cut | Healing subdivides faces, and the boolean discarded a piece instead of dividing it | Skip healing when splitting, and refuse any split that changes the body's extent |
+
+The last one is the reason for the extent check rather than a comment. A
+body that quietly loses 200 mm still meshes, still solves, and returns drag
+figures that look entirely reasonable.
 
 ---
 
@@ -412,7 +436,7 @@ out-of-range angle of attack gets a message it can act on.
 
 ### The built-in assistant
 
-`backend/ai_agent.py` drives the same twelve tools from inside the program
+`backend/ai_agent.py` drives the same thirteen tools from inside the program
 over OpenRouter's OpenAI-compatible API, so no external MCP client is needed.
 Schemas are read from `server.list_tools()` rather than hand-copied, and a
 test asserts the direct-call registry and the registered tool list are

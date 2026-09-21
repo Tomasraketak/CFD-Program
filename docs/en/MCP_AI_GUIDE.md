@@ -20,7 +20,7 @@ reference.
 ## 1. What this is
 
 The Model Context Protocol (MCP) is a standard way for AI assistants to call
-external tools. AeroThermalStudio ships an MCP server exposing **twelve
+external tools. AeroThermalStudio ships an MCP server exposing **thirteen
 tools** covering everything the desktop program can do: CAD import, meshing,
 aerodynamic and thermal simulation, rendering, parametric sweeps, and project
 and settings management.
@@ -118,7 +118,7 @@ it while the assistant is working.
 
 ## 3. Tool reference
 
-All twelve tools return a JSON object with an `ok` field. On failure,
+All thirteen tools return a JSON object with an `ok` field. On failure,
 `ok: false` and `error` carries a message intended to be acted on.
 
 ### 3.1 `set_geometry_and_mesh`
@@ -259,7 +259,35 @@ Use this to recover a `mesh_id` from an earlier session.
 Report the detected toolchain. Call this first when a simulation reports a
 missing solver.
 
-### 3.8 `save_project`
+### 3.8 `get_active_geometry`
+
+Report — or set — the CAD file the operator has loaded in the desktop
+application.
+
+| Parameter | Type | Default |
+|---|---|---|
+| `step_file_path` | string | null (report only; given, it records that file) |
+| `nose_direction` | string | null |
+| `scale_to_meters` | float | null (read from the file) |
+
+The interface records every STEP file opened in it, together with the length
+unit read out of the file and the model's overall size. Call this before
+asking an operator for a path: when something is loaded,
+`set_geometry_and_mesh` meshes it with no path at all.
+
+```
+get_active_geometry()
+   └─ loaded = true
+      geometry.step_file_path = "C:\\Users\\...\\Sapphire.step"
+      geometry.units = "millimetres"
+      geometry.largest_extent_m = 1.32
+      geometry.scale_is_confident = true
+```
+
+When `scale_is_confident` is false, say so before spending solver time: the
+file declared no unit, or declared one that does not match its own size.
+
+### 3.9 `save_project`
 
 Write a complete setup to a `.atsproj` file the GUI can open.
 
@@ -267,16 +295,16 @@ Takes the same parameters as the meshing and simulation tools, plus `name`,
 `path`, `description`, `author`, `notes`, `sweep_parameter`, `sweep_values`,
 `thermal` (an object) and `mesh_id`.
 
-### 3.9 `load_project`
+### 3.10 `load_project`
 
 Read a project file. Takes `path`; returns every section plus `last_mesh_id`.
 
-### 3.10 `list_saved_projects`
+### 3.11 `list_saved_projects`
 
 List available projects with one-line summaries. Takes an optional
 `directory`.
 
-### 3.11 `get_settings` / 3.12 `update_settings`
+### 3.12 `get_settings` / 3.13 `update_settings`
 
 Read and modify persistent preferences: `default_mpi_ranks`,
 `default_colormap`, `default_render_resolution`, `default_mesh_resolution`,
@@ -491,7 +519,7 @@ results with that context rather than as measurements.
 
 ## 9. The built-in assistant
 
-The same twelve tools also back an assistant **inside the program**, on the
+The same thirteen tools also back an assistant **inside the program**, on the
 **AI Assistant** tab. It is for an operator who wants to type a request and
 have it carried out without running an external MCP client at all.
 
