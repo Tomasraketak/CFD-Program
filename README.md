@@ -14,7 +14,33 @@ programmatically by an AI agent over the Model Context Protocol.
 
 ---
 
+## Documentation
+
+Full guides are in **[docs/](docs/README.md)**, in English and Czech
+(anglicky a česky):
+
+| | English | Česky |
+|---|---|---|
+| Step-by-step course | [Tutorial](docs/en/TUTORIAL.md) | [Tutoriál](docs/cs/TUTORIAL.md) |
+| Every setting explained | [User Guide](docs/en/USER_GUIDE.md) | [Uživatelská příručka](docs/cs/USER_GUIDE.md) |
+| AI agent interface | [MCP and AI Guide](docs/en/MCP_AI_GUIDE.md) | [MCP a AI](docs/cs/MCP_AI_GUIDE.md) |
+
+---
+
 ## Quick start
+
+On Windows, double-click the launchers:
+
+| File | What it does |
+|---|---|
+| `Setup.bat` | Check the machine, install dependencies, fetch SU2 |
+| `Run-Demo.bat` | Build and mesh a sample rocket — no solver needed |
+| `AeroThermalStudio.bat` | Start the desktop application |
+| `Check-Environment.bat` | Report the detected toolchain |
+| `Run-MCP-Server.bat` | MCP server for AI agents |
+| `Run-Tests.bat` | Run the test suite |
+
+Or from a terminal on any platform:
 
 ```bash
 python setup_env.py          # check the machine, install dependencies, fetch SU2
@@ -49,14 +75,20 @@ clients over one **typed parameter core**:
 
 A field gains a bound or a description in one place and all three pick it up.
 `core/store.py` is a shared run registry keyed by `mesh_id` / `sim_id`, so a
-mesh an agent produced opens in the GUI and vice versa.
+mesh an agent produced opens in the GUI and vice versa. `core/project.py`
+bundles a whole setup into a `.atsproj` JSON document — plain text, diffable,
+and worth committing beside the CAD it refers to — so a study can be put down,
+handed over, and picked up weeks later.
 
 ```
 core/       models  store  units  atmosphere  platform_env
+            project  settings
 backend/    mesh_pipeline  prism_layers  su2_mesh  sample_geometry
             aero_solver  thermal_solver  su2_config  su2_parser
             runner  sweep  visualizer
 gui/        main_window  form_builder  workers  theme
+docs/       en/  cs/            tutorial, user guide, MCP guide
+*.bat       Windows launchers, sharing _launcher.cmd
 mcp_server.py   run_app.py   setup_env.py   tests/
 ```
 
@@ -166,6 +198,8 @@ regime it is in.
 | `run_parametric_sweep` | Batch runs with summary curves and peak values |
 | `list_runs` | Rediscover ids from an earlier session |
 | `check_environment` | Report the detected toolchain |
+| `save_project` / `load_project` / `list_saved_projects` | Exchange complete setups with the GUI |
+| `get_settings` / `update_settings` | Read and change persistent preferences |
 
 Tools return structured errors rather than raising, so an agent that passes an
 out-of-range angle of attack gets a message it can act on.
