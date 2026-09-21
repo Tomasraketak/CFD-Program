@@ -22,6 +22,9 @@ dependencies = { file = ["requirements.txt"] }
 testpaths = ["tests"]
 addopts = "-q"
 filterwarnings = ["ignore::DeprecationWarning"]
+markers = [
+    "slow: exercises the real Gmsh/OpenCASCADE toolchain end to end",
+]
 
 [tool.ruff]
 line-length = 90

@@ -26,6 +26,7 @@ def create_reference_rocket_step(
     fin_tip_chord: float = 0.06,
     fin_span: float = 0.07,
     fin_thickness: float = 0.004,
+    nose_tip_radius: float = 0.0015,
     nose_axis: str = "+X",
 ) -> Path:
     """Write a STEP file of a finned sounding rocket.
@@ -49,6 +50,10 @@ def create_reference_rocket_step(
         Number of equally spaced fins.
     fin_root_chord, fin_tip_chord, fin_span, fin_thickness:
         Fin planform and thickness, metres.
+    nose_tip_radius:
+        Spherical tip radius, metres. Zero gives a mathematically sharp apex,
+        which Gmsh meshes with non-manifold edges; the default keeps the tip
+        blunt enough to triangulate cleanly.
     nose_axis:
         One of ``+X``, ``+Y`` or ``+Z``; the axis the nose points along.
 
@@ -70,8 +75,34 @@ def create_reference_rocket_step(
     with gmsh_session("reference_rocket"):
         occ = gmsh.model.occ
 
-        # Nose cone (apex at the origin) plus the cylindrical airframe.
-        nose = occ.addCone(0.0, 0.0, 0.0, nose_length, 0.0, 0.0, 0.0, radius)
+        # Nose cone plus the cylindrical airframe. The tip carries a small
+        # spherical cap rather than coming to a mathematical point: a true
+        # apex is a meshing singularity that Gmsh triangulates with
+        # non-manifold edges, which no boundary-layer march can consume. Real
+        # nose cones have a finite tip radius for the same reason they have to
+        # survive manufacture.
+        tip_radius = max(nose_tip_radius, 0.0)
+        if tip_radius > 0.0:
+            # Offset the truncated cone so the finished tip still sits at x=0.
+            half_angle = math.atan2(radius, nose_length)
+            tip_centre_x = tip_radius / max(math.sin(half_angle), 1.0e-9)
+            cone_base_radius = tip_radius / max(math.cos(half_angle), 1.0e-9)
+            nose = occ.addCone(
+                tip_centre_x,
+                0.0,
+                0.0,
+                nose_length - tip_centre_x,
+                0.0,
+                0.0,
+                cone_base_radius,
+                radius,
+            )
+            cap = occ.addSphere(tip_centre_x, 0.0, 0.0, tip_radius)
+            nose_parts, _ = occ.fuse([(3, nose)], [(3, cap)])
+            nose = nose_parts[0][1]
+        else:
+            nose = occ.addCone(0.0, 0.0, 0.0, nose_length, 0.0, 0.0, 0.0, radius)
+
         barrel = occ.addCylinder(
             nose_length, 0.0, 0.0, body_length - nose_length, 0.0, 0.0, radius
         )
