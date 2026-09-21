@@ -59,24 +59,76 @@ and writes a tagged `.su2` file, all without the solver.
 
 ---
 
-## Install, update and run from `cmd`
+## Install, update and run from a terminal
 
-The whole thing from an empty Command Prompt on Windows 11. You need
-[Python 3.11+](https://www.python.org/downloads/) (tick **Add python.exe to
-PATH** in the installer) and [Git](https://git-scm.com/download/win).
+The whole thing from an empty terminal on Windows 11.
 
-### Install
+**Which terminal are you in?** Windows 11 opens **PowerShell** by default —
+the prompt starts with `PS`. Command Prompt shows a bare `C:\...>`. The two
+disagree about environment variables and about how a script is activated, so
+each step below gives both where they differ. Everything else is identical.
+
+### Step 1 — Python and Git
+
+Install [Python 3.11 or newer](https://www.python.org/downloads/), ticking
+**Add python.exe to PATH** on the first installer screen, and
+[Git for Windows](https://git-scm.com/download/win). Then open a **new**
+terminal — PATH changes do not reach one that is already open — and check:
+
+```powershell
+python --version
+git --version
+```
+
+You want `Python 3.11.x` or higher and any Git version. If instead you get
+*"Python nebyl nalezen"* / *"Python was not found"*, or the Microsoft Store
+opens, Python is **not installed**: what answered was the Store placeholder
+that Windows ships in place of it. Install from python.org, with the PATH box
+ticked, and open a new terminal. (If it still answers after that, turn off
+**Settings → Apps → Advanced app settings → App execution aliases →
+python.exe / python3.exe**.)
+
+Do not continue until both commands print a version. Nothing below can work
+before they do.
+
+### Step 2 — Install
+
+```powershell
+# PowerShell
+cd $env:USERPROFILE
+git clone https://github.com/Tomasraketak/CFD-Program.git
+cd CFD-Program
+
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+
+python setup_env.py
+```
 
 ```cmd
+:: Command Prompt
 cd %USERPROFILE%
 git clone https://github.com/Tomasraketak/CFD-Program.git
 cd CFD-Program
 
-py -3.11 -m venv .venv
-.venv\Scripts\activate
+python -m venv .venv
+.venv\Scripts\activate.bat
 
 python setup_env.py
 ```
+
+Activation worked when the prompt gains a `(.venv)` prefix. If PowerShell
+answers *"running scripts is disabled on this system"*, allow it for this
+window only and try again:
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\.venv\Scripts\Activate.ps1
+```
+
+You can also skip activation entirely and call the environment's Python by
+path — `.\.venv\Scripts\python.exe setup_env.py` — which needs no policy
+change at all.
 
 The virtual environment is optional but worth having: it keeps these packages
 out of your system Python, and the `.bat` launchers find `.venv` on their own,
@@ -88,9 +140,9 @@ and prints manual instructions instead — silently installing an unverified
 binary that will then execute on your machine is not a convenience worth
 having. Microsoft MPI is a separate download it will point you at.
 
-Confirm it works:
+### Step 3 — Confirm it works
 
-```cmd
+```powershell
 python run_app.py --check
 python run_app.py --demo
 ```
@@ -101,14 +153,22 @@ when SU2 itself is still missing.
 
 ### Run
 
-```cmd
-cd %USERPROFILE%\CFD-Program
-.venv\Scripts\activate
-
+```powershell
+# PowerShell
+cd $env:USERPROFILE\CFD-Program
+.\.venv\Scripts\Activate.ps1
 python run_app.py --gui
 ```
 
-Or just double-click `AeroThermalStudio.bat`, which does both lines for you.
+```cmd
+:: Command Prompt
+cd %USERPROFILE%\CFD-Program
+.venv\Scripts\activate.bat
+python run_app.py --gui
+```
+
+Or just double-click `AeroThermalStudio.bat`, which does all of that for you
+and needs no terminal at all.
 
 | Command | What it does |
 |---|---|
@@ -121,10 +181,9 @@ Or just double-click `AeroThermalStudio.bat`, which does both lines for you.
 
 ### Update
 
-```cmd
-cd %USERPROFILE%\CFD-Program
-.venv\Scripts\activate
+Activate as above, then:
 
+```powershell
 git pull
 pip install -r requirements.txt --upgrade
 python run_app.py --check
@@ -143,10 +202,14 @@ brings them back after the pull.
 
 | Symptom | Cause and fix |
 |---|---|
-| `'python' is not recognized` | Python is not on PATH. Use `py` instead of `python`, or reinstall with **Add python.exe to PATH** ticked |
-| `'git' is not recognized` | Install Git for Windows, then open a *new* Command Prompt |
-| `.venv\Scripts\activate` does nothing visible | It worked — the prompt gains a `(.venv)` prefix |
-| `running scripts is disabled` | That is PowerShell. Use `cmd`, or `.venv\Scripts\activate.bat` |
+| *Python nebyl nalezen* / *Python was not found*, or the Store opens | Python is not installed — that is the Windows Store placeholder answering. Step 1 |
+| `No suitable Python runtime found` from `py` | Same thing: the launcher is there, a Python is not. Step 1 |
+| `'python' is not recognized` | Installed but not on PATH. Reinstall with **Add python.exe to PATH** ticked, or use `py` |
+| `'git' is not recognized` | Install Git for Windows, then open a *new* terminal |
+| `cd : Cannot find path '...\%USERPROFILE%'` | `%USERPROFILE%` is cmd syntax. In PowerShell write `$env:USERPROFILE` |
+| `The module '.venv' could not be loaded` | PowerShell needs `.\.venv\Scripts\Activate.ps1` — the leading `.\` and the `.ps1` both matter |
+| `running scripts is disabled on this system` | `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass`, then activate again |
+| Activation printed nothing | It worked — look for the `(.venv)` prefix on the prompt |
 | `--check` reports no SU2 or MPI | The GUI, meshing and the analytical sensor model still work; only the CFD solve needs them |
 
 ---
