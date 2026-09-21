@@ -59,6 +59,98 @@ and writes a tagged `.su2` file, all without the solver.
 
 ---
 
+## Install, update and run from `cmd`
+
+The whole thing from an empty Command Prompt on Windows 11. You need
+[Python 3.11+](https://www.python.org/downloads/) (tick **Add python.exe to
+PATH** in the installer) and [Git](https://git-scm.com/download/win).
+
+### Install
+
+```cmd
+cd %USERPROFILE%
+git clone https://github.com/Tomasraketak/CFD-Program.git
+cd CFD-Program
+
+py -3.11 -m venv .venv
+.venv\Scripts\activate
+
+python setup_env.py
+```
+
+The virtual environment is optional but worth having: it keeps these packages
+out of your system Python, and the `.bat` launchers find `.venv` on their own,
+so after this you can double-click them without activating anything.
+
+`setup_env.py` checks the machine, installs the Python packages, and offers to
+fetch SU2. It **refuses to install an SU2 archive with no recorded SHA-256**
+and prints manual instructions instead — silently installing an unverified
+binary that will then execute on your machine is not a convenience worth
+having. Microsoft MPI is a separate download it will point you at.
+
+Confirm it works:
+
+```cmd
+python run_app.py --check
+python run_app.py --demo
+```
+
+`--check` lists what was found; `--demo` meshes a sample rocket end to end and
+needs no solver. If `--demo` produces a `.su2` file, the install is sound even
+when SU2 itself is still missing.
+
+### Run
+
+```cmd
+cd %USERPROFILE%\CFD-Program
+.venv\Scripts\activate
+
+python run_app.py --gui
+```
+
+Or just double-click `AeroThermalStudio.bat`, which does both lines for you.
+
+| Command | What it does |
+|---|---|
+| `python run_app.py --gui` | Desktop application (the default with no flag) |
+| `python run_app.py --check` | Report the detected toolchain |
+| `python run_app.py --check --json` | Same, machine-readable |
+| `python run_app.py --demo` | Mesh the sample rocket, no solver needed |
+| `python run_app.py --mcp` | MCP server on stdio, for an external AI client |
+| `pytest -q` | Run the test suite |
+
+### Update
+
+```cmd
+cd %USERPROFILE%\CFD-Program
+.venv\Scripts\activate
+
+git pull
+pip install -r requirements.txt --upgrade
+python run_app.py --check
+```
+
+Run `python setup_env.py` again instead of `pip install` if a release note
+says the SU2 version changed.
+
+Your work is not in the repository and a `git pull` cannot touch it: projects,
+meshes, results and settings live in `%LOCALAPPDATA%\AeroThermalStudio`.
+If `git pull` complains that local changes would be overwritten, you have
+edited the program's own files — `git stash` puts them aside, `git stash pop`
+brings them back after the pull.
+
+### If something goes wrong
+
+| Symptom | Cause and fix |
+|---|---|
+| `'python' is not recognized` | Python is not on PATH. Use `py` instead of `python`, or reinstall with **Add python.exe to PATH** ticked |
+| `'git' is not recognized` | Install Git for Windows, then open a *new* Command Prompt |
+| `.venv\Scripts\activate` does nothing visible | It worked — the prompt gains a `(.venv)` prefix |
+| `running scripts is disabled` | That is PowerShell. Use `cmd`, or `.venv\Scripts\activate.bat` |
+| `--check` reports no SU2 or MPI | The GUI, meshing and the analytical sensor model still work; only the CFD solve needs them |
+
+---
+
 ## How it fits together
 
 The defining constraint is that the GUI and an AI agent must reach the same
