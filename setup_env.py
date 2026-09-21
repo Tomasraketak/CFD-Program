@@ -78,6 +78,29 @@ def _importable(module: str) -> bool:
     return True
 
 
+def _importable_after_install(module: str) -> bool:
+    """True when a freshly installed module can be imported.
+
+    A package installed by pip *during this process* cannot be trusted to
+    import in it. The interpreter caches directory listings for every entry
+    on ``sys.path``, and on Windows the mtime granularity is coarse enough
+    that a package written moments ago can stay invisible until restart —
+    which is how a successful install came to be reported as still missing.
+    Asking a fresh interpreter is the only answer that cannot go stale.
+    """
+    result = subprocess.run(
+        [sys.executable, "-c", f"import {module}"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0:
+        return True
+    detail = (result.stderr or "").strip().splitlines()
+    if detail:
+        print(f"      {module} still will not import: {detail[-1]}")
+    return False
+
+
 MS_MPI_DOWNLOAD = "https://www.microsoft.com/en-us/download/details.aspx?id=105289"
 SU2_RELEASES = "https://github.com/su2code/SU2/releases"
 
@@ -225,9 +248,7 @@ def check_python_packages(install: bool = True) -> list[str]:
         for requirement, module in REQUIRED_PACKAGES:
             if requirement not in missing:
                 continue
-            try:
-                __import__(module)
-            except ImportError:
+            if not _importable_after_install(module):
                 still_missing.append(requirement)
         return still_missing
 
@@ -481,6 +502,16 @@ def main(argv: list[str] | None = None) -> int:
     ready = not missing and su2_ready
     if ready:
         print("\n  Setup complete. Try:  python run_app.py --demo")
+    elif missing:
+        # Naming the actual obstacle beats a generic "incomplete": a stale
+        # import cache can leave a package listed here moments after pip
+        # installed it, and reopening the terminal is then the whole fix.
+        print(
+            "\n  Setup incomplete: a Python package is missing. Install it with\n"
+            f"    python -m pip install {' '.join(missing)}\n"
+            "  If pip says it is already installed, close this terminal and\n"
+            "  open a new one — the check was reading a stale import cache."
+        )
     else:
         print(
             "\n  Setup incomplete. Meshing, analysis and visualisation work\n"
