@@ -217,18 +217,51 @@ def test_importing_a_step_file_reads_its_units_and_tells_the_assistant(
     assert loaded.source == "gui"
 
 
-def test_the_nose_axis_travels_with_the_imported_file(aero_tab, tmp_path):
-    """The assistant should not have to re-ask which way the rocket points."""
+def test_importing_a_rocket_sets_the_nose_axis_from_its_shape(aero_tab, tmp_path):
+    """The operator should not have to work out the CAD frame themselves.
+
+    A nose tapers and a tail does not, so the axis buttons can be filled in
+    from the geometry. Getting this wrong meshes the rocket backwards and
+    returns a full set of plausible forces for a vehicle flying tail-first.
+    """
     from core.workspace import active_geometry
-    from tests.test_step_inspect import MILLIMETRES, write_step
+    from tests.test_step_inspect import MILLIMETRES, rocket_points, write_step
+
+    path = write_step(tmp_path / "rocket.step", MILLIMETRES, rocket_points())
+    aero_tab.step_path.setText(path)
+    aero_tab._on_step_path_changed()
+
+    checked = [b.text() for b in aero_tab.axis_buttons.buttons() if b.isChecked()]
+    assert checked == ["-X"]
+    assert active_geometry().nose_direction == "-X"
+    assert "nose at +X" in aero_tab.geometry_note.text()
+
+
+def test_a_body_with_no_obvious_nose_asks_the_operator(aero_tab, tmp_path):
+    """When the shape does not say, the note asks rather than defaulting."""
+    from tests.test_step_inspect import MILLIMETRES, rocket_points, write_step
 
     path = write_step(
-        tmp_path / "rocket.step", MILLIMETRES, [(0, 0, 0), (1320.0, 92.5, 92.5)]
+        tmp_path / "tube.step", MILLIMETRES, rocket_points(nose_radius=90.0)
     )
+    aero_tab.step_path.setText(path)
+    aero_tab._on_step_path_changed()
+
+    note = aero_tab.geometry_note.text()
+    assert "Please check" in note
+    assert "which end" in note.lower()
+
+
+def test_a_project_keeps_its_own_nose_axis(aero_tab, tmp_path):
+    """A saved study's orientation is a decision, not a guess to redo."""
+    from core.workspace import active_geometry
+    from tests.test_step_inspect import MILLIMETRES, rocket_points, write_step
+
+    path = write_step(tmp_path / "rocket.step", MILLIMETRES, rocket_points())
     for button in aero_tab.axis_buttons.buttons():
         button.setChecked(button.text() == "+Y")
     aero_tab.step_path.setText(path)
-    aero_tab._on_step_path_changed()
+    aero_tab._on_step_path_changed(keep_scale=True)
 
     assert active_geometry().nose_direction == "+Y"
 
@@ -264,7 +297,9 @@ def test_an_unconfident_unit_asks_the_operator_to_check(aero_tab, tmp_path):
     )
     aero_tab.step_path.setText(path)
     aero_tab._on_step_path_changed()
-    assert "check the scale" in aero_tab.geometry_note.text()
+    note = aero_tab.geometry_note.text()
+    assert "Please check" in note
+    assert "What unit" in note
 
 
 def test_nose_axis_buttons_cover_all_six_directions(aero_tab):

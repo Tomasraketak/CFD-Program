@@ -469,10 +469,22 @@ def _resolve_moment_origin(request: AeroRunRequest) -> np.ndarray:
 def _body_forces_from_wind_axes(
     drag_n: float, lift_n: float, sideforce_n: float, flow
 ) -> np.ndarray:
-    """Rotate wind-axis forces into body axes.
+    """Rotate wind-axis forces into the mesh frame.
 
     SU2 defines drag along the freestream direction, which is inclined from
     the body axis by the angle of attack and sideslip.
+
+    The frame here is the mesh's, not the textbook body frame, and the two
+    are not the same: meshing places the nose at minimum X with the flow
+    running in +X, so drag pushes the body towards +X. The classical
+    wind-to-body matrix assumes a body axis pointing forward out of the
+    nose and returns the negatives of these components -- which is fine
+    until the result is combined with SU2's moments, which arrive in the
+    mesh frame, and the centre of pressure lands on the wrong side of the
+    rocket.
+
+    At zero incidence this reduces to a pure drag force along +X and
+    nothing else, which is the check worth remembering.
     """
     alpha = math.radians(flow.aoa_deg)
     beta = math.radians(flow.sideslip_deg)
@@ -480,8 +492,9 @@ def _body_forces_from_wind_axes(
     cos_a, sin_a = math.cos(alpha), math.sin(alpha)
     cos_b, sin_b = math.cos(beta), math.sin(beta)
 
-    # Wind-to-body rotation for the standard aerospace convention.
-    x = -drag_n * cos_a * cos_b - sideforce_n * cos_a * sin_b + lift_n * sin_a
-    y = -drag_n * sin_b + sideforce_n * cos_b
-    z = -drag_n * sin_a * cos_b - sideforce_n * sin_a * sin_b - lift_n * cos_a
+    # Freestream direction, and the lift and side directions perpendicular
+    # to it, all expressed in the mesh frame.
+    x = drag_n * cos_a * cos_b - lift_n * sin_a - sideforce_n * cos_a * sin_b
+    y = drag_n * sin_b + sideforce_n * cos_b
+    z = drag_n * sin_a * cos_b + lift_n * cos_a - sideforce_n * sin_a * sin_b
     return np.array([x, y, z])

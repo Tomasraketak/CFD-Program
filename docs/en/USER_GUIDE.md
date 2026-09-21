@@ -62,7 +62,13 @@ says so.
 
 ### Nose direction
 
-Which way the nose points **in your CAD file's coordinate system**.
+The axis the body runs along **from the nose towards the tail**, in your CAD
+file's coordinate system.
+
+Read that sentence twice, because the sign catches everyone: a rocket drawn
+standing up, tip at the top, needs **`-Y`**, not `+Y`. The program rotates
+this direction onto +X, which is what places the nose at the upstream end of
+the wind tunnel.
 
 | Option | When |
 |---|---|
@@ -72,8 +78,19 @@ Which way the nose points **in your CAD file's coordinate system**.
 The custom vector is normalised automatically; only its direction matters.
 A vector of zero length is rejected.
 
+**This is filled in for you too.** On import the program finds the longest
+axis of the model and compares how thick each end is: a nose tapers, a tail
+carries fins and a blunt base, so the thinner end is the nose. The buttons
+are set from that and the note under the file name says which end it found —
+*"nose at +Y"*.
+
+When both ends are alike — a plain tube, a body with a boat tail — it will
+not guess. The note asks which end the nose is on, and the assistant asks the
+same question rather than picking one.
+
 This is the single most consequential setting. Get it wrong and the body is
-meshed sideways or backwards, and every result will be plausible and wrong.
+meshed sideways or backwards, and every result will be plausible and wrong:
+a rocket flying tail-first still produces a complete drag polar.
 
 ### Reference origin
 
@@ -521,18 +538,41 @@ repository. **Remove** deletes the key from every backend at once.
 
 ### Choosing a model
 
-Any OpenRouter model id works. The dropdown starts with a handful of
-suggestions; **Fetch available models** replaces them with the live catalogue
-your account can actually reach, because the catalogue changes constantly and
-a list hard-coded here would go stale.
+The dropdown holds a shortlist; the first entry, **Custom**, clears the box so
+you can type any id at all. **Fetch available models** replaces the list with
+the live catalogue your account can actually reach — worth doing, because
+OpenRouter's catalogue changes weekly and an id that is not on it is rejected
+at the first request.
 
-The default is `deepseek/deepseek-chat` — cheap, fast and good enough for this
-job. A model must support tool calling, or the assistant can only talk. The
-choice is remembered between sessions.
+A model must support tool calling, or the assistant can only talk. The choice
+is remembered between sessions.
 
 **You pay OpenRouter for what the assistant uses**, per token, at that model's
 rate. A short question costs a fraction of a cent; a long session of tool
-calls costs more. The token count for each request appears in the status bar.
+calls costs more.
+
+### Watching what it costs
+
+While a request runs, the line under the transcript shows what it has spent
+so far:
+
+```
+4,812 tokens · 61.3 tok/s · $0.0038 · 14s
+```
+
+- **tokens** — prompt and completion together, for this request
+- **tok/s** — generation rate, measured against time spent waiting on the
+  model, not against wall time. A request that spends four minutes meshing
+  has not slowed the model down, and this number should not pretend it has.
+- **$** — OpenRouter's own figure for the request, not an estimate from a
+  price list. Some providers do not report one; the field is then left blank
+  rather than showing a zero you might believe.
+- **seconds** — wall time, which keeps moving between rounds so you can tell
+  a slow request from a stuck one.
+
+The figures update after each round of the conversation, so a request that is
+going to be expensive becomes visible while there is still time to stop it.
+**New conversation** resets the meter.
 
 ### Talking to it
 

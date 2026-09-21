@@ -19,6 +19,9 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import Any
+
+import numpy as np
 
 # Decimal prefixes STEP may attach to a base SI unit, as multipliers.
 _SI_PREFIXES: dict[str, float] = {
@@ -247,15 +250,14 @@ MIN_PLAUSIBLE_EXTENT_M = 0.01
 MAX_PLAUSIBLE_EXTENT_M = 100.0
 
 
-def largest_extent(path: Path | str) -> float | None:
-    """Longest side of the model's bounding box, in the file's own units.
+def read_points(path: Path | str) -> np.ndarray:
+    """Every Cartesian point in the file, as an ``(n, 3)`` array.
 
-    Read from the STEP text rather than a CAD kernel, because this is used
-    to sanity-check the unit *before* deciding how to import. Control points
-    of a spline can sit slightly outside the true surface, which is
-    immaterial at the order-of-magnitude precision needed here.
-
-    Returns None when the file holds no readable points.
+    Read from the STEP text rather than a CAD kernel, because these answers
+    are needed *before* deciding how to import. Control points of a spline
+    can sit slightly outside the true surface, which is immaterial at the
+    precision wanted here: an order of magnitude for the unit, and which end
+    of the body is thinner for the nose.
     """
     target = Path(path)
     try:
@@ -264,26 +266,32 @@ def largest_extent(path: Path | str) -> float | None:
         raise StepInspectionError(f"could not read '{target.name}': {error}") from error
 
     text = _strip_comments_and_strings(raw.decode("utf-8", errors="replace"))
-    low = [float("inf")] * 3
-    high = [float("-inf")] * 3
-    found = False
+    values: list[float] = []
     for match in _CARTESIAN_POINT.finditer(text):
         try:
-            point = (
-                float(match.group("x")),
-                float(match.group("y")),
-                float(match.group("z")),
+            values.extend(
+                (
+                    float(match.group("x")),
+                    float(match.group("y")),
+                    float(match.group("z")),
+                )
             )
         except ValueError:  # pragma: no cover - malformed literal
             continue
-        found = True
-        for axis in range(3):
-            low[axis] = min(low[axis], point[axis])
-            high[axis] = max(high[axis], point[axis])
+    if not values:
+        return np.empty((0, 3), dtype=float)
+    return np.asarray(values, dtype=float).reshape(-1, 3)
 
-    if not found:
+
+def largest_extent(path: Path | str) -> float | None:
+    """Longest side of the model's bounding box, in the file's own units.
+
+    Returns None when the file holds no readable points.
+    """
+    points = read_points(path)
+    if points.size == 0:
         return None
-    return max(high[axis] - low[axis] for axis in range(3))
+    return float((points.max(axis=0) - points.min(axis=0)).max())
 
 
 class ScaleDecision:
@@ -395,6 +403,192 @@ def suggest_scale_to_meters(path: Path | str) -> ScaleDecision:
         False,
         None,
         extent,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Which way the rocket points
+# ---------------------------------------------------------------------------
+
+# A body must be this much longer than it is wide before its long axis is
+# treated as an airframe axis. Below it the model is a box or a bracket and
+# "which way does the nose point" has no answer worth guessing at.
+MIN_SLENDERNESS = 2.0
+
+# Fraction of the length sampled at each end when comparing how thick the
+# two ends are. A tenth is short enough to sit inside a nose cone and long
+# enough to average out a sparse point cloud.
+_END_FRACTION = 0.1
+
+# How much thinner one end must be before it is called the nose. A rocket's
+# nose tapers to a point while its tail carries fins and a flat base, so the
+# real ratio is several times this; the margin is for bodies that barely
+# taper at all.
+_NOSE_RATIO = 1.25
+
+
+class AxisDecision:
+    """Which axis a slender body lies along, and where its nose is.
+
+    Two directions are carried here and they are opposites, which is worth
+    stating plainly because getting them confused meshes a rocket backwards.
+    ``nose_end`` is where the tip physically is: the +Y end of a model drawn
+    nose-up. ``nose_direction`` is the value the meshing parameter of that
+    name takes, which is the axis the body runs along **from the nose
+    towards the tail** -- ``-Y`` for that same model. The pipeline rotates
+    that direction onto +X, which puts the nose at the upstream end of the
+    wind tunnel, where the farfield gives it room.
+    """
+
+    __slots__ = (
+        "axis",
+        "nose_end",
+        "nose_direction",
+        "confident",
+        "reason",
+        "slenderness",
+        "nose_radius",
+        "tail_radius",
+    )
+
+    def __init__(
+        self,
+        axis: str,
+        nose_end: str | None,
+        confident: bool,
+        reason: str,
+        slenderness: float,
+        nose_radius: float,
+        tail_radius: float,
+    ) -> None:
+        self.axis = axis
+        self.nose_end = nose_end
+        self.nose_direction = _opposite(nose_end)
+        self.confident = confident
+        self.reason = reason
+        self.slenderness = slenderness
+        self.nose_radius = nose_radius
+        self.tail_radius = tail_radius
+
+    def as_dict(self) -> dict[str, Any]:
+        """JSON-serialisable form, for the MCP tools."""
+        return {
+            "axis": self.axis,
+            "nose_end": self.nose_end,
+            "nose_direction": self.nose_direction,
+            "confident": self.confident,
+            "reason": self.reason,
+            "slenderness": self.slenderness,
+            "nose_end_radius": self.nose_radius,
+            "tail_end_radius": self.tail_radius,
+        }
+
+    def __repr__(self) -> str:  # pragma: no cover - diagnostics
+        return (
+            f"AxisDecision(nose_end={self.nose_end!r}, "
+            f"nose_direction={self.nose_direction!r}, "
+            f"confident={self.confident!r}, reason={self.reason!r})"
+        )
+
+
+def _opposite(direction: str | None) -> str | None:
+    """Flip a signed axis name, or pass None through."""
+    if not direction:
+        return None
+    return ("-" if direction[0] == "+" else "+") + direction[1:]
+
+
+def _mean_radius(points: np.ndarray, axis: int, centre: np.ndarray) -> float:
+    """Mean distance from the body axis, for a slice of the point cloud."""
+    if points.size == 0:
+        return 0.0
+    lateral = np.delete(points, axis, axis=1) - np.delete(centre, axis)
+    return float(np.linalg.norm(lateral, axis=1).mean())
+
+
+def detect_body_axis(path: Path | str) -> AxisDecision:
+    """Work out which way a slender body points, from the CAD alone.
+
+    Getting this wrong is the single most expensive mistake available here:
+    a rocket meshed backwards produces a complete, plausible set of forces
+    for a vehicle flying tail-first. The operator should not have to work it
+    out from a coordinate system they may not have chosen.
+
+    Two questions, answered separately because they carry different
+    confidence. The **axis** is just the longest dimension, which is not
+    really a guess for anything slender. The **end** is inferred from the
+    shape: a nose tapers, while a tail carries fins and a blunt base, so the
+    thinner end is the nose. When the two ends are alike -- a plain tube, a
+    body with a boat tail -- no direction is returned and the caller is
+    expected to ask rather than assume.
+    """
+    points = read_points(path)
+    if points.shape[0] < 8:
+        return AxisDecision(
+            "X", None, False, "too few points in the file to tell", 0.0, 0.0, 0.0
+        )
+
+    span = points.max(axis=0) - points.min(axis=0)
+    axis = int(np.argmax(span))
+    name = "XYZ"[axis]
+    length = float(span[axis])
+    width = float(np.max(np.delete(span, axis)))
+    slenderness = length / width if width > 0.0 else float("inf")
+
+    if length <= 0.0 or slenderness < MIN_SLENDERNESS:
+        return AxisDecision(
+            name,
+            None,
+            False,
+            f"the model is only {slenderness:.1f} times longer than it is "
+            "wide, so it has no obvious nose",
+            slenderness,
+            0.0,
+            0.0,
+        )
+
+    low = float(points[:, axis].min())
+    high = float(points[:, axis].max())
+    margin = _END_FRACTION * length
+    centre = points.mean(axis=0)
+
+    low_end = points[points[:, axis] <= low + margin]
+    high_end = points[points[:, axis] >= high - margin]
+    low_radius = _mean_radius(low_end, axis, centre)
+    high_radius = _mean_radius(high_end, axis, centre)
+
+    if low_radius <= 0.0 and high_radius <= 0.0:  # pragma: no cover - degenerate
+        return AxisDecision(
+            name, None, False, "both ends measure as points", slenderness, 0.0, 0.0
+        )
+
+    # The nose is the thinner end: it tapers, the tail does not.
+    if high_radius * _NOSE_RATIO < low_radius:
+        nose_end, nose, tail = f"+{name}", high_radius, low_radius
+    elif low_radius * _NOSE_RATIO < high_radius:
+        nose_end, nose, tail = f"-{name}", low_radius, high_radius
+    else:
+        return AxisDecision(
+            name,
+            None,
+            False,
+            f"the body lies along {name}, but both ends are about equally "
+            f"thick ({low_radius:.4g} and {high_radius:.4g}), so which one "
+            "is the nose cannot be read from the shape",
+            slenderness,
+            min(low_radius, high_radius),
+            max(low_radius, high_radius),
+        )
+
+    return AxisDecision(
+        name,
+        nose_end,
+        True,
+        f"the body lies along {name} and tapers towards {nose_end}, where "
+        f"it is {tail / nose:.1f} times thinner than at the other end",
+        slenderness,
+        nose,
+        tail,
     )
 
 

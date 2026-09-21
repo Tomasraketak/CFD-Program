@@ -55,7 +55,9 @@ def create_reference_rocket_step(
         which Gmsh meshes with non-manifold edges; the default keeps the tip
         blunt enough to triangulate cleanly.
     nose_axis:
-        One of ``+X``, ``+Y`` or ``+Z``; the axis the nose points along.
+        One of ``+X``, ``+Y`` or ``+Z``. The body runs along this axis from
+        the nose tip at the origin towards the tail, which is the same sense
+        as the meshing parameter ``nose_direction``.
 
     Returns
     -------

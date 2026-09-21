@@ -32,6 +32,7 @@ from core.platform_env import data_root
 from core.step_inspect import (
     StepInspectionError,
     describe_length_unit,
+    detect_body_axis,
     suggest_scale_to_meters,
 )
 
@@ -69,7 +70,33 @@ class ActiveGeometry(StrictModel):
     )
     nose_direction: str = Field(
         default="+X",
-        description="Axis the nose points along in CAD coordinates.",
+        description=(
+            "Meshing's nose_direction: the CAD axis the body runs along "
+            "from the nose towards the tail. The opposite of nose_end."
+        ),
+    )
+    nose_end: str | None = Field(
+        default=None,
+        description=(
+            "Which end of that axis the tip is physically on, or null when "
+            "the shape does not say."
+        ),
+    )
+    nose_is_confident: bool = Field(
+        default=False,
+        description=(
+            "Whether the nose end was established from the geometry rather "
+            "than defaulted. False means ask the operator which end it is."
+        ),
+    )
+    nose_reason: str = Field(
+        default="",
+        description="How the nose end was arrived at, in one sentence.",
+    )
+    slenderness: float = Field(
+        default=0.0,
+        ge=0.0,
+        description="How many times longer the body is than it is wide.",
     )
     selected_at: str = Field(
         default="",
@@ -95,9 +122,35 @@ class ActiveGeometry(StrictModel):
         """One line describing the loaded file, for a status bar or a log."""
         name = Path(self.step_file_path).name or "(none)"
         units = describe_length_unit(self.scale_to_meters)
-        if self.largest_extent_m is None:
-            return f"{name}, read as {units}"
-        return f"{name}, read as {units} — {self.largest_extent_m:.3g} m across"
+        size = (
+            "" if self.largest_extent_m is None
+            else f" — {self.largest_extent_m:.3g} m long"
+        )
+        if self.nose_end:
+            return f"{name}, read as {units}{size}, nose at {self.nose_end}"
+        return f"{name}, read as {units}{size}"
+
+    def open_questions(self) -> list[str]:
+        """What still needs an operator's answer before a solve is worth paying for.
+
+        Both of these are silent failures: a wrong unit scales the Reynolds
+        number by a thousand, and a wrong nose end flies the rocket
+        backwards. Neither produces an error anywhere downstream, so they
+        are collected here to be asked about instead.
+        """
+        questions: list[str] = []
+        if not self.scale_is_confident:
+            questions.append(
+                f"What unit is this model drawn in? "
+                f"{self.scale_reason or 'The file does not say.'}"
+            )
+        if not self.nose_is_confident:
+            axis = (self.nose_direction or "+X")[1:]
+            questions.append(
+                f"Which end of the {axis} axis is the nose on, "
+                f"+{axis} or -{axis}? {self.nose_reason}".strip()
+            )
+        return questions
 
 
 def workspace_path(root: Path | str | None = None) -> Path:
@@ -143,7 +196,9 @@ def set_active_geometry(
         Override the unit. When None, the file's own declaration is read
         and sanity-checked against the model's size.
     nose_direction:
-        Forward axis, if the caller knows it.
+        The axis the body runs along from nose to tail, if the caller
+        already knows it. When None it is read from the shape of the model,
+        and left flagged as uncertain when the shape does not say.
     source:
         'gui' or 'mcp', kept so a confusing hand-off can be traced.
 
@@ -180,18 +235,57 @@ def set_active_geometry(
             measured = None
         extent = None if measured is None else measured * scale
 
+    nose = nose_direction or "+X"
+    nose_end: str | None = _opposite_axis(nose_direction)
+    nose_confident = nose_direction is not None
+    nose_reason = "set explicitly" if nose_direction is not None else ""
+    slenderness = 0.0
+
+    if resolved.is_file():
+        try:
+            axis = detect_body_axis(resolved)
+        except StepInspectionError:  # pragma: no cover - unreadable file
+            axis = None
+        if axis is not None:
+            slenderness = axis.slenderness
+            if nose_direction is None:
+                # Nothing was specified, so take the reading -- including
+                # when it is inconclusive, which is what makes the interface
+                # and the assistant ask instead of quietly meshing a rocket
+                # tail-first.
+                nose = axis.nose_direction or f"+{axis.axis}"
+                nose_end = axis.nose_end
+                nose_confident = axis.confident
+                nose_reason = axis.reason
+            elif axis.nose_direction and axis.nose_direction != nose_direction:
+                nose_reason = (
+                    f"set to {nose_direction}, though the shape suggests "
+                    f"{axis.nose_direction}: {axis.reason}"
+                )
+
     record = ActiveGeometry(
         step_file_path=str(resolved),
         scale_to_meters=scale,
         scale_is_confident=confident,
         scale_reason=reason,
         largest_extent_m=extent,
-        nose_direction=nose_direction or "+X",
+        nose_direction=nose,
+        nose_end=nose_end,
+        nose_is_confident=nose_confident,
+        nose_reason=nose_reason,
+        slenderness=slenderness,
         selected_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
         source=source,
     )
     _write(record, root)
     return record
+
+
+def _opposite_axis(direction: str | None) -> str | None:
+    """Flip a signed axis name, or pass None through."""
+    if not direction:
+        return None
+    return ("-" if direction[0] == "+" else "+") + direction[1:]
 
 
 def clear_active_geometry(root: Path | str | None = None) -> None:

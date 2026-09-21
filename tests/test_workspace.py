@@ -24,11 +24,19 @@ from tests.test_step_inspect import MILLIMETRES, write_step
 
 @pytest.fixture
 def rocket(tmp_path):
-    """A millimetre-scale STEP file 1.32 m long."""
+    """A millimetre-scale rocket 1.32 m long, nose at the +X end."""
+    from tests.test_step_inspect import rocket_points
+
+    return write_step(tmp_path / "Sapphire.step", MILLIMETRES, rocket_points())
+
+
+@pytest.fixture
+def tube(tmp_path):
+    """A body with two equally thick ends: no nose to find."""
+    from tests.test_step_inspect import rocket_points
+
     return write_step(
-        tmp_path / "Sapphire.step",
-        MILLIMETRES,
-        [(0.0, 0.0, 0.0), (1320.0, 92.5, 92.5)],
+        tmp_path / "tube.step", MILLIMETRES, rocket_points(nose_radius=90.0)
     )
 
 
@@ -67,6 +75,45 @@ def test_the_nose_direction_travels_with_the_file(rocket):
     """The assistant should not have to re-ask which way the rocket points."""
     set_active_geometry(rocket, nose_direction="+Y")
     assert active_geometry().nose_direction == "+Y"
+
+
+def test_the_nose_is_read_off_the_shape(rocket):
+    """Importing a rocket should settle which way it points."""
+    record = set_active_geometry(rocket)
+    assert record.nose_end == "+X"
+    # Meshing rotates nose-to-tail onto +X, so the parameter is the opposite.
+    assert record.nose_direction == "-X"
+    assert record.nose_is_confident
+    assert record.open_questions() == []
+    assert "nose at +X" in record.summary()
+
+
+def test_a_body_with_no_obvious_nose_becomes_a_question(tube):
+    """Not knowing is reported, not defaulted.
+
+    A wrong nose direction meshes the rocket backwards and returns a full
+    set of plausible forces for a vehicle flying tail-first.
+    """
+    record = set_active_geometry(tube)
+    assert not record.nose_is_confident
+    assert record.nose_end is None
+    questions = record.open_questions()
+    assert len(questions) == 1
+    assert "which end" in questions[0].lower()
+    assert "X" in questions[0]
+
+
+def test_an_explicit_nose_direction_is_kept_but_disagreement_is_noted(rocket):
+    """The operator decides, and is told when the shape says otherwise."""
+    record = set_active_geometry(rocket, nose_direction="+X")
+    assert record.nose_direction == "+X"
+    assert record.nose_is_confident
+    assert "the shape suggests -X" in record.nose_reason
+
+
+def test_slenderness_is_recorded(rocket):
+    """Used to decide whether the nose question applies at all."""
+    assert set_active_geometry(rocket).slenderness > 2.0
 
 
 def test_choosing_another_file_replaces_the_first(rocket, tmp_path):
@@ -147,7 +194,9 @@ def test_the_source_records_which_surface_chose_the_file(rocket):
 def test_a_summary_reads_as_a_sentence(rocket):
     """This goes in the status bar, so it has to be legible."""
     record = set_active_geometry(rocket)
-    assert record.summary() == "Sapphire.step, read as millimetres — 1.32 m across"
+    assert record.summary() == (
+        "Sapphire.step, read as millimetres — 1.32 m long, nose at +X"
+    )
 
 
 def test_an_empty_record_summarises_without_a_file():

@@ -64,7 +64,12 @@ to uvede.
 
 ### Nose direction
 
-Kudy míří špička **v souřadném systému vašeho CAD souboru**.
+Osa, po které těleso běží **od špičky směrem k zádi**, v souřadném systému
+vašeho CAD souboru.
+
+Tu větu si přečtěte dvakrát, protože na znaménku se chytne každý: raketa
+nakreslená nastojato, špičkou nahoru, potřebuje **`-Y`**, ne `+Y`. Program
+tenhle směr otočí na +X, čímž se špička dostane na návětrný konec tunelu.
 
 | Volba | Kdy |
 |---|---|
@@ -74,8 +79,18 @@ Kudy míří špička **v souřadném systému vašeho CAD souboru**.
 Vlastní vektor se automaticky normalizuje; záleží jen na směru. Nulový vektor
 je odmítnut.
 
+**I tohle se vyplní samo.** Při importu program najde nejdelší osu modelu a
+porovná, jak tlustý je každý konec: špička se zužuje, záď nese křidélka a
+plochou základnu, takže tenčí konec je špička. Podle toho se nastaví
+přepínače a poznámka pod názvem souboru řekne, co našel — *„nose at +Y"*.
+
+Když jsou oba konce stejné — hladká trubka, těleso se zúženou zádí —
+program hádat nebude. Poznámka se zeptá, na kterém konci je špička, a
+asistent se zeptá na totéž místo toho, aby si jeden konec vybral.
+
 Toto je nastavení s největšími důsledky. Když je špatně, těleso se vysíťuje
-bokem nebo pozpátku a všechny výsledky budou věrohodné a chybné.
+bokem nebo pozpátku a všechny výsledky budou věrohodné a chybné: raketa
+letící pozpátku vyprodukuje kompletní polární křivku odporu.
 
 ### Reference origin
 
@@ -518,18 +533,40 @@ Tlačítko **Remove** klíč smaže ze všech úložišť naráz.
 
 ### Volba modelu
 
-Funguje libovolné id modelu z OpenRouteru. Rozbalovací seznam začíná několika
-návrhy; **Fetch available models** je nahradí živým katalogem, na který váš
-účet skutečně dosáhne — katalog se totiž neustále mění a napevno zapsaný
-seznam by rychle zastaral.
+V rozbalovacím seznamu je několik modelů; první položka **Custom** políčko
+vyprázdní, takže můžete napsat libovolné id. **Fetch available models**
+seznam nahradí živým katalogem, na který váš účet skutečně dosáhne — stojí
+to za to, protože katalog OpenRouteru se mění každý týden a id, které v něm
+není, se odmítne hned při prvním požadavku.
 
-Výchozí je `deepseek/deepseek-chat` — levný, rychlý a na tuhle práci
-dostatečný. Model musí umět volání nástrojů (tool calling), jinak si s vámi
-umí jen povídat. Volba se pamatuje mezi spuštěními.
+Model musí umět volání nástrojů (tool calling), jinak si s vámi umí jen
+povídat. Volba se pamatuje mezi spuštěními.
 
 **Za to, co asistent spotřebuje, platíte OpenRouteru** podle tokenů a sazby
 daného modelu. Krátký dotaz stojí zlomek centu, delší série volání nástrojů
-víc. Počet tokenů každého požadavku se ukáže ve stavovém řádku.
+víc.
+
+### Kolik to právě stojí
+
+Během běhu požadavku ukazuje řádek pod přepisem, co zatím spotřeboval:
+
+```
+4,812 tokens · 61.3 tok/s · $0.0038 · 14s
+```
+
+- **tokens** — vstupní a výstupní dohromady, za tenhle požadavek
+- **tok/s** — rychlost generování, měřená proti času stráveném čekáním na
+  model, ne proti celkovému času. Požadavek, který čtyři minuty síťuje,
+  model nezpomalil a tohle číslo to nemá předstírat.
+- **$** — vlastní údaj OpenRouteru za daný požadavek, ne odhad z ceníku.
+  Někteří poskytovatelé cenu nehlásí; pole pak zůstane prázdné, místo aby
+  ukázalo nulu, které byste mohl věřit.
+- **sekundy** — reálný čas, který běží i mezi koly, takže poznáte pomalý
+  požadavek od zaseknutého.
+
+Údaje se aktualizují po každém kole konverzace, takže drahý požadavek je
+vidět ještě ve chvíli, kdy jde zastavit. **New conversation** měřič
+vynuluje.
 
 ### Jak s ním mluvit
 

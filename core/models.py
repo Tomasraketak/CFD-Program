@@ -89,16 +89,20 @@ class GeometryParams(StrictModel):
     nose_direction: AxisDirection | None = Field(
         default=AxisDirection.PLUS_X,
         description=(
-            "Named principal axis pointing along the nose/forward direction of "
-            "the body in the CAD file's own coordinate system. Set to null and "
-            "supply 'nose_vector' to use an arbitrary direction instead."
+            "Principal axis the body runs along FROM THE NOSE TOWARDS THE "
+            "TAIL, in the CAD file's own coordinate system. This direction "
+            "is rotated onto +X, which places the nose at the upstream end "
+            "of the tunnel: a model drawn nose-up along +Y therefore takes "
+            "'-Y', not '+Y'. Set to null and supply 'nose_vector' to use an "
+            "arbitrary direction instead."
         ),
     )
     nose_vector: Vector3 | None = Field(
         default=None,
         description=(
-            "Arbitrary nose/forward direction [nx, ny, nz] in CAD coordinates. "
-            "Normalised automatically. Takes precedence over 'nose_direction'."
+            "Arbitrary nose-to-tail direction [nx, ny, nz] in CAD "
+            "coordinates, with the same sense as 'nose_direction'. "
+            "Normalised automatically. Takes precedence over it."
         ),
     )
     reference_origin: Vector3 = Field(

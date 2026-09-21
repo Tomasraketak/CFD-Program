@@ -125,9 +125,9 @@ Načte CAD, zarovná jej, postaví oblast a vytvoří síť.
 
 | Parametr | Typ | Výchozí | Poznámka |
 |---|---|---|---|
-| `step_file_path` | string | — | **Povinné.** Absolutní cesta k `.step`/`.stp` |
-| `nose_direction` | string | `"+X"` | `+X`, `-X`, `+Y`, `-Y`, `+Z`, `-Z` |
-| `nose_vector` | list[3] | null | Libovolný směr; přepisuje `nose_direction` |
+| `step_file_path` | string | `""` | Vynechte a vysíťuje se to, co je načtené v rozhraní |
+| `nose_direction` | string | podle tvaru | Od špičky **k zádi**: `+X`, `-X`, `+Y`, `-Y`, `+Z`, `-Z` |
+| `nose_vector` | list[3] | null | Libovolný směr, stejný smysl; přepisuje `nose_direction` |
 | `reference_origin` | list[3] | `[0,0,0]` | Bod přesunutý do počátku tunelu |
 | `domain_multipliers` | object | viz níže | `{"upstream": 5, "downstream": 10, "radial": 5}` |
 | `domain_shape` | string | `"cylinder"` | `cylinder` nebo `box` |
@@ -135,16 +135,38 @@ Načte CAD, zarovná jej, postaví oblast a vytvoří síť.
 | `track` | string | `"aerodynamic"` | `aerodynamic` nebo `thermal` |
 | `boundary_layers` | int | 7 | 5–8 |
 | `target_yplus` | float | 45.0 | 30–300 |
-| `scale_to_meters` | float | 1.0 | `0.001` pro milimetry |
+| `scale_to_meters` | float | ze souboru | `0.001` pro milimetry |
 | `sizing_mach` | float | 1.0 | Režim, pro který se dimenzuje mezní vrstva |
 | `sizing_altitude_m` | float | 0.0 | |
 | `max_targeting_iterations` | int | 4 | Pokusy o zásah cílového počtu buněk |
 
 Vrací `mesh_id`, `cell_count`, `within_target_band`, `reference_length_m`,
 `reference_diameter_m`, `reference_area_m2`, `estimated_yplus`,
-`boundary_markers`, `min_quality`, `wall_time_s`.
+`boundary_markers`, `min_quality`, `wall_time_s`, dále `step_file_path`,
+`scale_to_meters`, `nose_direction` a poznámky, jak se k posledním dvěma
+došlo.
 
 Trvá desítky sekund až několik minut.
+
+**K `nose_direction`.** Je to osa, po které těleso běží *od špičky k zádi*,
+protože právě tenhle směr se otáčí na +X, čímž se špička dostane na návětrný
+konec tunelu. Raketa nakreslená nastojato, špičkou nahoru, je `-Y`. Parametr
+vynechte a odpoví geometrie: nejdelší osa je osa tělesa a konec, který se
+zužuje, je špička. Když jsou oba konce stejné, volání raději selže, než aby
+hádalo:
+
+```
+set_geometry_and_mesh(step_file_path = "C:\\models\\tube.step")
+   └─ ok = false
+      error   = "which end is the nose? the body lies along X, but both ends
+                 are about equally thick (90 and 90) ..."
+      needs   = ["nose_direction"]
+      axis    = "X"
+```
+
+Tu otázku položte operátorovi. Nevybírejte stranu sám: raketa vysíťovaná
+pozpátku vrátí kompletní, věrohodnou polární křivku odporu pro stroj letící
+zádí napřed a nic dalšího si toho nevšimne.
 
 ### 3.2 `run_aerodynamic_simulation`
 

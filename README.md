@@ -289,13 +289,26 @@ handed over, and picked up weeks later.
 The same principle covers the smaller hand-off. Importing a STEP file in the
 interface records it in `core/workspace.py`, so "mesh the model I just
 imported" reaches the assistant as a real file rather than a request for a
-path. `core/step_inspect.py` reads the unit the file declares while it is
-being imported and checks it against the model's own size — CAD is usually
-exported in millimetres, the solver works in metres, and a body scaled wrong
-by three orders of magnitude meshes and solves without a single warning. The
-size check is not pedantry: OpenCASCADE writes a millimetre header onto a
-model whose coordinates are plainly metres, this repository's own sample
-rocket among them.
+path.
+
+`core/step_inspect.py` then reads the file itself, without a CAD kernel, to
+settle the two questions that fail silently:
+
+- **What unit is this drawn in?** CAD is usually exported in millimetres, the
+  solver works in metres, and a body scaled wrong by three orders of
+  magnitude meshes and solves without a single warning. The declaration is
+  read and then checked against the model's own size, because exporters lie:
+  OpenCASCADE writes a millimetre header onto a model whose coordinates are
+  plainly metres, this repository's own sample rocket among them.
+- **Which way does it point?** The longest axis is the body axis; the end
+  that tapers is the nose, since a tail carries fins and a blunt base. Get
+  this wrong and the rocket is meshed flying backwards, which produces a
+  complete and entirely plausible drag polar.
+
+Neither answer is forced. When the ends are alike — a plain tube, a boat tail
+— the interface says so and the meshing tool fails asking which end it is,
+rather than picking one. A guess that cannot be detected downstream is worse
+than a question.
 
 ```
 core/       models  store  units  atmosphere  platform_env
@@ -445,6 +458,15 @@ identical — a tool cannot exist on one surface and be missing from the other.
 The tool list *is* the boundary: no shell, no arbitrary file access, no code
 execution. Meshing, solving and sweeping are confirmed with the operator
 before they start, and a round cap bounds what one confused request can spend.
+
+Spending is shown as it happens rather than totalled afterwards — tokens,
+generation rate and OpenRouter's own cost figure, updated after every round,
+so a request that is going to be expensive is visible while there is still
+time to stop it. The rate is measured against time spent waiting on the
+model, not wall time: a request that spends four minutes meshing has not
+slowed the model down. Where a provider reports no price the field stays
+blank instead of showing a zero, because an invented figure is worse than
+none.
 
 The API key goes to the OS credential manager where one exists and to an
 owner-only file where none does — never into a `.atsproj` project or

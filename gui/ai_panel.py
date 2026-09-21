@@ -14,6 +14,7 @@ masked form and a statement of where it is stored.
 from __future__ import annotations
 
 import html
+import time
 from typing import Any
 
 from PySide6 import QtCore, QtGui, QtWidgets
@@ -43,13 +44,22 @@ OPENROUTER_KEYS_URL = "https://openrouter.ai/keys"
 # enough that a lost dialog cannot strand the thread forever.
 APPROVAL_TIMEOUT_MS = 10 * 60 * 1000
 
+# First entry in the model list. Choosing it clears the box so an id can be
+# typed; it is never itself a model id.
+CUSTOM_MODEL_LABEL = "Custom — type an id below"
+
+# How often the live cost meter refreshes while a request runs. The figures
+# themselves only change when a round completes; this is what keeps the
+# elapsed time moving so the display does not look frozen.
+METER_INTERVAL_MS = 500
+
 # Example requests shown on an empty transcript, so a first-time user can see
 # the shape of a useful instruction rather than facing a blank box.
 EXAMPLE_PROMPTS = (
     "Jak přesný bude BMP580 na střeše tramvaje při 900 W/m² a rychlosti 3 m/s?",
     "Zkontroluj prostředí a řekni mi, jestli můžu spustit výpočet.",
     "Porovnej chybu senzoru pro bílou a černou krabičku.",
-    "Vysíťuj naimportovanou raketu, špička podél +Y, rozlišení coarse.",
+    "Vysíťuj naimportovanou raketu, rozlišení coarse.",
     "Spusť mi na naimportovaném modelu sweep přes Mach 0.3, 0.6 a 1.3.",
 )
 
@@ -65,6 +75,7 @@ class AIWorker(QtCore.QRunnable):
         """Signals emitted as the request proceeds."""
 
         progress = QtCore.Signal(str)
+        metrics = QtCore.Signal(object)
         finished = QtCore.Signal(object)
         failed = QtCore.Signal(str)
         approval = QtCore.Signal(str, object)
@@ -80,6 +91,7 @@ class AIWorker(QtCore.QRunnable):
         """Execute the request and report the outcome."""
         try:
             self.assistant.on_progress = self.signals.progress.emit
+            self.assistant.on_metrics = self.signals.metrics.emit
             reply = self.assistant.ask(self.prompt)
             self.signals.finished.emit(reply)
         except AuthenticationError as error:
@@ -107,6 +119,10 @@ class AITab(QtWidgets.QWidget):
         self.assistant: Any = None
         self.pool = QtCore.QThreadPool.globalInstance()
         self._busy = False
+        self._metrics: Any = None
+        self._started_at: float | None = None
+        self._meter_timer = QtCore.QTimer(self)
+        self._meter_timer.timeout.connect(self._refresh_meter)
 
         splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
         splitter.addWidget(self._build_settings_panel())
@@ -169,12 +185,22 @@ class AITab(QtWidgets.QWidget):
         model_form = QtWidgets.QFormLayout(model_box)
 
         self.model_combo = QtWidgets.QComboBox()
+        # Editable so any id can be typed: the shortlist is a convenience,
+        # not a restriction, and OpenRouter's catalogue outruns any list
+        # compiled here.
         self.model_combo.setEditable(True)
+        self.model_combo.addItem(CUSTOM_MODEL_LABEL)
+        self.model_combo.insertSeparator(1)
         self.model_combo.addItems(SUGGESTED_MODELS)
         self.model_combo.setCurrentText(self.settings.ai_model or DEFAULT_MODEL)
+        # 'activated' rather than 'currentIndexChanged': the Custom entry is
+        # index 0 and an editable box can already be sitting on it, in which
+        # case choosing it again changes no index and emits nothing.
+        self.model_combo.activated.connect(self._on_model_chosen)
         self.model_combo.setToolTip(
-            "Any OpenRouter model id. The list below is a starting point; "
-            "use Fetch to load what your account can actually reach."
+            "Any OpenRouter model id. Pick one, or choose Custom and type "
+            "your own. Use Fetch to replace the list with what your account "
+            "can actually reach."
         )
         model_form.addRow("Model id", self.model_combo)
 
@@ -240,9 +266,26 @@ class AITab(QtWidgets.QWidget):
         self.transcript.setOpenExternalLinks(True)
         layout.addWidget(self.transcript, 1)
 
+        status_row = QtWidgets.QHBoxLayout()
         self.activity = QtWidgets.QLabel()
         self.activity.setObjectName("hint")
-        layout.addWidget(self.activity)
+        status_row.addWidget(self.activity, 1)
+
+        # Cost and throughput, updated while the request runs rather than
+        # only at the end: a model that is slow or expensive should be
+        # visible in time to stop it.
+        self.meter = QtWidgets.QLabel()
+        self.meter.setObjectName("hint")
+        self.meter.setAlignment(
+            QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter
+        )
+        self.meter.setToolTip(
+            "Tokens used, generation rate and cost for the request running "
+            "now. Cost is OpenRouter's own figure; some providers do not "
+            "report one, and then it is left blank rather than guessed."
+        )
+        status_row.addWidget(self.meter)
+        layout.addLayout(status_row)
 
         self.input = QtWidgets.QPlainTextEdit()
         self.input.setPlaceholderText(
@@ -334,8 +377,10 @@ class AITab(QtWidgets.QWidget):
             self.model_status.setStyleSheet(f"color: {DANGER};")
             return
 
-        current = self.model_combo.currentText()
+        current = self.selected_model()
         self.model_combo.clear()
+        self.model_combo.addItem(CUSTOM_MODEL_LABEL)
+        self.model_combo.insertSeparator(1)
         self.model_combo.addItems(sorted(entry["id"] for entry in models))
         self.model_combo.setCurrentText(current)
         self.model_status.setText(f"{len(models)} models available.")
@@ -368,7 +413,10 @@ class AITab(QtWidgets.QWidget):
         )
 
     def new_conversation(self) -> None:
-        """Forget the conversation so far."""
+        """Forget the conversation so far, and the cost of it."""
+        self._stop_meter()
+        self._metrics = None
+        self.meter.clear()
         if self.assistant is not None:
             self.assistant.reset()
         self._show_welcome()
@@ -385,7 +433,7 @@ class AITab(QtWidgets.QWidget):
 
         try:
             self.assistant = create_assistant(
-                model=self.model_combo.currentText().strip() or DEFAULT_MODEL,
+                model=self.selected_model(),
                 approve=self._approve_tool,
             )
         except AuthenticationError as error:
@@ -398,11 +446,36 @@ class AITab(QtWidgets.QWidget):
         self._apply_settings_to_assistant()
         return True
 
+    def selected_model(self) -> str:
+        """The model id in the box, with the Custom placeholder filtered out."""
+        text = self.model_combo.currentText().strip()
+        if not text or text == CUSTOM_MODEL_LABEL:
+            return DEFAULT_MODEL
+        return text
+
+    def _on_model_chosen(self, index: int) -> None:
+        """Clear the box when Custom is picked, so an id can be typed.
+
+        Deferred by one event-loop turn because Qt writes the chosen item's
+        text into the line edit *after* this signal, which would otherwise
+        put the placeholder straight back.
+        """
+        if self.model_combo.itemText(index) == CUSTOM_MODEL_LABEL:
+            QtCore.QTimer.singleShot(0, self, self._clear_model_box)
+
+    def _clear_model_box(self) -> None:
+        """Empty the model box and invite an id."""
+        self.model_combo.setCurrentText("")
+        self.model_combo.lineEdit().setPlaceholderText(
+            "provider/model-id, e.g. deepseek/deepseek-chat"
+        )
+        self.model_combo.setFocus()
+
     def _apply_settings_to_assistant(self) -> None:
         """Push the current interface settings onto the assistant."""
         if self.assistant is None:
             return
-        self.assistant.model = self.model_combo.currentText().strip() or DEFAULT_MODEL
+        self.assistant.model = self.selected_model()
         self.assistant.max_rounds = self.max_rounds.value()
         self.assistant.approve = (
             self._approve_tool if self.confirm_long.isChecked() else None
@@ -410,9 +483,7 @@ class AITab(QtWidgets.QWidget):
 
     def _persist_settings(self) -> None:
         """Remember the model and safety choices between sessions."""
-        self.settings.ai_model = (
-            self.model_combo.currentText().strip() or DEFAULT_MODEL
-        )
+        self.settings.ai_model = self.selected_model()
         self.settings.ai_confirm_long_tools = self.confirm_long.isChecked()
         self.settings.ai_max_tool_rounds = self.max_rounds.value()
         save_settings(self.settings, self.data_root)
@@ -458,8 +529,10 @@ class AITab(QtWidgets.QWidget):
 
         worker = AIWorker(self.assistant, prompt)
         worker.signals.progress.connect(self._on_progress)
+        worker.signals.metrics.connect(self._on_metrics)
         worker.signals.finished.connect(self._on_finished)
         worker.signals.failed.connect(self._on_failed)
+        self._start_meter()
         self.pool.start(worker)
 
     def _set_busy(self, busy: bool) -> None:
@@ -468,6 +541,40 @@ class AITab(QtWidgets.QWidget):
         self.send_button.setEnabled(not busy)
         self.send_button.setText("Working …" if busy else "Send")
         self.input.setReadOnly(busy)
+
+    def _start_meter(self) -> None:
+        """Begin timing a request and show a live counter."""
+        self._metrics = None
+        self._started_at = time.monotonic()
+        self.meter.setText("0 tokens · 0s")
+        self._meter_timer.start(METER_INTERVAL_MS)
+
+    def _on_metrics(self, metrics: Any) -> None:
+        """Take the running totals from the worker thread."""
+        self._metrics = metrics
+        self._refresh_meter()
+
+    def _refresh_meter(self) -> None:
+        """Redraw the meter, advancing the clock between rounds.
+
+        The token and cost figures only move when a round completes, so
+        without this the display would sit still through a four-minute mesh
+        and look broken.
+        """
+        elapsed = (
+            0.0 if self._started_at is None else time.monotonic() - self._started_at
+        )
+        if self._metrics is None:
+            self.meter.setText(f"0 tokens · {elapsed:.0f}s")
+            return
+        self._metrics.elapsed_seconds = elapsed
+        self.meter.setText(self._metrics.summary())
+
+    def _stop_meter(self) -> None:
+        """Freeze the meter on the final figures."""
+        self._meter_timer.stop()
+        self._refresh_meter()
+        self._started_at = None
 
     def _on_progress(self, message: str) -> None:
         """Show what the assistant is doing right now."""
@@ -478,6 +585,9 @@ class AITab(QtWidgets.QWidget):
         """Render the completed reply."""
         self._set_busy(False)
         self.activity.clear()
+        if getattr(reply, "metrics", None) is not None:
+            self._metrics = reply.metrics
+        self._stop_meter()
 
         if reply.tool_calls:
             self._append_tool_calls(reply.tool_calls)
@@ -496,6 +606,7 @@ class AITab(QtWidgets.QWidget):
         """Report a failed request."""
         self._set_busy(False)
         self.activity.clear()
+        self._stop_meter()
         self._append_error(message)
 
     # -- transcript --------------------------------------------------------

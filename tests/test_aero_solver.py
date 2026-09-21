@@ -709,3 +709,65 @@ def test_failed_solver_exit_is_raised(mesh_file, tmp_path):
         runner.run(config_path=Path("x.cfg"), working_directory=tmp_path)
     assert excinfo.value.return_code == 1
     assert "boom" in str(excinfo.value)
+
+
+# ---------------------------------------------------------------------------
+# Wind axes to the mesh frame
+# ---------------------------------------------------------------------------
+
+
+def test_drag_at_zero_incidence_points_downstream():
+    """The frame check that catches a sign error in one line.
+
+    Meshing puts the nose at minimum X with the flow running in +X, so at
+    zero incidence the whole force is drag along +X. The classical body-axis
+    convention has the x axis pointing forward out of the nose and returns
+    the negative of this; combined with SU2's moments, which arrive in the
+    mesh frame, that puts the centre of pressure on the wrong side.
+    """
+    from backend.aero_solver import _body_forces_from_wind_axes
+
+    force = _body_forces_from_wind_axes(
+        100.0, 0.0, 0.0, FlowParams(velocity_value=2.0, aoa_deg=0.0, sideslip_deg=0.0)
+    )
+    assert force[0] == pytest.approx(100.0)
+    assert force[1] == pytest.approx(0.0)
+    assert force[2] == pytest.approx(0.0)
+
+
+def test_lift_at_zero_incidence_points_up():
+    """Lift is +Z when the body is level, whatever the drag is doing."""
+    from backend.aero_solver import _body_forces_from_wind_axes
+
+    force = _body_forces_from_wind_axes(
+        0.0, 50.0, 0.0, FlowParams(velocity_value=2.0, aoa_deg=0.0, sideslip_deg=0.0)
+    )
+    assert force[2] == pytest.approx(50.0)
+    assert force[0] == pytest.approx(0.0)
+
+
+@pytest.mark.parametrize(
+    "aoa, sideslip", [(0.0, 0.0), (5.0, 0.0), (0.0, 4.0), (12.0, -6.0)]
+)
+def test_the_wind_to_mesh_conversion_is_a_rotation(aoa, sideslip):
+    """Changing frames must not change how hard the air is pushing."""
+    from backend.aero_solver import _body_forces_from_wind_axes
+
+    drag, lift, side = 120.0, 40.0, 15.0
+    force = _body_forces_from_wind_axes(
+        drag, lift, side, FlowParams(velocity_value=2.0, aoa_deg=aoa, sideslip_deg=sideslip)
+    )
+    assert float(np.linalg.norm(force)) == pytest.approx(
+        math.sqrt(drag**2 + lift**2 + side**2)
+    )
+
+
+def test_incidence_tilts_the_drag_the_way_the_freestream_leans():
+    """At positive angle of attack the flow arrives from below and behind."""
+    from backend.aero_solver import _body_forces_from_wind_axes
+
+    force = _body_forces_from_wind_axes(
+        100.0, 0.0, 0.0, FlowParams(velocity_value=2.0, aoa_deg=10.0, sideslip_deg=0.0)
+    )
+    assert force[0] == pytest.approx(100.0 * math.cos(math.radians(10.0)))
+    assert force[2] == pytest.approx(100.0 * math.sin(math.radians(10.0)))

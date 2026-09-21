@@ -59,7 +59,11 @@ from core.project import (
 from core.project import list_projects as _list_project_files
 from core.project import projects_directory
 from core.settings import AppSettings, load_settings, save_settings
-from core.step_inspect import StepInspectionError, suggest_scale_to_meters
+from core.step_inspect import (
+    StepInspectionError,
+    detect_body_axis,
+    suggest_scale_to_meters,
+)
 from core.store import RecordNotFoundError, RunStore, default_store
 from core.workspace import active_geometry, set_active_geometry
 
@@ -157,7 +161,11 @@ def set_geometry_and_mesh(
         Arbitrary forward direction [nx, ny, nz] in CAD coordinates. Takes
         precedence over nose_direction when given.
     nose_direction:
-        Named forward axis: '+X', '-X', '+Y', '-Y', '+Z' or '-Z'.
+        The CAD axis the body runs along **from the nose towards the
+        tail**: '+X', '-X', '+Y', '-Y', '+Z' or '-Z'. A model drawn
+        nose-up along +Y takes '-Y'. Omit it and the shape decides -- the
+        tapering end is the nose -- and when the shape does not say, the
+        call fails asking which end it is rather than guessing.
     reference_origin:
         Point [x0, y0, z0] moved to the tunnel origin, typically the nose tip.
     domain_multipliers:
@@ -184,6 +192,11 @@ def set_geometry_and_mesh(
     """
     loaded = active_geometry()
     scale_note = ""
+    nose_note = ""
+    # An unset nose_direction is indistinguishable from a deliberate "+X"
+    # in the wire format, so the caller's silence is read here.
+    nose_given = nose_direction != "+X" or nose_vector is not None
+
     if not step_file_path:
         if loaded is None:
             return _error(
@@ -192,8 +205,6 @@ def set_geometry_and_mesh(
                 "and call get_active_geometry to confirm it."
             )
         step_file_path = loaded.step_file_path
-        if nose_vector is None and nose_direction == "+X":
-            nose_direction = loaded.nose_direction
         if scale_to_meters is None:
             scale_to_meters = loaded.scale_to_meters
             scale_note = loaded.scale_reason
@@ -208,6 +219,39 @@ def set_geometry_and_mesh(
             scale_note = decision.reason
         except StepInspectionError as error:
             return _error(f"could not read '{step_file_path}': {error}")
+
+    if (
+        not nose_given
+        and loaded is not None
+        and loaded.step_file_path == step_file_path
+        and loaded.nose_is_confident
+    ):
+        # The operator may have set it in the interface; that beats reading
+        # it off the shape again.
+        nose_direction = loaded.nose_direction
+        nose_note = loaded.nose_reason
+        nose_given = True
+
+    if not nose_given:
+        # Which way the body points is not a default worth having. A rocket
+        # meshed backwards returns a full set of plausible forces for a
+        # vehicle flying tail-first, and nothing downstream objects.
+        try:
+            axis = detect_body_axis(step_file_path)
+        except StepInspectionError as error:
+            return _error(f"could not read '{step_file_path}': {error}")
+        if axis.nose_direction is None:
+            return _error(
+                f"which end is the nose? {axis.reason}. Ask the operator, "
+                f"then pass nose_direction: '+{axis.axis}' if the nose is at "
+                f"the -{axis.axis} end of the CAD model, or '-{axis.axis}' "
+                f"if it is at the +{axis.axis} end.",
+                axis=axis.axis,
+                needs=["nose_direction"],
+                geometry=axis.as_dict(),
+            )
+        nose_direction = axis.nose_direction
+        nose_note = axis.reason
 
     try:
         multipliers = domain_multipliers or {}
@@ -284,6 +328,8 @@ def set_geometry_and_mesh(
         step_file_path=step_file_path,
         scale_to_meters=scale_to_meters,
         scale_note=scale_note,
+        nose_direction=nose_direction,
+        nose_note=nose_note,
         cell_count=result.cell_count,
         node_count=result.node_count,
         target_band=list(result.target_band),
@@ -850,12 +896,16 @@ def check_environment() -> dict[str, Any]:
     name="get_active_geometry",
     description=(
         "Report the CAD file the operator currently has loaded in the "
-        "desktop application, with the length unit read from the file and "
-        "the model's overall size. Call this before asking the user for a "
-        "path: when a STEP file has been imported in the interface, "
-        "set_geometry_and_mesh can mesh it with no path at all. Also use it "
-        "to record a file an agent was given, so the interface and later "
-        "tool calls agree on which geometry is being worked on."
+        "desktop application: its path, the length unit read out of the "
+        "file, the model's overall size, and which end of it the nose is "
+        "on. Call this before asking the user for a path: when a STEP file "
+        "has been imported in the interface, set_geometry_and_mesh can mesh "
+        "it with no path at all. The 'ask_the_operator' list holds anything "
+        "the geometry could not settle by itself -- put those questions to "
+        "the user rather than guessing, because a wrong unit or a reversed "
+        "nose produces confident, plausible, entirely wrong numbers. Also "
+        "use this tool to record a file an agent was given, so the "
+        "interface and later tool calls agree on the geometry in hand."
     ),
 )
 def get_active_geometry(
@@ -882,20 +932,29 @@ def get_active_geometry(
             nose_direction=nose_direction,
             source="mcp",
         )
-        return _ok(loaded=True, geometry=record.as_dict())
+        return _ok(
+            loaded=True,
+            geometry=record.as_dict(),
+            ask_the_operator=record.open_questions(),
+        )
 
     record = active_geometry()
     if record is None:
         return _ok(
             loaded=False,
             geometry=None,
+            ask_the_operator=[],
             detail=(
                 "no CAD file is loaded. The operator can import one in the "
                 "Rocket Aerodynamics tab, or you can pass step_file_path to "
                 "this tool or to set_geometry_and_mesh."
             ),
         )
-    return _ok(loaded=True, geometry=record.as_dict())
+    return _ok(
+        loaded=True,
+        geometry=record.as_dict(),
+        ask_the_operator=record.open_questions(),
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -679,10 +679,13 @@ class AerodynamicsTab(QtWidgets.QWidget):
         axes = list(AxisDirection)
         checked = self.axis_buttons.checkedId()
         direction = axes[checked].value if 0 <= checked < len(axes) else "+X"
+        # On a fresh import the axis buttons still hold the last file's
+        # answer, so they are not passed in: the shape of this model decides,
+        # and the buttons follow. A project supplies its own.
         record = set_active_geometry(
             path,
             scale_to_meters=self.scale.value() if keep_scale else None,
-            nose_direction=direction,
+            nose_direction=direction if keep_scale else None,
             source="gui",
         )
         if not record.exists():
@@ -691,10 +694,20 @@ class AerodynamicsTab(QtWidgets.QWidget):
 
         if not keep_scale:
             self.scale.setValue(record.scale_to_meters)
+            if record.nose_is_confident and not self.custom_nose.isChecked():
+                for button in self.axis_buttons.buttons():
+                    button.setChecked(button.text() == record.nose_direction)
+
         note = record.summary()
-        if not record.scale_is_confident and record.scale_reason:
-            note = f"{note}. {record.scale_reason[0].upper()}{record.scale_reason[1:]} - check the scale below."
+        # Anything the geometry could not settle is put to the operator here
+        # rather than defaulted. Both of these fail silently: a wrong unit
+        # scales the Reynolds number by a thousand, a reversed nose flies the
+        # rocket tail-first, and neither produces an error anywhere.
+        questions = record.open_questions()
+        if questions:
+            note = f"{note}. Please check: {' '.join(questions)}"
         self.geometry_note.setText(note)
+        self.geometry_note.setProperty("warn", bool(questions))
         self.append_log(f"Loaded {Path(path).name}: {note}")
         self.statusMessage.emit(note)
 

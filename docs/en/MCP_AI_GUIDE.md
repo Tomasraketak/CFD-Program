@@ -127,9 +127,9 @@ Import CAD, align it, build the domain, generate the mesh.
 
 | Parameter | Type | Default | Notes |
 |---|---|---|---|
-| `step_file_path` | string | — | **Required.** Absolute path to the `.step`/`.stp` file |
-| `nose_direction` | string | `"+X"` | `+X`, `-X`, `+Y`, `-Y`, `+Z`, `-Z` |
-| `nose_vector` | list[3] | null | Arbitrary direction; overrides `nose_direction` |
+| `step_file_path` | string | `""` | Omit to mesh whatever is loaded in the interface |
+| `nose_direction` | string | read from the shape | Nose **to tail**: `+X`, `-X`, `+Y`, `-Y`, `+Z`, `-Z` |
+| `nose_vector` | list[3] | null | Arbitrary direction, same sense; overrides `nose_direction` |
 | `reference_origin` | list[3] | `[0,0,0]` | Point moved to the tunnel origin |
 | `domain_multipliers` | object | see notes | `{"upstream": 5, "downstream": 10, "radial": 5}` |
 | `domain_shape` | string | `"cylinder"` | `cylinder` or `box` |
@@ -137,16 +137,38 @@ Import CAD, align it, build the domain, generate the mesh.
 | `track` | string | `"aerodynamic"` | `aerodynamic` or `thermal` |
 | `boundary_layers` | int | 7 | 5–8 |
 | `target_yplus` | float | 45.0 | 30–300 |
-| `scale_to_meters` | float | 1.0 | `0.001` for millimetres |
+| `scale_to_meters` | float | read from the file | `0.001` for millimetres |
 | `sizing_mach` | float | 1.0 | Condition the boundary layer is sized for |
 | `sizing_altitude_m` | float | 0.0 | |
 | `max_targeting_iterations` | int | 4 | Remesh attempts to hit the cell band |
 
 Returns `mesh_id`, `cell_count`, `within_target_band`, `reference_length_m`,
 `reference_diameter_m`, `reference_area_m2`, `estimated_yplus`,
-`boundary_markers`, `min_quality`, `wall_time_s`.
+`boundary_markers`, `min_quality`, `wall_time_s`, plus `step_file_path`,
+`scale_to_meters`, `nose_direction` and the notes saying how the last two
+were arrived at.
 
 Takes tens of seconds to a few minutes.
+
+**On `nose_direction`.** It is the axis the body runs along *from the nose
+towards the tail*, because that direction is rotated onto +X, which places
+the nose at the upstream end of the tunnel. A rocket drawn standing up, tip
+at the top, is `-Y`. Leave the parameter out and the geometry answers: the
+longest axis is the body axis, and the end that tapers is the nose. When
+both ends are alike the call fails rather than guessing:
+
+```
+set_geometry_and_mesh(step_file_path = "C:\\models\\tube.step")
+   └─ ok = false
+      error   = "which end is the nose? the body lies along X, but both ends
+                 are about equally thick (90 and 90) ..."
+      needs   = ["nose_direction"]
+      axis    = "X"
+```
+
+Put that question to the operator. Do not pick a side: a rocket meshed
+backwards returns a complete, plausible drag polar for a vehicle flying
+tail-first, and nothing downstream objects.
 
 ### 3.2 `run_aerodynamic_simulation`
 

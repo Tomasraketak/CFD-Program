@@ -26,7 +26,7 @@ from __future__ import annotations
 import json
 import time
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Sequence
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
@@ -41,12 +41,16 @@ APPLICATION_TITLE = "AeroThermalStudio"
 DEFAULT_MODEL = "deepseek/deepseek-chat"
 
 # Models offered in the interface before the live list has been fetched.
+# OpenRouter's catalogue changes weekly and an id that is not on it is
+# rejected at the first request, so this is a shortlist, not a guarantee --
+# "Fetch available models" replaces it with what the account can reach, and
+# any id at all can be typed into the box.
 SUGGESTED_MODELS = (
+    "deepseek/deepseek-v4.1-flash",
+    "meta/muse-spark-1.3-contributor",
+    "qwen/qwen3.7-flash",
+    "openai/gpt-5.6-luna",
     "deepseek/deepseek-chat",
-    "deepseek/deepseek-r1",
-    "google/gemini-2.0-flash-001",
-    "anthropic/claude-3.5-sonnet",
-    "openai/gpt-4o-mini",
 )
 
 # How many tool-calling rounds one request may take before the loop stops.
@@ -87,9 +91,16 @@ Working rules:
   rather than asking for the path: the interface records whatever was opened
   in it, and set_geometry_and_mesh will use that file when given no path. Ask
   for a path only when that tool reports nothing loaded.
-- CAD units come from the file itself and are reported back to you. Say which
-  unit was used and how large the model turned out to be, so a millimetre
-  model read as metres is caught before a solve is paid for.
+- CAD units and the direction the body points both come from the file itself
+  and are reported back to you. Say which unit was used, how large the model
+  turned out to be, and which end the nose is on. A millimetre model read as
+  metres and a rocket meshed tail-first both return a full set of confident,
+  plausible, entirely wrong numbers, and nothing downstream objects.
+- When get_active_geometry returns 'ask_the_operator' entries, or meshing
+  fails asking which end the nose is on, put that question to the user in
+  their own language and wait. Do not pick a default: the CAD tells you which
+  axis the body is longest along, and only the operator knows which end of it
+  is the tip.
 - You cannot run shell commands or read arbitrary files. If a request needs
   something outside your tools, say so plainly.
 
@@ -147,6 +158,66 @@ def _abbreviate(value: Any, limit: int = 40) -> str:
 
 
 @dataclass
+class UsageMetrics:
+    """What one request has cost so far, in tokens, seconds and money.
+
+    Reported after every round rather than only at the end, because the
+    operator watching a long request wants to know whether it is worth
+    letting run. Cost comes from OpenRouter's own accounting where the API
+    supplies it; when it does not, the field stays None rather than being
+    invented from a price list that may be out of date.
+    """
+
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    cost_usd: float | None = None
+    generation_seconds: float = 0.0
+    elapsed_seconds: float = 0.0
+    rounds: int = 0
+
+    @property
+    def total_tokens(self) -> int:
+        """Prompt and completion tokens together."""
+        return self.prompt_tokens + self.completion_tokens
+
+    @property
+    def tokens_per_second(self) -> float:
+        """Completion tokens per second of generation.
+
+        Measured against time spent waiting on the model, not against the
+        whole request: a request that spends four minutes meshing has not
+        slowed the model down.
+        """
+        if self.generation_seconds <= 0.0:
+            return 0.0
+        return self.completion_tokens / self.generation_seconds
+
+    def summary(self) -> str:
+        """One line for a status label."""
+        parts = [
+            f"{self.total_tokens:,} tokens",
+            f"{self.tokens_per_second:.1f} tok/s",
+        ]
+        if self.cost_usd is not None:
+            parts.append(f"${self.cost_usd:.4f}")
+        parts.append(f"{self.elapsed_seconds:.0f}s")
+        return " · ".join(parts)
+
+    def as_dict(self) -> dict[str, Any]:
+        """JSON-serialisable form."""
+        return {
+            "prompt_tokens": self.prompt_tokens,
+            "completion_tokens": self.completion_tokens,
+            "total_tokens": self.total_tokens,
+            "cost_usd": self.cost_usd,
+            "generation_seconds": self.generation_seconds,
+            "elapsed_seconds": self.elapsed_seconds,
+            "tokens_per_second": self.tokens_per_second,
+            "rounds": self.rounds,
+        }
+
+
+@dataclass
 class AgentReply:
     """The outcome of one request to the assistant."""
 
@@ -155,6 +226,7 @@ class AgentReply:
     rounds: int = 0
     stopped_early: bool = False
     usage: dict[str, Any] = field(default_factory=dict)
+    metrics: UsageMetrics = field(default_factory=UsageMetrics)
 
     @property
     def used_tools(self) -> bool:
@@ -226,12 +298,19 @@ class OpenRouterClient(ChatClient):
             "model": model,
             "messages": messages,
             "temperature": temperature,
+            # Ask OpenRouter to account for the request. Without this the
+            # reply carries token counts but no price, and the interface
+            # would have to guess at a rate card that changes weekly.
+            "usage": {"include": True},
         }
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
 
+        started = time.perf_counter()
         data = self._post("/chat/completions", payload)
+        elapsed = time.perf_counter() - started
+
         choices = data.get("choices") or []
         if not choices:
             raise AIAgentError(
@@ -239,7 +318,11 @@ class OpenRouterClient(ChatClient):
                 "model id may be wrong"
             )
         message = choices[0].get("message") or {}
-        message["_usage"] = data.get("usage") or {}
+        usage = dict(data.get("usage") or {})
+        # Time spent waiting on the model, which is what tokens per second
+        # is measured against.
+        usage["generation_seconds"] = elapsed
+        message["_usage"] = usage
         return message
 
     def list_models(self) -> list[dict[str, Any]]:
@@ -427,6 +510,7 @@ ApprovalCallback = Callable[[str, dict[str, Any]], bool]
 
 # Called with human-readable progress lines.
 ProgressCallback = Callable[[str], None]
+MetricsCallback = Callable[["UsageMetrics"], None]
 
 
 class AIAssistant:
@@ -444,6 +528,9 @@ class AIAssistant:
         half-hour sweep they did not intend to start.
     on_progress:
         Receives status lines as the conversation proceeds.
+    on_metrics:
+        Receives the running token count, rate and cost after every round,
+        so a long request can be watched rather than waited out.
     max_rounds:
         Cap on tool-calling rounds for one request.
     """
@@ -454,6 +541,7 @@ class AIAssistant:
         model: str = DEFAULT_MODEL,
         approve: ApprovalCallback | None = None,
         on_progress: ProgressCallback | None = None,
+        on_metrics: MetricsCallback | None = None,
         max_rounds: int = MAX_TOOL_ROUNDS,
         system_prompt: str = SYSTEM_PROMPT,
     ) -> None:
@@ -461,6 +549,7 @@ class AIAssistant:
         self.model = model
         self.approve = approve
         self.on_progress = on_progress
+        self.on_metrics = on_metrics
         self.max_rounds = max(1, max_rounds)
         self.messages: list[dict[str, Any]] = [
             {"role": "system", "content": system_prompt}
@@ -480,6 +569,17 @@ class AIAssistant:
         """Emit a progress line, if anyone is listening."""
         if self.on_progress is not None:
             self.on_progress(message)
+
+    def _report_metrics(self, metrics: UsageMetrics) -> None:
+        """Emit a snapshot of the running cost and rate.
+
+        A copy, not the live object: the loop keeps mutating its own and a
+        listener that stores what it was handed -- a log, a chart, a widget
+        on another thread -- would otherwise find every past reading had
+        silently become the latest one.
+        """
+        if self.on_metrics is not None:
+            self.on_metrics(replace(metrics))
 
     def ask(self, prompt: str) -> AgentReply:
         """Send one operator request and run it to completion.
@@ -507,6 +607,8 @@ class AIAssistant:
 
         invocations: list[ToolInvocation] = []
         usage: dict[str, Any] = {}
+        metrics = UsageMetrics()
+        started = time.perf_counter()
         stopped_early = False
         rounds = 0
 
@@ -516,6 +618,8 @@ class AIAssistant:
                 self.messages, tools=tools, model=self.model
             )
             usage = _merge_usage(usage, message.pop("_usage", {}))
+            _apply_usage(metrics, usage, rounds, time.perf_counter() - started)
+            self._report_metrics(metrics)
 
             tool_calls = message.get("tool_calls") or []
             # Keep the assistant turn verbatim: the API requires each
@@ -523,12 +627,14 @@ class AIAssistant:
             self.messages.append(_assistant_message(message))
 
             if not tool_calls:
+                metrics.elapsed_seconds = time.perf_counter() - started
                 return AgentReply(
                     text=(message.get("content") or "").strip(),
                     tool_calls=invocations,
                     rounds=rounds,
                     stopped_early=stopped_early,
                     usage=usage,
+                    metrics=metrics,
                 )
 
             for call in tool_calls:
@@ -544,6 +650,8 @@ class AIAssistant:
                 )
                 if invocation.declined:
                     stopped_early = True
+            metrics.elapsed_seconds = time.perf_counter() - started
+            self._report_metrics(metrics)
 
         self._report("Reached the tool-call limit.")
         return AgentReply(
@@ -556,6 +664,7 @@ class AIAssistant:
             rounds=rounds,
             stopped_early=True,
             usage=usage,
+            metrics=metrics,
         )
 
     def _run_tool_call(self, call: dict[str, Any], mcp_server: Any) -> ToolInvocation:
@@ -640,11 +749,33 @@ def _merge_usage(total: dict[str, Any], addition: dict[str, Any]) -> dict[str, A
     return merged
 
 
+def _apply_usage(
+    metrics: UsageMetrics,
+    usage: dict[str, Any],
+    rounds: int,
+    elapsed: float,
+) -> None:
+    """Fold accumulated API usage into the live metrics.
+
+    Providers vary in what they report and some report nothing at all, so
+    every field is read defensively and a missing cost stays missing rather
+    than becoming a zero the operator might trust.
+    """
+    metrics.prompt_tokens = int(usage.get("prompt_tokens", 0) or 0)
+    metrics.completion_tokens = int(usage.get("completion_tokens", 0) or 0)
+    metrics.generation_seconds = float(usage.get("generation_seconds", 0.0) or 0.0)
+    metrics.rounds = rounds
+    metrics.elapsed_seconds = elapsed
+    cost = usage.get("cost")
+    metrics.cost_usd = float(cost) if isinstance(cost, (int, float)) else None
+
+
 def create_assistant(
     api_key: str | None = None,
     model: str = DEFAULT_MODEL,
     approve: ApprovalCallback | None = None,
     on_progress: ProgressCallback | None = None,
+    on_metrics: MetricsCallback | None = None,
 ) -> AIAssistant:
     """Build an assistant using the stored API key.
 
@@ -664,5 +795,9 @@ def create_assistant(
             "environment variable."
         )
     return AIAssistant(
-        OpenRouterClient(key), model=model, approve=approve, on_progress=on_progress
+        OpenRouterClient(key),
+        model=model,
+        approve=approve,
+        on_progress=on_progress,
+        on_metrics=on_metrics,
     )

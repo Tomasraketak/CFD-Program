@@ -173,7 +173,9 @@ def test_fetching_models_fills_the_combo(ai_tab, isolated_data_root, monkeypatch
     ai_tab.fetch_models()
 
     items = [ai_tab.model_combo.itemText(i) for i in range(ai_tab.model_combo.count())]
-    assert items == ["a/first", "z/last"]
+    # The Custom entry and its separator stay at the top; the ids are sorted.
+    assert items[0] == ai_panel.CUSTOM_MODEL_LABEL
+    assert [item for item in items[1:] if item] == ["a/first", "z/last"]
     assert "2 models" in ai_tab.model_status.text()
 
 
@@ -347,3 +349,119 @@ def test_the_confirmation_dialog_works_from_the_worker_thread(ai_tab, qt_app, mo
 
     assert seen, "the dialog never appeared — it was queued to a dead thread"
     assert "declined" in ai_tab.transcript.toPlainText()
+
+
+# -- model choice and the running meter -------------------------------------
+
+
+def test_the_model_list_offers_a_custom_entry(ai_tab):
+    """A shortlist is a convenience; any id must remain typeable."""
+    items = [ai_tab.model_combo.itemText(i) for i in range(ai_tab.model_combo.count())]
+    assert items[0] == ai_panel.CUSTOM_MODEL_LABEL
+    assert ai_tab.model_combo.isEditable()
+    for suggested in ai_panel.SUGGESTED_MODELS:
+        assert suggested in items
+
+
+def test_choosing_custom_clears_the_box_for_typing(ai_tab, qt_app):
+    """Picking Custom should not send 'Custom' to OpenRouter as a model id."""
+    ai_tab.model_combo.activated.emit(0)
+    qt_app.processEvents()
+    assert ai_tab.model_combo.currentText() == ""
+    # And the placeholder never leaks into a request.
+    assert ai_tab.selected_model() == ai_panel.DEFAULT_MODEL
+
+
+def test_a_typed_model_id_is_used(ai_tab):
+    """The whole point of an editable box."""
+    ai_tab.model_combo.setCurrentText("someone/some-new-model")
+    assert ai_tab.selected_model() == "someone/some-new-model"
+
+
+def test_the_custom_placeholder_is_never_persisted(ai_tab, isolated_data_root):
+    """Restarting must not restore a model id that is not one."""
+    ai_tab.model_combo.setCurrentText(ai_panel.CUSTOM_MODEL_LABEL)
+    ai_tab._persist_settings()
+    assert ai_tab.settings.ai_model == ai_panel.DEFAULT_MODEL
+
+
+def test_the_meter_reports_tokens_rate_and_cost(ai_tab):
+    """Cost and throughput are shown while the request is still running."""
+    from backend.ai_agent import UsageMetrics
+
+    ai_tab._start_meter()
+    ai_tab._on_metrics(
+        UsageMetrics(
+            prompt_tokens=1200,
+            completion_tokens=300,
+            cost_usd=0.00412,
+            generation_seconds=6.0,
+            rounds=1,
+        )
+    )
+    text = ai_tab.meter.text()
+    assert "1,500 tokens" in text
+    assert "50.0 tok/s" in text
+    assert "$0.0041" in text
+
+
+def test_the_meter_omits_a_cost_nobody_reported(ai_tab):
+    """A provider that reports no price must not produce a fabricated zero."""
+    from backend.ai_agent import UsageMetrics
+
+    ai_tab._start_meter()
+    ai_tab._on_metrics(
+        UsageMetrics(prompt_tokens=10, completion_tokens=5, generation_seconds=1.0)
+    )
+    assert "$" not in ai_tab.meter.text()
+
+
+def test_the_meter_clock_runs_between_rounds(ai_tab, monkeypatch):
+    """Token counts only move per round; the elapsed time must not look stuck."""
+    from backend.ai_agent import UsageMetrics
+
+    clock = {"now": 100.0}
+    monkeypatch.setattr(ai_panel.time, "monotonic", lambda: clock["now"])
+
+    ai_tab._start_meter()
+    ai_tab._on_metrics(UsageMetrics(prompt_tokens=10, completion_tokens=5))
+    clock["now"] = 137.0
+    ai_tab._refresh_meter()
+    assert "37s" in ai_tab.meter.text()
+
+
+def test_a_finished_request_leaves_its_totals_on_screen(ai_tab, qt_app):
+    """After the reply, the meter shows what that request cost."""
+    make_assistant(
+        ai_tab,
+        [
+            {
+                "role": "assistant",
+                "content": "done",
+                "_usage": {
+                    "prompt_tokens": 900,
+                    "completion_tokens": 100,
+                    "cost": 0.002,
+                    "generation_seconds": 2.0,
+                },
+            }
+        ],
+    )
+    ai_tab.input.setPlainText("what is the environment?")
+    ai_tab.send()
+    ai_tab.pool.waitForDone(10_000)
+    qt_app.processEvents()
+
+    assert "1,000 tokens" in ai_tab.meter.text()
+    assert "$0.0020" in ai_tab.meter.text()
+    assert "50.0 tok/s" in ai_tab.meter.text()
+
+
+def test_a_new_conversation_clears_the_meter(ai_tab):
+    """A fresh conversation starts from zero, not from the last one's total."""
+    from backend.ai_agent import UsageMetrics
+
+    ai_tab._start_meter()
+    ai_tab._on_metrics(UsageMetrics(prompt_tokens=10, completion_tokens=5))
+    ai_tab.new_conversation()
+    assert ai_tab.meter.text() == ""

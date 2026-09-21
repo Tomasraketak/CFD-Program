@@ -162,15 +162,96 @@ def test_long_running_tools_are_registered_tools():
 # ---------------------------------------------------------------------------
 
 
-def loaded_rocket(tmp_path):
-    """A millimetre STEP file, as an exporter would write one."""
-    from tests.test_step_inspect import MILLIMETRES, write_step
+def loaded_rocket(tmp_path, **shape):
+    """A millimetre rocket, as an exporter would write one."""
+    from tests.test_step_inspect import MILLIMETRES, rocket_points, write_step
 
     return write_step(
-        tmp_path / "Sapphire.step",
-        MILLIMETRES,
-        [(0.0, 0.0, 0.0), (1320.0, 92.5, 92.5)],
+        tmp_path / "Sapphire.step", MILLIMETRES, rocket_points(**shape)
     )
+
+
+def capture_geometry(monkeypatch):
+    """Stop the pipeline at the door and report what it was handed."""
+    seen = {}
+
+    def fake_generate(request, output_path):
+        seen["step_file_path"] = request.geometry.step_file_path
+        seen["scale"] = request.geometry.scale_to_meters
+        seen["nose"] = request.geometry.nose_direction
+        raise RuntimeError("stopped before meshing")
+
+    monkeypatch.setattr(server_module, "generate_mesh", fake_generate)
+    return seen
+
+
+def test_the_nose_direction_is_read_off_the_shape(tmp_path, monkeypatch):
+    """An agent that does not say which way the rocket points gets it right.
+
+    The detector answers in the meshing convention: nose-to-tail, which for
+    a model whose tip is at +X is '-X'.
+    """
+    seen = capture_geometry(monkeypatch)
+    call(server_module.set_geometry_and_mesh, step_file_path=loaded_rocket(tmp_path))
+    assert seen["nose"].value == "-X"
+
+
+def test_an_explicit_nose_direction_is_obeyed(tmp_path, monkeypatch):
+    """The caller has the last word, even against the shape."""
+    seen = capture_geometry(monkeypatch)
+    call(
+        server_module.set_geometry_and_mesh,
+        step_file_path=loaded_rocket(tmp_path),
+        nose_direction="+Z",
+    )
+    assert seen["nose"].value == "+Z"
+
+
+def test_a_body_with_no_obvious_nose_asks_instead_of_guessing(tmp_path, monkeypatch):
+    """Meshing a rocket backwards is silent and ruinous, so it is refused.
+
+    The reply has to be actionable: which axis, and what to pass once the
+    operator has answered.
+    """
+    capture_geometry(monkeypatch)
+    reply = call(
+        server_module.set_geometry_and_mesh,
+        step_file_path=loaded_rocket(tmp_path, nose_radius=90.0),
+    )
+    assert reply["ok"] is False
+    assert "which end is the nose" in reply["error"]
+    assert reply["needs"] == ["nose_direction"]
+    assert reply["axis"] == "X"
+    assert "+X" in reply["error"] and "-X" in reply["error"]
+
+
+def test_the_operators_own_choice_beats_the_shape(tmp_path, monkeypatch):
+    """A direction set in the interface is not re-derived behind their back."""
+    from core.workspace import set_active_geometry
+
+    path = loaded_rocket(tmp_path)
+    set_active_geometry(path, nose_direction="+Y", source="gui")
+
+    seen = capture_geometry(monkeypatch)
+    call(server_module.set_geometry_and_mesh)
+    assert seen["nose"].value == "+Y"
+
+
+def test_the_reply_says_which_nose_direction_was_used(tmp_path, monkeypatch):
+    """The operator should be able to check the assumption after the fact."""
+    def fake_generate(request, output_path):
+        raise RuntimeError("stopped")
+
+    monkeypatch.setattr(server_module, "generate_mesh", fake_generate)
+    reply = call(
+        server_module.set_geometry_and_mesh, step_file_path=loaded_rocket(tmp_path)
+    )
+    # The mesh failed, but the resolution happened before that and the
+    # geometry is on the bench for the next call.
+    from core.workspace import active_geometry
+
+    assert active_geometry().nose_direction == "-X"
+    assert reply["ok"] is False
 
 
 def test_the_assistant_can_see_that_nothing_is_loaded():
@@ -195,6 +276,31 @@ def test_the_assistant_reads_back_the_file_the_operator_imported(tmp_path):
     assert geometry["nose_direction"] == "+Y"
     assert geometry["units"] == "millimetres"
     assert geometry["largest_extent_m"] == pytest.approx(1.32)
+    assert reply["ask_the_operator"] == []
+
+
+def test_an_uncertain_geometry_hands_the_assistant_the_question(tmp_path):
+    """What the assistant should ask, rather than what it should assume."""
+    from core.workspace import set_active_geometry
+
+    set_active_geometry(loaded_rocket(tmp_path, nose_radius=90.0), source="gui")
+    reply = call(server_module.get_active_geometry)
+
+    assert reply["loaded"] is True
+    questions = reply["ask_the_operator"]
+    assert len(questions) == 1
+    assert "which end" in questions[0].lower()
+
+
+@pytest.mark.parametrize("with_file", [True, False])
+def test_every_reply_carries_the_question_list(tmp_path, with_file):
+    """A field that is sometimes absent is a field nobody reads."""
+    if with_file:
+        from core.workspace import set_active_geometry
+
+        set_active_geometry(loaded_rocket(tmp_path), source="gui")
+    reply = call(server_module.get_active_geometry)
+    assert "ask_the_operator" in reply
 
 
 def test_an_agent_can_put_a_file_on_the_bench_itself(tmp_path):

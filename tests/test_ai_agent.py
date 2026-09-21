@@ -432,3 +432,127 @@ def test_the_model_catalogue_is_read_live(monkeypatch):
 def test_the_api_key_is_sent_as_a_bearer_token():
     headers = OpenRouterClient("sk-or-test")._headers()
     assert headers["Authorization"] == "Bearer sk-or-test"
+
+
+# ---------------------------------------------------------------------------
+# What a request cost
+# ---------------------------------------------------------------------------
+
+
+def usage_reply(text, prompt=0, completion=0, cost=None, seconds=0.0):
+    """A scripted reply carrying usage accounting."""
+    usage = {
+        "prompt_tokens": prompt,
+        "completion_tokens": completion,
+        "generation_seconds": seconds,
+    }
+    if cost is not None:
+        usage["cost"] = cost
+    message = text_reply(text)
+    message["_usage"] = usage
+    return message
+
+
+def test_tokens_rate_and_cost_are_reported(tmp_path):
+    """The operator should see what a request spent, not just its answer."""
+    assistant = AIAssistant(
+        FakeChatClient([usage_reply("done", 1200, 300, cost=0.0041, seconds=6.0)])
+    )
+    reply = assistant.ask("how much?")
+
+    assert reply.metrics.prompt_tokens == 1200
+    assert reply.metrics.completion_tokens == 300
+    assert reply.metrics.total_tokens == 1500
+    assert reply.metrics.tokens_per_second == pytest.approx(50.0)
+    assert reply.metrics.cost_usd == pytest.approx(0.0041)
+
+
+def test_a_missing_cost_stays_missing(tmp_path):
+    """Not every provider reports a price, and zero is not the same as unknown."""
+    assistant = AIAssistant(FakeChatClient([usage_reply("done", 10, 5, seconds=1.0)]))
+    reply = assistant.ask("how much?")
+    assert reply.metrics.cost_usd is None
+    assert "$" not in reply.metrics.summary()
+
+
+def test_the_rate_is_measured_against_generation_not_tool_time():
+    """A request that spends four minutes meshing has not slowed the model.
+
+    Tokens per second is a property of the model; dividing by wall time
+    would make every request that touches the solver look glacial.
+    """
+    from backend.ai_agent import UsageMetrics
+
+    metrics = UsageMetrics(
+        prompt_tokens=100,
+        completion_tokens=200,
+        generation_seconds=4.0,
+        elapsed_seconds=240.0,
+    )
+    assert metrics.tokens_per_second == pytest.approx(50.0)
+
+
+def test_metrics_accumulate_across_tool_rounds():
+    """A multi-step request reports what the whole thing cost."""
+    first = tool_reply("check_environment", {})
+    first["_usage"] = {
+        "prompt_tokens": 500,
+        "completion_tokens": 50,
+        "cost": 0.001,
+        "generation_seconds": 1.0,
+    }
+    assistant = AIAssistant(
+        FakeChatClient([first, usage_reply("ready", 700, 100, cost=0.002, seconds=2.0)])
+    )
+    reply = assistant.ask("is the solver ready?")
+
+    assert reply.metrics.prompt_tokens == 1200
+    assert reply.metrics.completion_tokens == 150
+    assert reply.metrics.cost_usd == pytest.approx(0.003)
+    assert reply.metrics.rounds == 2
+
+
+def test_metrics_are_reported_while_the_request_runs():
+    """Waiting for the end to learn the cost is too late to act on it."""
+    first = tool_reply("check_environment", {})
+    first["_usage"] = {"prompt_tokens": 500, "completion_tokens": 50}
+    seen = []
+    assistant = AIAssistant(
+        FakeChatClient([first, usage_reply("ready", 700, 100)]),
+        on_metrics=seen.append,
+    )
+    assistant.ask("is the solver ready?")
+
+    assert len(seen) >= 2, "the meter only updated once, at the end"
+    assert seen[0].total_tokens == 550
+
+
+def test_a_model_that_reports_nothing_does_not_break_the_meter():
+    """Usage is optional in the API and its absence is not an error."""
+    assistant = AIAssistant(FakeChatClient([text_reply("done")]))
+    reply = assistant.ask("hello")
+    assert reply.metrics.total_tokens == 0
+    assert reply.metrics.tokens_per_second == 0.0
+
+
+def test_cost_accounting_is_requested_from_openrouter(monkeypatch):
+    """OpenRouter only prices a request when asked to."""
+    captured = {}
+
+    def fake_request(method, url, **kwargs):
+        captured.update(kwargs.get("json") or {})
+        return FakeResponse(
+            200,
+            {
+                "choices": [{"message": {"role": "assistant", "content": "hi"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "cost": 0.1},
+            },
+        )
+
+    monkeypatch.setattr("requests.request", fake_request)
+    message = OpenRouterClient("sk-or-v1-test").complete([{"role": "user", "content": "x"}])
+
+    assert captured.get("usage") == {"include": True}
+    assert message["_usage"]["cost"] == pytest.approx(0.1)
+    # Time spent waiting on the model is measured here, not guessed later.
+    assert message["_usage"]["generation_seconds"] >= 0.0

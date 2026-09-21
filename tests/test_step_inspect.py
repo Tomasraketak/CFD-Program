@@ -13,6 +13,7 @@ import pytest
 
 from core.step_inspect import (
     StepInspectionError,
+    detect_body_axis,
     describe_length_unit,
     detect_length_unit,
     largest_extent,
@@ -217,3 +218,115 @@ def test_an_implausible_model_keeps_its_declaration_and_says_so(tmp_path):
 def test_units_are_named_in_words(factor, name):
     """Status lines and assistant replies read better than '0.001'."""
     assert describe_length_unit(factor) == name
+
+
+# ---------------------------------------------------------------------------
+# Which way the rocket points
+# ---------------------------------------------------------------------------
+
+
+def rocket_points(length=1320.0, nose_at_high=True, tail_radius=90.0, nose_radius=5.0):
+    """A crude rocket as a point cloud: a fat end, a thin end, a body."""
+    points = []
+    for step in range(0, 21):
+        fraction = step / 20.0
+        axial = fraction * length
+        # Radius tapers towards the nose end over the last fifth.
+        taper = max(0.0, (fraction - 0.8) / 0.2) if nose_at_high else max(
+            0.0, (0.2 - fraction) / 0.2
+        )
+        radius = tail_radius * (1.0 - taper) + nose_radius * taper
+        for angle in (0.0, 90.0, 180.0, 270.0):
+            import math
+
+            points.append(
+                (
+                    axial,
+                    radius * math.cos(math.radians(angle)),
+                    radius * math.sin(math.radians(angle)),
+                )
+            )
+    return points
+
+
+def axis_file(tmp_path, points, swap=None):
+    """Write a STEP file whose points are the given cloud, optionally rotated."""
+    if swap is not None:
+        points = [tuple(p[i] for i in swap) for p in points]
+    return write_step(tmp_path / "body.step", MILLIMETRES, points)
+
+
+def test_the_longest_axis_is_found_whichever_it_is(tmp_path):
+    """The body axis is whichever direction the model is longest along."""
+    for swap, expected in (((0, 1, 2), "X"), ((1, 0, 2), "Y"), ((1, 2, 0), "Z")):
+        target = axis_file(tmp_path, rocket_points(), swap=swap)
+        assert detect_body_axis(target).axis == expected
+
+
+def test_the_tapering_end_is_taken_as_the_nose(tmp_path):
+    """A nose tapers and a tail does not; that is the whole inference."""
+    target = axis_file(tmp_path, rocket_points(nose_at_high=True))
+    decision = detect_body_axis(target)
+    assert decision.confident
+    assert decision.nose_end == "+X"
+    # Meshing rotates nose-to-tail onto +X, so the parameter is the opposite.
+    assert decision.nose_direction == "-X"
+    assert "tapers" in decision.reason
+
+
+def test_a_rocket_drawn_the_other_way_round_is_read_the_other_way(tmp_path):
+    """The inference must not be a coin flip that happens to land right."""
+    target = axis_file(tmp_path, rocket_points(nose_at_high=False))
+    decision = detect_body_axis(target)
+    assert decision.nose_end == "-X"
+    assert decision.nose_direction == "+X"
+
+
+def test_a_tube_with_two_equal_ends_refuses_to_guess(tmp_path):
+    """A plain tube has no nose, and saying so is the useful answer."""
+    target = axis_file(
+        tmp_path, rocket_points(nose_radius=90.0)  # no taper at all
+    )
+    decision = detect_body_axis(target)
+    assert not decision.confident
+    assert decision.nose_end is None
+    assert decision.nose_direction is None
+    assert "equally thick" in decision.reason
+
+
+def test_a_squat_body_has_no_nose_to_find(tmp_path):
+    """A box is not a rocket; the question does not apply."""
+    target = write_step(
+        tmp_path / "box.step",
+        MILLIMETRES,
+        [(x, y, z) for x in (0.0, 100.0) for y in (0.0, 90.0) for z in (0.0, 80.0)],
+    )
+    decision = detect_body_axis(target)
+    assert not decision.confident
+    assert decision.nose_direction is None
+    assert "longer than it is wide" in decision.reason
+
+
+def test_an_empty_file_does_not_raise(tmp_path):
+    """Nothing to measure is answered, not crashed on."""
+    target = write_step(tmp_path / "empty.step", MILLIMETRES, [])
+    decision = detect_body_axis(target)
+    assert not decision.confident
+    assert decision.nose_direction is None
+
+
+def test_the_real_sample_rocket_points_the_way_the_tests_assume(tmp_path):
+    """The detector must agree with the value the pipeline tests pass by hand.
+
+    ``create_reference_rocket_step`` puts the nose tip at the origin and runs
+    the body towards +X, and the mesh tests mesh it as nose_direction '+X'.
+    A detector that disagreed with that would be wrong about every file.
+    """
+    pytest.importorskip("gmsh")
+    from backend.sample_geometry import create_reference_rocket_step
+
+    target = create_reference_rocket_step(tmp_path / "reference_rocket.step")
+    decision = detect_body_axis(target)
+    assert decision.confident
+    assert decision.nose_end == "-X"
+    assert decision.nose_direction == "+X"
