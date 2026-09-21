@@ -340,10 +340,12 @@ def install_su2(
         raise SetupError(
             f"no SHA-256 checksum is recorded for SU2 {release.version}, so it "
             "will not be installed automatically.\n"
-            f"Download it yourself from {SU2_RELEASES}, extract it to\n"
-            f"    {target}\n"
-            "or set the SU2_RUN environment variable to the directory holding "
-            "SU2_CFD. Pass --allow-unverified to override this check."
+            f"Download it yourself from {SU2_RELEASES} and extract it so that\n"
+            "SU2_CFD.exe ends up in\n"
+            f"    {target / 'bin'}\n"
+            "or set the SU2_RUN environment variable to whichever directory "
+            "holds SU2_CFD.\nPass --allow-unverified to override this check "
+            "and download the release automatically."
         )
 
     target.mkdir(parents=True, exist_ok=True)

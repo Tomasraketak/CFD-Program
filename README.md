@@ -151,6 +151,51 @@ python run_app.py --demo
 needs no solver. If `--demo` produces a `.su2` file, the install is sound even
 when SU2 itself is still missing.
 
+### Step 4 — MS-MPI and SU2 (only needed to solve)
+
+`setup_env.py` finishes with `MPI: missing` and `SU2: missing` on a fresh
+machine, and reports the setup incomplete. That is expected: neither can be
+installed from PyPI. Everything except the CFD solve — the GUI, meshing,
+visualisation, the analytical sensor model, the AI assistant — works without
+them, so skip this step until you actually want to run a flow solution.
+
+**MS-MPI.** Download both files from
+[Microsoft MPI](https://www.microsoft.com/en-us/download/details.aspx?id=105289)
+and run them in this order:
+
+1. `msmpisetup.exe` — the runtime, which provides `mpiexec`
+2. `msmpisdk.msi` — the SDK
+
+Then close the terminal and open a **new** one, otherwise the updated `PATH`
+is not visible to it.
+
+**SU2.** No SHA-256 checksum is recorded for the Windows build in this
+repository, so the installer refuses to fetch it rather than run an unverified
+download. Two honest ways forward:
+
+```cmd
+:: Let the installer fetch it anyway, checksum unverified
+python setup_env.py --allow-unverified
+```
+
+or install it by hand — download `SU2-v8.1.0-win64-mpi.zip` from the
+[SU2 releases page](https://github.com/su2code/SU2/releases) and extract it so
+that the executables land in
+
+```
+%LOCALAPPDATA%\AeroThermalStudio\su2\bin\SU2_CFD.exe
+```
+
+The `bin` subdirectory matters — that is exactly where the program looks. If
+you would rather keep SU2 elsewhere, point the environment variable at
+whichever directory holds `SU2_CFD.exe` and open a new terminal:
+
+```cmd
+setx SU2_RUN "C:\path\to\SU2\bin"
+```
+
+Confirm with `python run_app.py --check`; both lines should turn into paths.
+
 ### Run
 
 ```powershell
@@ -210,7 +255,10 @@ brings them back after the pull.
 | `The module '.venv' could not be loaded` | PowerShell needs `.\.venv\Scripts\Activate.ps1` — the leading `.\` and the `.ps1` both matter |
 | `running scripts is disabled on this system` | `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass`, then activate again |
 | Activation printed nothing | It worked — look for the `(.venv)` prefix on the prompt |
-| `--check` reports no SU2 or MPI | The GUI, meshing and the analytical sensor model still work; only the CFD solve needs them |
+| `--check` reports no SU2 or MPI | The GUI, meshing and the analytical sensor model still work; only the CFD solve needs them. Step 4 |
+| `Still missing: mcp` after setup | A single package failed to install. Re-run `python -m pip install mcp` inside the activated venv and read the error it prints |
+| `no SHA-256 checksum is recorded for SU2` | Deliberate: the installer will not fetch an unverified archive. Step 4 |
+| SU2 installed but still `NOT FOUND` | `SU2_CFD.exe` is not in `...\AeroThermalStudio\su2\bin`, or `SU2_RUN` was set without opening a new terminal |
 
 ---
 
