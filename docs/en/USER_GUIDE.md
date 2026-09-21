@@ -17,8 +17,9 @@ a value. For a step-by-step introduction, read
 9. [Sensor microclimate](#9-sensor-microclimate)
 10. [Visualisation](#10-visualisation)
 11. [Projects and settings](#11-projects-and-settings)
-12. [Files on disk](#12-files-on-disk)
-13. [Physics notes](#13-physics-notes)
+12. [AI assistant](#12-ai-assistant)
+13. [Files on disk](#13-files-on-disk)
+14. [Physics notes](#14-physics-notes)
 
 ---
 
@@ -460,7 +461,116 @@ startup.
 
 ---
 
-## 12. Files on disk
+## 12. AI assistant
+
+The **AI Assistant** tab lets you say what you want in ordinary language and
+have the program do it. The assistant reaches the platform through exactly the
+same twelve tools the MCP server exposes — it can do what you can do through
+the interface, and nothing else.
+
+It runs on a model of your choice through [OpenRouter](https://openrouter.ai),
+so you need an OpenRouter account and an API key. The program itself contains
+no model and sends nothing anywhere until you set a key.
+
+### Setting the API key
+
+1. Get a key at [openrouter.ai/keys](https://openrouter.ai/keys).
+2. Paste it into **Key** on the left of the AI Assistant tab and press
+   **Save key**.
+
+The box is cleared the moment the key is stored, and it is never shown again
+— only a masked form such as `sk-or-...a1b2`, plus a statement of where it is
+kept.
+
+Where it is kept depends on the machine:
+
+| Backend | When it is used | Secure |
+|---|---|---|
+| `OPENROUTER_API_KEY` environment variable | Always wins if set | Yes — nothing is written to disk |
+| Windows Credential Manager | Whenever the `keyring` package is installed | Yes — protected by your login |
+| `credentials.json` | Only if no credential store is available | **No** — plain text, owner-only permissions |
+
+The last case is announced with a dialog that says so plainly. It is a
+fallback, not a security measure: it protects the key from other accounts on
+the machine and from nothing else. `Setup.bat` installs `keyring` so that the
+Credential Manager is used instead.
+
+**The key never enters a project file or `settings.json`.** Those are plain
+JSON you are meant to commit to version control; a key there would end up in a
+repository. **Remove** deletes the key from every backend at once.
+
+### Choosing a model
+
+Any OpenRouter model id works. The dropdown starts with a handful of
+suggestions; **Fetch available models** replaces them with the live catalogue
+your account can actually reach, because the catalogue changes constantly and
+a list hard-coded here would go stale.
+
+The default is `deepseek/deepseek-chat` — cheap, fast and good enough for this
+job. A model must support tool calling, or the assistant can only talk. The
+choice is remembered between sessions.
+
+**You pay OpenRouter for what the assistant uses**, per token, at that model's
+rate. A short question costs a fraction of a cent; a long session of tool
+calls costs more. The token count for each request appears in the status bar.
+
+### Talking to it
+
+Type the request and press **Send**, or Ctrl+Enter. Answers come in whatever
+language you write in. Useful requests look like:
+
+- *"Mesh C:\models\rocket.step with the nose along +X at coarse resolution."*
+- *"How far off will the BMP580 read at 900 W/m² and 3 m/s?"*
+- *"Compare the sensor error for a white and a black housing."*
+- *"Sweep Mach 0.5 to 3 at 5 degrees and tell me the worst-case hinge torque."*
+- *"Check the environment and tell me whether I can run a solve."*
+
+Every tool call appears in the transcript as it happens, with its arguments
+and how long it took. An assistant that silently started a half-hour sweep
+would be worse than no assistant at all.
+
+**New conversation** forgets the history. Do that when you switch topic: the
+whole conversation is sent with every request, so a long one costs more and
+gives the model more chance to confuse two studies.
+
+### Staying in control
+
+| Control | What it does |
+|---|---|
+| Ask before meshing, solving or sweeping | Confirms each long-running step, showing the tool, its arguments and the expected runtime. On by default. |
+| Max tool rounds | Caps how many tool-calling rounds one request may take. Stops a confused model spending your credit in a loop. Default 12. |
+
+Declining a step tells the model you declined and asks what you would prefer,
+rather than having it retry the same thing.
+
+### What it cannot do
+
+- **No shell commands, no arbitrary file access, no code execution.** The tool
+  list is the boundary, and the tools take validated parameters only.
+- **No invented numbers.** It is instructed to report what the tools returned,
+  including when a solve did not converge or a cell count missed its band.
+  Check the transcript against the Results panel if a figure matters.
+- **It is not a CFD engineer.** It can drive the program competently; it
+  cannot tell you that your geometry is wrong. Judgement stays with you.
+
+Requests you type and the simulation parameters involved are sent to
+OpenRouter and to the model provider you choose. Results and mesh files stay
+on your machine — only the numbers in the tool results travel.
+
+### When something goes wrong
+
+| Message | Meaning |
+|---|---|
+| *No OpenRouter API key is set* | Save a key, or set `OPENROUTER_API_KEY` |
+| *OpenRouter rejected the API key* | The key is wrong or was revoked — check it at openrouter.ai/keys |
+| *insufficient credit* | Add credit, or pick a cheaper model |
+| *rate-limiting this key* | Wait a moment; free-tier models are throttled |
+| *could not reach OpenRouter* | Network, proxy or firewall |
+| *I stopped after N rounds* | Break the request into smaller steps |
+
+---
+
+## 13. Files on disk
 
 Default location `%LOCALAPPDATA%\AeroThermalStudio`, overridable with the
 `ATS_DATA_ROOT` environment variable.
@@ -495,7 +605,7 @@ gone.
 
 ---
 
-## 13. Physics notes
+## 14. Physics notes
 
 ### Why y⁺ matters so much
 

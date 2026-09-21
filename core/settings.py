@@ -93,6 +93,33 @@ class AppSettings(StrictModel):
         description="Warn at startup when SU2 or MPI cannot be found.",
     )
 
+    # -- AI assistant ------------------------------------------------------
+    ai_model: str = Field(
+        default="deepseek/deepseek-chat",
+        description=(
+            "OpenRouter model id the built-in assistant uses. Any id from "
+            "https://openrouter.ai/models is accepted; the interface can list "
+            "the live catalogue."
+        ),
+    )
+    ai_confirm_long_tools: bool = Field(
+        default=True,
+        description=(
+            "Ask before the assistant starts meshing, a solve or a sweep. "
+            "These occupy the machine for minutes to hours, so confirmation "
+            "is on by default."
+        ),
+    )
+    ai_max_tool_rounds: int = Field(
+        default=12,
+        ge=1,
+        le=50,
+        description=(
+            "How many tool-calling rounds one request may take. Caps what a "
+            "confused model can spend before it stops."
+        ),
+    )
+
     # -- behaviour ---------------------------------------------------------
     autosave_projects: bool = Field(
         default=True,

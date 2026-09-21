@@ -1102,6 +1102,81 @@ def update_settings(
     return _ok(changed=applied, **updated.as_dict())
 
 
+# ---------------------------------------------------------------------------
+# Tool registry
+# ---------------------------------------------------------------------------
+
+# Maps each registered tool name to the Python function behind it.
+#
+# The in-application AI helper (backend/ai_agent.py) drives exactly these
+# capabilities, so it reads schemas from the MCP server's own registration and
+# dispatches through this table. That keeps one definition serving three
+# surfaces -- GUI, MCP and the built-in assistant -- rather than three that
+# drift apart.
+#
+# The mapping is explicit rather than derived from function names because one
+# of them differs: the tool registered as "run_parametric_sweep" is
+# implemented by run_parametric_sweep_tool, since the plain name is already
+# taken by the imported backend function. A test asserts this table matches
+# what the server actually registered.
+TOOL_FUNCTIONS: dict[str, Any] = {
+    "set_geometry_and_mesh": set_geometry_and_mesh,
+    "run_aerodynamic_simulation": run_aerodynamic_simulation,
+    "run_sensor_thermal_simulation": run_sensor_thermal_simulation,
+    "generate_cfd_visualization": generate_cfd_visualization,
+    "run_parametric_sweep": run_parametric_sweep_tool,
+    "list_runs": list_runs,
+    "check_environment": check_environment,
+    "save_project": save_project,
+    "load_project": load_project,
+    "list_saved_projects": list_saved_projects,
+    "get_settings": get_settings,
+    "update_settings": update_settings,
+}
+
+# Tools that start a long computation. The assistant asks before running one
+# of these, because a sweep can occupy the machine for half an hour and a user
+# who typed a vague request should not discover that by waiting.
+LONG_RUNNING_TOOLS = frozenset(
+    {
+        "set_geometry_and_mesh",
+        "run_aerodynamic_simulation",
+        "run_parametric_sweep",
+    }
+)
+
+
+def call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    """Invoke a registered tool by name.
+
+    Parameters
+    ----------
+    name:
+        Registered tool name, as it appears in the MCP tool list.
+    arguments:
+        Keyword arguments for the tool.
+
+    Returns
+    -------
+    dict
+        The tool's own structured response, or a structured error when the
+        name is unknown or the arguments do not fit. Tools already return
+        errors rather than raising, so a caller never has to catch.
+    """
+    function = TOOL_FUNCTIONS.get(name)
+    if function is None:
+        return _error(
+            f"unknown tool '{name}'; available tools: "
+            f"{', '.join(sorted(TOOL_FUNCTIONS))}"
+        )
+    try:
+        return function(**arguments)
+    except TypeError as error:
+        return _error(f"wrong arguments for '{name}': {error}")
+    except Exception as error:  # noqa: BLE001 - reported, never raised onward
+        return _error(f"'{name}' failed: {type(error).__name__}: {error}")
+
+
 def _safe_filename(name: str) -> str:
     """Turn a project name into a filename safe on Windows and POSIX."""
     keep = [

@@ -13,6 +13,7 @@ reference.
 6. [Error handling](#6-error-handling)
 7. [Notes for agent authors](#7-notes-for-agent-authors)
 8. [Limits and judgement](#8-limits-and-judgement)
+9. [The built-in assistant](#9-the-built-in-assistant)
 
 ---
 
@@ -485,6 +486,56 @@ in the mesh output so it can be checked.
 not always the question asked. Turbulence models are correlations; mesh
 resolution changes answers; boundary conditions embody assumptions. Present
 results with that context rather than as measurements.
+
+---
+
+## 9. The built-in assistant
+
+The same twelve tools also back an assistant **inside the program**, on the
+**AI Assistant** tab. It is for an operator who wants to type a request and
+have it carried out without running an external MCP client at all.
+
+### How it differs from an MCP client
+
+| | MCP server | Built-in assistant |
+|---|---|---|
+| Started by | An external client (Claude Desktop, an agent framework) | The AI Assistant tab |
+| Transport | stdio, MCP protocol | OpenRouter's OpenAI-compatible HTTP API |
+| Model | Whatever the client runs | Any OpenRouter model id, chosen in the tab |
+| Credentials | The client's own | An OpenRouter key, stored by the program |
+| Tool schemas | `server.list_tools()` | The same call, converted to OpenAI function shape |
+
+Both surfaces dispatch into the same functions: `mcp_server.TOOL_FUNCTIONS`
+maps each registered tool name to the function the MCP handler calls, and
+`mcp_server.call_tool(name, arguments)` invokes one directly, returning the
+same structured `{"ok": ...}` result rather than raising. A test asserts the
+registry and the registered tool list are identical, so a tool cannot be
+offered on one surface and missing from the other.
+
+### The agent loop
+
+`backend.ai_agent.AIAssistant.ask()` runs the standard tool-calling loop: send
+the conversation with the tool schemas, execute any tool calls the model
+returns, append each result as a `tool` message, repeat until the model
+answers in text or the round cap is reached. Transport sits behind the
+`ChatClient` interface, so `FakeChatClient` replays scripted conversations and
+the whole loop is tested without a network or a key.
+
+Two behaviours are deliberate. `mcp_server.LONG_RUNNING_TOOLS` names the three
+tools that occupy the machine for minutes to hours; an approval callback is
+consulted before each of them, and a declined call is reported back to the
+model as a refusal it must not retry unchanged. The round cap
+(`ai_max_tool_rounds`, default 12) bounds what one request can spend.
+
+### Its system prompt
+
+The assistant is instructed on the things a model otherwise gets wrong here:
+reuse one `mesh_id` across simulations because meshing does not depend on the
+flight condition; state what a step will cost before starting it; report
+`converged: false` and `within_target_band: false` rather than presenting a
+number as settled; treat a NaN centre of pressure at zero angle of attack as
+correct and suggest 2–5° instead; and say plainly that it cannot run shell
+commands or read arbitrary files.
 
 ---
 

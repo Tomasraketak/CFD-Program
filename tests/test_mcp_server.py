@@ -125,6 +125,37 @@ def test_every_specified_tool_is_registered():
     assert names == EXPECTED_TOOLS
 
 
+def test_the_direct_call_registry_matches_the_registered_tools():
+    """The in-program assistant dispatches through TOOL_FUNCTIONS.
+
+    A tool registered with the MCP server but absent here would be offered to
+    the assistant and then fail as unknown, so the two must not drift.
+    """
+    tools = asyncio.run(server_module.server.list_tools())
+    assert {tool.name for tool in tools} == set(server_module.TOOL_FUNCTIONS)
+
+
+def test_calling_an_unknown_tool_returns_a_structured_error():
+    result = server_module.call_tool("no_such_tool", {})
+    assert result["ok"] is False
+    assert "unknown tool" in result["error"]
+
+
+def test_calling_a_tool_with_wrong_arguments_does_not_raise():
+    result = server_module.call_tool("check_environment", {"nonexistent": 1})
+    assert result["ok"] is False
+
+
+def test_a_tool_can_be_called_directly_by_name():
+    result = server_module.call_tool("check_environment", {})
+    assert result["ok"] is True
+
+
+def test_long_running_tools_are_registered_tools():
+    """A stale name here would disable a confirmation prompt silently."""
+    assert server_module.LONG_RUNNING_TOOLS <= set(server_module.TOOL_FUNCTIONS)
+
+
 def test_tools_carry_thorough_descriptions():
     """An agent picks a tool from its description, so it must be substantial."""
     tools = asyncio.run(server_module.server.list_tools())

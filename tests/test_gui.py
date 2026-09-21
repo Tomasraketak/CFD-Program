@@ -365,12 +365,13 @@ def test_sensor_position_is_configurable(sensor_tab):
 
 
 def test_main_window_has_both_tracks(qt_app, store):
-    """Two tabs, one per simulation track."""
+    """One tab per simulation track, then the assistant."""
     window = MainWindow(store)
     try:
-        assert window.tabs.count() == 2
+        assert window.tabs.count() == 3
         assert "Aerodynamics" in window.tabs.tabText(0)
         assert "BMP580" in window.tabs.tabText(1)
+        assert "AI" in window.tabs.tabText(2)
     finally:
         window.deleteLater()
 

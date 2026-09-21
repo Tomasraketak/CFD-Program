@@ -53,7 +53,30 @@ REQUIRED_PACKAGES: tuple[tuple[str, str], ...] = (
     ("pyvistaqt", "pyvistaqt"),
     ("pyqtgraph", "pyqtgraph"),
     ("mcp", "mcp"),
+    ("requests", "requests"),
 )
+
+# Packages that improve the platform but are not required to run it. Each
+# carries the sentence printed when it is absent, so the operator can decide
+# whether they want it.
+OPTIONAL_PACKAGES: tuple[tuple[str, str, str], ...] = (
+    (
+        "keyring",
+        "keyring",
+        "the AI assistant's API key would go in a plain-text file instead of "
+        "Windows Credential Manager",
+    ),
+)
+
+
+def _importable(module: str) -> bool:
+    """True when a module can be imported."""
+    try:
+        __import__(module)
+    except ImportError:
+        return False
+    return True
+
 
 MS_MPI_DOWNLOAD = "https://www.microsoft.com/en-us/download/details.aspx?id=105289"
 SU2_RELEASES = "https://github.com/su2code/SU2/releases"
@@ -155,6 +178,37 @@ def check_python_packages(install: bool = True) -> list[str]:
         except ImportError:
             _status(module, "missing", False)
             missing.append(requirement)
+
+    optional_missing: list[tuple[str, str]] = []
+    for requirement, module, consequence in OPTIONAL_PACKAGES:
+        present = _importable(module)
+        _status(
+            f"{module} (optional)",
+            "installed" if present else "not installed",
+            present,
+        )
+        if not present:
+            optional_missing.append((requirement, consequence))
+            print(f"      Without it, {consequence}.")
+
+    if optional_missing and install:
+        print(f"\n  Installing {len(optional_missing)} optional package(s) ...")
+        try:
+            subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "pip",
+                    "install",
+                    "--upgrade",
+                    *(requirement for requirement, _ in optional_missing),
+                ],
+                check=True,
+            )
+        except subprocess.CalledProcessError:
+            # Optional by definition: report and carry on rather than failing.
+            for requirement, consequence in optional_missing:
+                print(f"  Could not install {requirement} — {consequence}.")
 
     if missing and install:
         print(f"\n  Installing {len(missing)} package(s) ...")

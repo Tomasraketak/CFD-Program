@@ -19,8 +19,9 @@ Přehled všech nastavení: co dělají, na co mají vliv a jak volit hodnoty.
 9. [Mikroklima senzoru](#9-mikroklima-senzoru)
 10. [Vizualizace](#10-vizualizace)
 11. [Projekty a nastavení](#11-projekty-a-nastavení)
-12. [Soubory na disku](#12-soubory-na-disku)
-13. [Poznámky k fyzice](#13-poznámky-k-fyzice)
+12. [AI asistent](#12-ai-asistent)
+13. [Soubory na disku](#13-soubory-na-disku)
+14. [Poznámky k fyzice](#14-poznámky-k-fyzice)
 
 ---
 
@@ -457,7 +458,115 @@ spuštění.
 
 ---
 
-## 12. Soubory na disku
+## 12. AI asistent
+
+Záložka **AI Assistant** umožňuje napsat běžnou větou, co chcete, a nechat to
+program udělat. Asistent sahá na program přesně přes těch dvanáct nástrojů,
+které vystavuje MCP server — umí tedy to, co umíte vy přes rozhraní, a nic
+víc.
+
+Běží na modelu podle vaší volby přes [OpenRouter](https://openrouter.ai),
+takže potřebujete účet na OpenRouteru a API klíč. Samotný program žádný model
+neobsahuje a dokud klíč nezadáte, nikam nic neposílá.
+
+### Zadání API klíče
+
+1. Klíč získáte na [openrouter.ai/keys](https://openrouter.ai/keys).
+2. Vložte ho do pole **Key** vlevo v záložce AI Assistant a stiskněte
+   **Save key**.
+
+Políčko se hned po uložení vymaže a klíč se už nikdy nezobrazí — jen jeho
+maskovaná podoba, například `sk-or-...a1b2`, a informace, kde je uložený.
+
+Kde je uložený, závisí na počítači:
+
+| Úložiště | Kdy se použije | Bezpečné |
+|---|---|---|
+| Proměnná prostředí `OPENROUTER_API_KEY` | Má vždy přednost, pokud je nastavená | Ano — na disk se nic nezapisuje |
+| Správce pověření Windows | Kdykoli je nainstalovaný balík `keyring` | Ano — chráněný vaším přihlášením |
+| `credentials.json` | Jen když žádné úložiště pověření není | **Ne** — prostý text, práva jen pro vlastníka |
+
+Poslední případ program oznámí dialogem, který to říká na rovinu. Je to
+náhradní řešení, ne bezpečnostní opatření: klíč chrání před ostatními účty na
+stroji a před ničím dalším. `Setup.bat` balík `keyring` nainstaluje, aby se
+použil Správce pověření.
+
+**Klíč se nikdy nedostane do souboru projektu ani do `settings.json`.** To
+jsou prosté JSONy určené k verzování; klíč v nich by skončil v repozitáři.
+Tlačítko **Remove** klíč smaže ze všech úložišť naráz.
+
+### Volba modelu
+
+Funguje libovolné id modelu z OpenRouteru. Rozbalovací seznam začíná několika
+návrhy; **Fetch available models** je nahradí živým katalogem, na který váš
+účet skutečně dosáhne — katalog se totiž neustále mění a napevno zapsaný
+seznam by rychle zastaral.
+
+Výchozí je `deepseek/deepseek-chat` — levný, rychlý a na tuhle práci
+dostatečný. Model musí umět volání nástrojů (tool calling), jinak si s vámi
+umí jen povídat. Volba se pamatuje mezi spuštěními.
+
+**Za to, co asistent spotřebuje, platíte OpenRouteru** podle tokenů a sazby
+daného modelu. Krátký dotaz stojí zlomek centu, delší série volání nástrojů
+víc. Počet tokenů každého požadavku se ukáže ve stavovém řádku.
+
+### Jak s ním mluvit
+
+Napište požadavek a stiskněte **Send** nebo Ctrl+Enter. Odpovídá v jazyce, ve
+kterém píšete. Užitečné požadavky vypadají takhle:
+
+- *„Vysíťuj C:\models\rocket.step se špičkou podél +X, rozlišení coarse."*
+- *„O kolik přestřelí BMP580 při 900 W/m² a rychlosti 3 m/s?"*
+- *„Porovnej chybu senzoru pro bílou a černou krabičku."*
+- *„Projeď Mach 0,5 až 3 při 5 stupních a řekni mi nejhorší moment na závěsu."*
+- *„Zkontroluj prostředí a řekni mi, jestli můžu spustit výpočet."*
+
+Každé volání nástroje se objeví v přepisu, jakmile proběhne, i s argumenty a
+dobou trvání. Asistent, který by potichu spustil půlhodinovou studii, by byl
+horší než žádný.
+
+**New conversation** zapomene historii. Udělejte to při změně tématu: s každým
+požadavkem se posílá celá konverzace, takže dlouhá stojí víc a dává modelu
+větší šanci splést si dvě úlohy.
+
+### Kontrola nad tím, co dělá
+
+| Přepínač | Co dělá |
+|---|---|
+| Ask before meshing, solving or sweeping | Potvrzení před každým dlouhým krokem, s názvem nástroje, argumenty a očekávanou dobou běhu. Standardně zapnuto. |
+| Max tool rounds | Strop počtu kol volání nástrojů na jeden požadavek. Zabrání zmatenému modelu utrácet kredit ve smyčce. Výchozí 12. |
+
+Když krok odmítnete, model se to dozví a zeptá se, co byste chtěli místo
+toho — nezkusí totéž znovu.
+
+### Co neumí
+
+- **Žádné příkazy shellu, žádný přístup k libovolným souborům, žádné spouštění
+  kódu.** Hranicí je seznam nástrojů a ty berou jen validované parametry.
+- **Nevymýšlí si čísla.** Má v instrukcích hlásit, co nástroje vrátily, včetně
+  toho, že výpočet nezkonvergoval nebo že počet buněk minul cílové pásmo.
+  Když na čísle záleží, porovnejte přepis s panelem výsledků.
+- **Není to aerodynamik.** Program umí obsluhovat dobře; že máte špatně
+  geometrii, vám neřekne. Úsudek zůstává na vás.
+
+Požadavky, které napíšete, a parametry simulace se posílají OpenRouteru a
+poskytovateli zvoleného modelu. Výsledky a soubory sítí zůstávají u vás — po
+síti jdou jen čísla z výsledků nástrojů.
+
+### Když něco nefunguje
+
+| Hlášení | Co znamená |
+|---|---|
+| *No OpenRouter API key is set* | Uložte klíč, nebo nastavte `OPENROUTER_API_KEY` |
+| *OpenRouter rejected the API key* | Klíč je špatný nebo zneplatněný — ověřte na openrouter.ai/keys |
+| *insufficient credit* | Dobijte kredit, nebo zvolte levnější model |
+| *rate-limiting this key* | Chvíli počkejte; modely zdarma jsou omezované |
+| *could not reach OpenRouter* | Síť, proxy nebo firewall |
+| *I stopped after N rounds* | Rozdělte požadavek na menší kroky |
+
+---
+
+## 13. Soubory na disku
 
 Výchozí umístění `%LOCALAPPDATA%\AeroThermalStudio`, lze přepsat proměnnou
 prostředí `ATS_DATA_ROOT`.
@@ -491,7 +600,7 @@ program čte registr pokaždé znovu a co je pryč, prostě nevypíše.
 
 ---
 
-## 13. Poznámky k fyzice
+## 14. Poznámky k fyzice
 
 ### Proč na y⁺ tolik záleží
 

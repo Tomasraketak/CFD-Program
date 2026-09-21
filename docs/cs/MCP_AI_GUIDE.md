@@ -12,6 +12,7 @@ Jak program ovládat z AI asistenta a kompletní přehled nástrojů.
 6. [Chybové stavy](#6-chybové-stavy)
 7. [Poznámky pro autory agentů](#7-poznámky-pro-autory-agentů)
 8. [Meze a soudnost](#8-meze-a-soudnost)
+9. [Vestavěný asistent](#9-vestavěný-asistent)
 
 ---
 
@@ -480,6 +481,56 @@ zprávě o síti, aby se dalo zkontrolovat.
 zamýšlená. Modely turbulence jsou korelace; rozlišení sítě mění výsledky;
 okrajové podmínky obsahují předpoklady. Předkládejte výsledky s tímto
 kontextem, ne jako měření.
+
+---
+
+## 9. Vestavěný asistent
+
+Těchto dvanáct nástrojů pohání i asistenta **přímo v programu**, v záložce
+**AI Assistant**. Je pro obsluhu, která chce napsat požadavek a nechat ho
+provést, aniž by vůbec spouštěla externího MCP klienta.
+
+### V čem se liší od MCP klienta
+
+| | MCP server | Vestavěný asistent |
+|---|---|---|
+| Spouští | Externí klient (Claude Desktop, agentní framework) | Záložka AI Assistant |
+| Přenos | stdio, protokol MCP | HTTP API OpenRouteru kompatibilní s OpenAI |
+| Model | Ten, který běží v klientovi | Libovolné id modelu z OpenRouteru, volené v záložce |
+| Pověření | Vlastní klientova | Klíč OpenRouteru, uložený programem |
+| Schémata nástrojů | `server.list_tools()` | Totéž volání, převedené do tvaru funkcí OpenAI |
+
+Obě rozhraní míří do stejných funkcí: `mcp_server.TOOL_FUNCTIONS` mapuje
+jméno každého registrovaného nástroje na funkci, kterou volá i MCP handler, a
+`mcp_server.call_tool(name, arguments)` ji zavolá přímo — vrací stejný
+strukturovaný výsledek `{"ok": ...}` místo výjimky. Test ověřuje, že rejstřík
+a seznam registrovaných nástrojů jsou totožné, takže nástroj nemůže být
+dostupný na jednom rozhraní a chybět na druhém.
+
+### Smyčka agenta
+
+`backend.ai_agent.AIAssistant.ask()` točí obvyklou smyčku volání nástrojů:
+pošli konverzaci se schématy nástrojů, proveď volání, která model vrátil,
+přidej každý výsledek jako zprávu typu `tool` a opakuj, dokud model
+neodpoví textem nebo se nevyčerpá strop kol. Přenos je schovaný za rozhraním
+`ChatClient`, takže `FakeChatClient` přehrává nascénované konverzace a celá
+smyčka je testovaná bez sítě a bez klíče.
+
+Dvě chování jsou záměrná. `mcp_server.LONG_RUNNING_TOOLS` jmenuje tři
+nástroje, které zaberou stroj na minuty až hodiny; před každým se program
+ptá schvalovací funkce a odmítnuté volání se modelu ohlásí jako odmítnutí,
+které nemá beze změny opakovat. Strop kol (`ai_max_tool_rounds`, výchozí 12)
+omezuje, co může jeden požadavek utratit.
+
+### Jeho systémový prompt
+
+Asistent má v instrukcích to, co model jinak v téhle úloze dělá špatně:
+používat jedno `mesh_id` napříč simulacemi, protože síťování nezávisí na
+letovém režimu; říct dopředu, co daný krok bude stát; hlásit
+`converged: false` a `within_target_band: false` místo předkládání čísla jako
+hotové věci; brát NaN u působiště při nulovém úhlu náběhu jako správný
+výsledek a navrhnout místo toho 2–5°; a na rovinu říct, že neumí spouštět
+příkazy shellu ani číst libovolné soubory.
 
 ---
 

@@ -9,9 +9,9 @@ Dokumentace je k dispozici anglicky a česky.
 
 | Document | What it covers |
 |---|---|
-| **[Tutorial](en/TUTORIAL.md)** | Step-by-step course: installation, your first simulation, fin hinge torque, sweeps, visualisation, the BMP580 sensor case, projects, and AI control. **Start here.** |
-| **[User Guide](en/USER_GUIDE.md)** | Reference for every setting: what it does, how to choose a value, and the physics behind it. |
-| **[MCP and AI Guide](en/MCP_AI_GUIDE.md)** | Driving the platform from an AI assistant: setup, all twelve tools, worked workflows and agent guidance. |
+| **[Tutorial](en/TUTORIAL.md)** | Step-by-step course: installation, your first simulation, fin hinge torque, sweeps, visualisation, the BMP580 sensor case, projects, the built-in AI assistant, and AI control. **Start here.** |
+| **[User Guide](en/USER_GUIDE.md)** | Reference for every setting: what it does, how to choose a value, and the physics behind it — including the AI assistant and its API key. |
+| **[MCP and AI Guide](en/MCP_AI_GUIDE.md)** | Driving the platform from an AI assistant: setup, all twelve tools, worked workflows, agent guidance and how the built-in assistant uses the same tools. |
 | **[README](../README.md)** | Architecture, implementation notes and measured results. |
 
 ### Quick start
@@ -28,9 +28,9 @@ AeroThermalStudio.bat     start the program
 
 | Dokument | O čem je |
 |---|---|
-| **[Tutoriál](cs/TUTORIAL.md)** | Návod krok za krokem: instalace, první simulace, moment na závěsu křidélka, parametrické studie, vizualizace, případ senzoru BMP580, projekty a ovládání pomocí AI. **Začněte zde.** |
-| **[Uživatelská příručka](cs/USER_GUIDE.md)** | Přehled všech nastavení: co dělají, jak volit hodnoty a fyzika za nimi. |
-| **[MCP a AI](cs/MCP_AI_GUIDE.md)** | Ovládání z AI asistenta: nastavení, všech dvanáct nástrojů, hotové postupy a rady pro agenty. |
+| **[Tutoriál](cs/TUTORIAL.md)** | Návod krok za krokem: instalace, první simulace, moment na závěsu křidélka, parametrické studie, vizualizace, případ senzoru BMP580, projekty, vestavěný AI asistent a ovládání pomocí AI. **Začněte zde.** |
+| **[Uživatelská příručka](cs/USER_GUIDE.md)** | Přehled všech nastavení: co dělají, jak volit hodnoty a fyzika za nimi — včetně AI asistenta a jeho API klíče. |
+| **[MCP a AI](cs/MCP_AI_GUIDE.md)** | Ovládání z AI asistenta: nastavení, všech dvanáct nástrojů, hotové postupy, rady pro agenty a jak tytéž nástroje používá vestavěný asistent. |
 | **[README](../README.md)** | Architektura, poznámky k implementaci a naměřené výsledky (anglicky). |
 
 ### Rychlý start

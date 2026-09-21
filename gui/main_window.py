@@ -46,6 +46,7 @@ from core.project import (
 )
 from core.settings import AppSettings, load_settings, save_settings
 from core.store import RunStore, default_store
+from gui.ai_panel import AITab
 from gui.form_builder import LabelledSlider
 from gui.theme import (
     ACCENT,
@@ -1507,7 +1508,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.aero_tab = AerodynamicsTab(self.store)
         self.sensor_tab = SensorTab(self.store)
         self.tabs.addTab(self.aero_tab, "Aerodynamics && Fins")
+        # Same root the window itself saves settings to, so the assistant's
+        # preferences and credentials land beside the run registry.
+        self.ai_tab = AITab(self.settings, self.store.root)
         self.tabs.addTab(self.sensor_tab, "Sensor Microclimate (BMP580)")
+        self.tabs.addTab(self.ai_tab, "AI Assistant")
         self.tabs.setCurrentIndex(
             min(self.settings.active_tab, self.tabs.count() - 1)
         )
@@ -1516,6 +1521,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.status = self.statusBar()
         self.aero_tab.statusMessage.connect(self.status.showMessage)
         self.sensor_tab.statusMessage.connect(self.status.showMessage)
+        self.ai_tab.statusMessage.connect(self.status.showMessage)
 
         self.aero_tab.ranks.setValue(self.settings.default_mpi_ranks)
 

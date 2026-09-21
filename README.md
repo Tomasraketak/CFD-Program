@@ -10,7 +10,10 @@ A native Windows 11 CFD and thermal simulation platform for two jobs:
    solar-irradiated surface such as a tram roof.
 
 Every setting is controllable two ways: through the desktop GUI, and
-programmatically by an AI agent over the Model Context Protocol.
+programmatically by an AI agent over the Model Context Protocol. The same
+tools also back an assistant **inside** the program, so an operator can type
+"sweep Mach 0.5 to 3 and tell me the worst-case hinge torque" and watch it
+happen.
 
 ---
 
@@ -82,11 +85,11 @@ handed over, and picked up weeks later.
 
 ```
 core/       models  store  units  atmosphere  platform_env
-            project  settings
+            project  settings  credentials
 backend/    mesh_pipeline  prism_layers  su2_mesh  sample_geometry
             aero_solver  thermal_solver  su2_config  su2_parser
-            runner  sweep  visualizer
-gui/        main_window  form_builder  workers  theme
+            runner  sweep  visualizer  ai_agent
+gui/        main_window  ai_panel  form_builder  workers  theme
 docs/       en/  cs/            tutorial, user guide, MCP guide
 *.bat       Windows launchers, sharing _launcher.cmd
 mcp_server.py   run_app.py   setup_env.py   tests/
@@ -203,6 +206,29 @@ regime it is in.
 
 Tools return structured errors rather than raising, so an agent that passes an
 out-of-range angle of attack gets a message it can act on.
+
+### The built-in assistant
+
+`backend/ai_agent.py` drives the same twelve tools from inside the program
+over OpenRouter's OpenAI-compatible API, so no external MCP client is needed.
+Schemas are read from `server.list_tools()` rather than hand-copied, and a
+test asserts the direct-call registry and the registered tool list are
+identical — a tool cannot exist on one surface and be missing from the other.
+
+The tool list *is* the boundary: no shell, no arbitrary file access, no code
+execution. Meshing, solving and sweeping are confirmed with the operator
+before they start, and a round cap bounds what one confused request can spend.
+
+The API key goes to the OS credential manager where one exists and to an
+owner-only file where none does — never into a `.atsproj` project or
+`settings.json`, both of which are plain JSON meant for version control. When
+the fallback is used, the interface says so rather than implying a security it
+does not have.
+
+HTTP sits behind a `ChatClient` interface, so the whole agent loop — tool
+dispatch, multi-step reasoning, malformed arguments, declined calls, iteration
+limits — is tested with no network and no key, the same arrangement `FakeRunner`
+gives the solver.
 
 Register with an MCP client:
 

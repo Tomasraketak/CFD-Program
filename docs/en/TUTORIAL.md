@@ -15,7 +15,8 @@ before.
 7. [Lesson 6 — The BMP580 sensor case](#lesson-6--the-bmp580-sensor-case)
 8. [Lesson 7 — Projects and settings](#lesson-7--projects-and-settings)
 9. [Lesson 8 — Driving it from an AI agent](#lesson-8--driving-it-from-an-ai-agent)
-10. [Troubleshooting](#troubleshooting)
+10. [Lesson 9 — The assistant inside the program](#lesson-9--the-assistant-inside-the-program)
+11. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -538,6 +539,74 @@ what you want in plain language —
 
 The full setup, the tool reference and worked agent workflows are in
 [MCP_AI_GUIDE.md](MCP_AI_GUIDE.md).
+
+---
+
+## Lesson 9 — The assistant inside the program
+
+**Goal:** ask for a study in ordinary language without leaving the program.
+
+Lesson 8 needed an external AI client. The **AI Assistant** tab does the same
+thing in-house: you type the request, the program calls its own tools, and you
+watch each one run.
+
+### Step 1 — Give it a key
+
+The assistant runs on a model you pay for through
+[OpenRouter](https://openrouter.ai), so it needs a key:
+
+1. Sign up at [openrouter.ai](https://openrouter.ai) and add a little credit.
+2. Create a key at [openrouter.ai/keys](https://openrouter.ai/keys).
+3. Open the **AI Assistant** tab, paste the key into **Key**, press
+   **Save key**.
+
+The box clears immediately and the key is never displayed again — only a
+masked form and a line saying where it is stored. On Windows with `keyring`
+installed that is Credential Manager. If a dialog tells you the key went into
+a plain-text file instead, run `Setup.bat` to install `keyring` and save it
+again.
+
+The key is never written into a project or into `settings.json`.
+
+### Step 2 — Ask something cheap first
+
+Start with a question that costs nothing to answer:
+
+> "Check the environment and tell me whether I can run a solve."
+
+You should see `check_environment` appear in the transcript, then an answer in
+your own language. If it comes back complaining about the key, the key is
+wrong; if it complains about credit, top up the account.
+
+### Step 3 — Ask for real work
+
+> "How far off will the BMP580 read at 900 W/m² with 3 m/s of airflow?"
+
+That calls `run_sensor_thermal_simulation` with `analytic_only`, so it returns
+in milliseconds. Compare the bias it quotes with Lesson 6's readout — they
+should agree, because it is the same model.
+
+Now something expensive:
+
+> "Sweep Mach 0.5 to 3 at 5 degrees and tell me the worst-case hinge torque."
+
+Before the sweep starts, a dialog names the tool, its arguments and the
+expected runtime, and waits. That confirmation is on by default; it is what
+stops an assistant quietly occupying your machine for half an hour. Decline
+it and the model is told you declined and asks what you would rather do.
+
+### Step 4 — Know when to start over
+
+**New conversation** clears the history. Do it when you change topic: the
+whole conversation is sent with every request, so a long one costs more and
+gives the model more chance to mix up two studies.
+
+Read every tool line in the transcript rather than only the final paragraph.
+The assistant is instructed to report non-convergence and missed cell-count
+bands honestly, but the numbers in the Results panel are the record.
+
+Full detail — models, costs, what it cannot do, and every error message — is
+in [USER_GUIDE.md](USER_GUIDE.md), section 12.
 
 ---
 

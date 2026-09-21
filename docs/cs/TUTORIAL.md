@@ -17,7 +17,8 @@ Napoprvé projděte lekce v pořadí; každá navazuje na předchozí.
 7. [Lekce 6 — Případ senzoru BMP580](#lekce-6--případ-senzoru-bmp580)
 8. [Lekce 7 — Projekty a nastavení](#lekce-7--projekty-a-nastavení)
 9. [Lekce 8 — Ovládání pomocí AI](#lekce-8--ovládání-pomocí-ai)
-10. [Řešení problémů](#řešení-problémů)
+10. [Lekce 9 — Asistent přímo v programu](#lekce-9--asistent-přímo-v-programu)
+11. [Řešení problémů](#řešení-problémů)
 
 ---
 
@@ -539,6 +540,74 @@ běžným jazykem —
 
 Kompletní nastavení, přehled nástrojů a hotové postupy najdete v
 [MCP_AI_GUIDE.md](MCP_AI_GUIDE.md).
+
+---
+
+## Lekce 9 — Asistent přímo v programu
+
+**Cíl:** zadat studii běžnou větou, aniž byste opustili program.
+
+Lekce 8 potřebovala externího AI klienta. Záložka **AI Assistant** dělá totéž
+uvnitř programu: napíšete požadavek, program volá vlastní nástroje a vy
+sledujete, jak každý z nich běží.
+
+### Krok 1 — Dejte mu klíč
+
+Asistent běží na modelu, který platíte přes
+[OpenRouter](https://openrouter.ai), takže potřebuje klíč:
+
+1. Zaregistrujte se na [openrouter.ai](https://openrouter.ai) a dobijte si
+   trochu kreditu.
+2. Vytvořte klíč na [openrouter.ai/keys](https://openrouter.ai/keys).
+3. Otevřete záložku **AI Assistant**, vložte klíč do pole **Key** a stiskněte
+   **Save key**.
+
+Políčko se hned vymaže a klíč se už nikdy nezobrazí — jen maskovaná podoba a
+řádek s tím, kde je uložený. Ve Windows s nainstalovaným `keyring` je to
+Správce pověření. Pokud vám dialog oznámí, že klíč šel místo toho do souboru
+v prostém textu, spusťte `Setup.bat`, ať se `keyring` nainstaluje, a uložte
+klíč znovu.
+
+Klíč se nikdy nezapisuje do projektu ani do `settings.json`.
+
+### Krok 2 — Nejdřív se zeptejte na něco levného
+
+Začněte otázkou, jejíž zodpovězení nic nestojí:
+
+> „Zkontroluj prostředí a řekni mi, jestli můžu spustit výpočet."
+
+V přepisu se má objevit `check_environment` a pak odpověď ve vašem jazyce.
+Pokud si stěžuje na klíč, je klíč špatně; pokud na kredit, dobijte účet.
+
+### Krok 3 — Zadejte skutečnou práci
+
+> „O kolik přestřelí BMP580 při 900 W/m² a proudění 3 m/s?"
+
+To zavolá `run_sensor_thermal_simulation` s `analytic_only`, takže odpoví za
+milisekundy. Porovnejte uvedenou chybu s výpisem z lekce 6 — mají se shodovat,
+je to tentýž model.
+
+A teď něco drahého:
+
+> „Projeď Mach 0,5 až 3 při 5 stupních a řekni mi nejhorší moment na závěsu."
+
+Než studie začne, dialog pojmenuje nástroj, jeho argumenty a očekávanou dobu
+běhu a počká. Tohle potvrzování je standardně zapnuté; právě ono brání tomu,
+aby vám asistent potichu zabral počítač na půl hodiny. Když krok odmítnete,
+model se to dozví a zeptá se, co byste chtěli místo toho.
+
+### Krok 4 — Poznejte, kdy začít znovu
+
+**New conversation** vymaže historii. Udělejte to při změně tématu: s každým
+požadavkem se posílá celá konverzace, takže dlouhá stojí víc a dává modelu
+větší šanci splést si dvě úlohy.
+
+Čtěte v přepisu každý řádek s voláním nástroje, ne jen závěrečný odstavec.
+Asistent má v instrukcích poctivě hlásit nekonvergenci i minuté pásmo počtu
+buněk, ale směrodatná jsou čísla v panelu výsledků.
+
+Všechny podrobnosti — modely, ceny, co neumí a každé chybové hlášení — najdete
+v [USER_GUIDE.md](USER_GUIDE.md), kapitola 12.
 
 ---
 
