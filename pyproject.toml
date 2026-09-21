@@ -21,7 +21,13 @@ dependencies = { file = ["requirements.txt"] }
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
-filterwarnings = ["ignore::DeprecationWarning"]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    # PyVista warns that extract_surface's default will change; the current
+    # default is what this code wants and the keyword is not accepted by
+    # older versions, so pinning it here would hurt compatibility.
+    "ignore::pyvista.core.errors.PyVistaFutureWarning",
+]
 markers = [
     "slow: exercises the real Gmsh/OpenCASCADE toolchain end to end",
 ]
