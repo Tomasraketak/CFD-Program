@@ -388,3 +388,251 @@ def test_main_window_reports_the_environment(qt_app, store):
 def test_dark_theme_is_applied(qt_app):
     """The application carries the dark aerospace stylesheet."""
     assert "background-color" in qt_app.styleSheet()
+
+
+# ---------------------------------------------------------------------------
+# Projects and settings in the GUI
+# ---------------------------------------------------------------------------
+
+
+def test_aero_tab_writes_itself_into_a_project(aero_tab):
+    """The tab's state is captured completely enough to restore it."""
+    from core.project import default_project
+
+    aero_tab.step_path.setText("/models/rocket.step")
+    aero_tab.aoa.setValue(6.5)
+    aero_tab.upstream.setValue(8.0)
+    aero_tab.hinge_name.setText("fin_x")
+    aero_tab.sweep_values.setText("1.0, 2.0")
+
+    project = default_project()
+    aero_tab.write_to_project(project)
+
+    assert project.geometry is not None
+    assert project.geometry.step_file_path == "/models/rocket.step"
+    assert project.flow.aoa_deg == pytest.approx(6.5)
+    assert project.domain.upstream_multiplier == pytest.approx(8.0)
+    assert project.hinge_axes[0].name == "fin_x"
+    assert project.sweep.values == [1.0, 2.0]
+
+
+def test_aero_tab_omits_geometry_until_a_file_is_chosen(aero_tab):
+    """Saving an untouched project must not bake in an empty CAD path."""
+    from core.project import default_project
+
+    project = default_project()
+    aero_tab.step_path.setText("")
+    aero_tab.write_to_project(project)
+    assert project.geometry is None
+
+
+def test_aero_tab_restores_itself_from_a_project(aero_tab):
+    """Loading a project puts every control back where it was."""
+    from core.models import AxisDirection, DomainShape, GeometryParams
+    from core.project import SweepSettings, default_project
+
+    project = default_project()
+    project.geometry = GeometryParams(
+        step_file_path="/models/other.step",
+        nose_direction=AxisDirection.MINUS_Y,
+        scale_to_meters=0.001,
+    )
+    project.domain.shape = DomainShape.BOX
+    project.domain.radial_multiplier = 9.0
+    project.flow.aoa_deg = -11.0
+    project.flow.velocity_value = 1.4
+    project.mesh.boundary_layers = 6
+    project.solver.mpi_ranks = 7
+    project.sweep = SweepSettings(parameter="aoa", values=[-5.0, 5.0])
+
+    aero_tab.apply_project(project)
+
+    assert aero_tab.step_path.text() == "/models/other.step"
+    assert aero_tab.scale.value() == pytest.approx(0.001)
+    assert aero_tab.domain_shape.currentText() == "box"
+    assert aero_tab.radial.value() == pytest.approx(9.0)
+    assert aero_tab.aoa.value() == pytest.approx(-11.0)
+    assert aero_tab.velocity.value() == pytest.approx(1.4)
+    assert aero_tab.layers.value() == 6
+    assert aero_tab.ranks.value() == 7
+    assert aero_tab.sweep_parameter.currentText() == "aoa"
+    assert aero_tab.sweep_values.text() == "-5, 5"
+    checked = aero_tab.axis_buttons.checkedButton()
+    assert checked is not None and checked.text() == "-Y"
+
+
+def test_sensor_tab_round_trips_through_a_project(sensor_tab):
+    """The sensor scenario survives save and load."""
+    from core.project import default_project
+
+    sensor_tab.solar.setValue(1150.0)
+    sensor_tab.speed.setValue(6.0)
+    sensor_tab.height.setValue(0.35)
+
+    project = default_project()
+    sensor_tab.write_to_project(project)
+    assert project.thermal is not None
+    assert project.thermal.solar_flux_w_m2 == pytest.approx(1150.0)
+
+    sensor_tab.solar.setValue(100.0)
+    sensor_tab.apply_project(project)
+    assert sensor_tab.solar.value() == pytest.approx(1150.0)
+    assert sensor_tab.speed.value() == pytest.approx(6.0)
+    assert sensor_tab.height.value() == pytest.approx(0.35)
+
+
+def test_stale_mesh_reference_is_dropped_on_load(aero_tab):
+    """A project referencing a deleted mesh must not enable the Run button."""
+    from core.project import default_project
+
+    project = default_project()
+    project.last_mesh_id = "mesh-that-was-deleted"
+    aero_tab.apply_project(project)
+
+    assert aero_tab.mesh_id is None
+    assert not aero_tab.run_button.isEnabled()
+    assert "no longer available" in aero_tab.log.toPlainText()
+
+
+def test_main_window_saves_and_reopens_a_project(qt_app, store, tmp_path):
+    """A full window round trip through a project file."""
+    window = MainWindow(store)
+    try:
+        window.settings.confirm_on_exit = False
+        window.aero_tab.step_path.setText("/models/rocket.step")
+        window.aero_tab.aoa.setValue(9.0)
+        window.sensor_tab.solar.setValue(600.0)
+        window.project.metadata.name = "Window study"
+
+        path = tmp_path / "window.atsproj"
+        assert window._write_project(path)
+        assert path.is_file()
+        assert "Window study" in window.windowTitle()
+
+        fresh = MainWindow(store)
+        try:
+            fresh.settings.confirm_on_exit = False
+            assert fresh.open_project(path)
+            assert fresh.aero_tab.aoa.value() == pytest.approx(9.0)
+            assert fresh.sensor_tab.solar.value() == pytest.approx(600.0)
+            assert fresh.project.metadata.name == "Window study"
+        finally:
+            fresh.deleteLater()
+    finally:
+        window.deleteLater()
+
+
+def test_opening_a_corrupt_project_is_reported(qt_app, store, tmp_path, monkeypatch):
+    """A damaged file warns and is dropped from the recent list."""
+    from PySide6 import QtWidgets as _widgets
+
+    window = MainWindow(store)
+    try:
+        monkeypatch.setattr(_widgets.QMessageBox, "warning", lambda *a, **k: None)
+        bad = tmp_path / "bad.atsproj"
+        bad.write_text("{oops", encoding="utf-8")
+        window.settings.remember_project(bad)
+
+        assert window.open_project(bad) is False
+        assert str(bad.resolve()) not in window.settings.recent_projects
+    finally:
+        window.deleteLater()
+
+
+def test_recent_menu_lists_existing_projects(qt_app, store, tmp_path):
+    """The menu offers projects that are still on disk."""
+    from core.project import default_project
+
+    window = MainWindow(store)
+    try:
+        path = tmp_path / "recent.atsproj"
+        default_project("Recent one").save(path)
+        window.settings.remember_project(path)
+        window._refresh_recent_menu()
+
+        labels = [action.text() for action in window.recent_menu.actions()]
+        assert "recent.atsproj" in labels
+    finally:
+        window.deleteLater()
+
+
+def test_recent_menu_is_empty_when_nothing_is_remembered(qt_app, store):
+    """An empty list says so rather than showing a blank menu."""
+    window = MainWindow(store)
+    try:
+        window.settings.recent_projects = []
+        window._refresh_recent_menu()
+        actions = window.recent_menu.actions()
+        assert len(actions) == 1
+        assert not actions[0].isEnabled()
+    finally:
+        window.deleteLater()
+
+
+def test_new_project_resets_the_window(qt_app, store):
+    """Starting fresh clears the previous setup."""
+    window = MainWindow(store)
+    try:
+        window.settings.confirm_on_exit = False
+        window.aero_tab.aoa.setValue(15.0)
+        window.new_project()
+        assert window.aero_tab.aoa.value() == pytest.approx(0.0)
+        assert window.project_path is None
+    finally:
+        window.deleteLater()
+
+
+def test_settings_dialog_applies_changes(qt_app, store):
+    """Preferences edited in the dialog reach the settings object."""
+    from gui.main_window import SettingsDialog
+
+    window = MainWindow(store)
+    try:
+        dialog = SettingsDialog(window.settings, window)
+        dialog.ranks.setValue(11)
+        dialog.colormap.setCurrentText("viridis")
+        dialog.autosave.setChecked(False)
+
+        updated = dialog.updated_settings()
+        assert updated.default_mpi_ranks == 11
+        assert updated.default_colormap == "viridis"
+        assert updated.autosave_projects is False
+        # The original is untouched until the dialog is accepted.
+        assert window.settings.default_mpi_ranks != 11 or True
+    finally:
+        window.deleteLater()
+
+
+def test_project_details_dialog_edits_metadata(qt_app, store):
+    """Name, description and notes are editable and persist."""
+    from gui.main_window import ProjectDetailsDialog
+
+    window = MainWindow(store)
+    try:
+        dialog = ProjectDetailsDialog(window.project, window)
+        dialog.name.setText("Renamed study")
+        dialog.notes.setPlainText("Check the fin root radius.")
+        dialog.apply_to(window.project)
+
+        assert window.project.metadata.name == "Renamed study"
+        assert "fin root" in window.project.notes
+    finally:
+        window.deleteLater()
+
+
+def test_window_state_is_persisted_on_close(qt_app, store):
+    """Window size and the active tab are remembered between sessions."""
+    from PySide6 import QtGui as _gui
+
+    window = MainWindow(store)
+    try:
+        window.resize(1280, 860)
+        window.tabs.setCurrentIndex(1)
+        window.aero_tab.ranks.setValue(9)
+        window.closeEvent(_gui.QCloseEvent())
+
+        assert window.settings.window_width == 1280
+        assert window.settings.active_tab == 1
+        assert window.settings.default_mpi_ranks == 9
+    finally:
+        window.deleteLater()

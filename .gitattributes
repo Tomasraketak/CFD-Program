@@ -1,0 +1,17 @@
+# Windows launchers must keep CRLF endings or cmd.exe mis-parses labels
+# and goto targets, so git must not normalise them on checkout.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Everything else is LF.
+*.py text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.toml text eol=lf
+*.cfg text eol=lf
+
+# Simulation artefacts and CAD are binary as far as diffs are concerned.
+*.su2 binary
+*.step binary
+*.stp binary
+*.png binary

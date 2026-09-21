@@ -49,6 +49,16 @@ from core.models import (
     VelocityType,
 )
 from core.platform_env import probe_environment
+from core.project import (
+    PROJECT_EXTENSION,
+    Project,
+    ProjectError,
+    SweepSettings,
+    default_project,
+)
+from core.project import list_projects as _list_project_files
+from core.project import projects_directory
+from core.settings import AppSettings, load_settings, save_settings
 from core.store import RecordNotFoundError, RunStore, default_store
 
 SERVER_NAME = "aerothermalstudio"
@@ -787,6 +797,319 @@ def list_runs(kind: str | None = None, limit: int = 25) -> dict[str, Any]:
 def check_environment() -> dict[str, Any]:
     """Report the detected toolchain."""
     return _ok(**probe_environment(probe_versions=True).as_dict())
+
+
+# ---------------------------------------------------------------------------
+# Project and settings tools
+# ---------------------------------------------------------------------------
+
+
+@server.tool(
+    name="save_project",
+    description=(
+        "Save a complete simulation setup to a .atsproj project file: "
+        "geometry, farfield domain, meshing, flight condition, solver "
+        "settings, fin hinges, the sensor scenario and the sweep definition. "
+        "Projects are plain JSON and open in the desktop GUI, so an agent can "
+        "prepare a study and hand it to a human operator, or reload it in a "
+        "later session. Omit a field to keep the default."
+    ),
+)
+def save_project(
+    name: str,
+    path: str | None = None,
+    description: str = "",
+    author: str = "",
+    notes: str = "",
+    step_file_path: str | None = None,
+    nose_direction: str = "+X",
+    nose_vector: list[float] | None = None,
+    reference_origin: list[float] | None = None,
+    scale_to_meters: float = 1.0,
+    domain_multipliers: dict[str, float] | None = None,
+    domain_shape: str = "cylinder",
+    mesh_resolution: str = "medium",
+    boundary_layers: int = 7,
+    target_yplus: float = 45.0,
+    velocity_type: str = "mach",
+    velocity_val: float = 2.0,
+    aoa_deg: float = 0.0,
+    sideslip_deg: float = 0.0,
+    altitude_m: float = 0.0,
+    hinge_axes: list[dict[str, Any]] | None = None,
+    mpi_ranks: int = 10,
+    sweep_parameter: str = "mach",
+    sweep_values: list[float] | None = None,
+    thermal: dict[str, Any] | None = None,
+    mesh_id: str | None = None,
+) -> dict[str, Any]:
+    """Write a project file describing a complete setup.
+
+    Parameters
+    ----------
+    name:
+        Project name, also used for the filename when no path is given.
+    path:
+        Destination file. Defaults to the projects folder in the data
+        directory, which is where the GUI looks first.
+    description, author, notes:
+        Provenance and working notes carried with the project.
+    step_file_path, nose_direction, nose_vector, reference_origin,
+    scale_to_meters:
+        Geometry and orientation, as for set_geometry_and_mesh.
+    domain_multipliers, domain_shape:
+        Farfield envelope.
+    mesh_resolution, boundary_layers, target_yplus:
+        Meshing settings.
+    velocity_type, velocity_val, aoa_deg, sideslip_deg, altitude_m:
+        Flight condition.
+    hinge_axes:
+        Fin hinge definitions.
+    mpi_ranks:
+        Solver parallelism.
+    sweep_parameter, sweep_values:
+        Batch sweep definition stored with the project.
+    thermal:
+        Sensor scenario, e.g. {"vehicle_speed_ms": 2, "ambient_temp_c": 25,
+        "solar_flux_w_m2": 800, "height_above_roof_m": 0.1,
+        "sensor_xyz": [0.03, 0.02, 0.015]}.
+    mesh_id:
+        Mesh to associate with the project for reuse later.
+    """
+    try:
+        project = default_project(name)
+        project.metadata.description = description
+        project.metadata.author = author
+        project.notes = notes
+
+        if step_file_path:
+            project.geometry = GeometryParams(
+                step_file_path=step_file_path,
+                nose_direction=(
+                    AxisDirection(nose_direction) if nose_vector is None else None
+                ),
+                nose_vector=nose_vector,
+                reference_origin=reference_origin or [0.0, 0.0, 0.0],
+                scale_to_meters=scale_to_meters,
+            )
+
+        multipliers = domain_multipliers or {}
+        project.domain = DomainParams(
+            shape=DomainShape(domain_shape),
+            upstream_multiplier=float(multipliers.get("upstream", 5.0)),
+            downstream_multiplier=float(multipliers.get("downstream", 10.0)),
+            radial_multiplier=float(multipliers.get("radial", 5.0)),
+        )
+        project.mesh = MeshParams(
+            resolution=MeshResolution(mesh_resolution),
+            track=SimulationTrack.AERODYNAMIC,
+            boundary_layers=boundary_layers,
+            target_yplus=target_yplus,
+        )
+        project.flow = FlowParams(
+            velocity_type=VelocityType(velocity_type),
+            velocity_value=velocity_val,
+            aoa_deg=aoa_deg,
+            sideslip_deg=sideslip_deg,
+            altitude_m=altitude_m,
+        )
+        project.solver = SolverParams(mpi_ranks=mpi_ranks)
+        project.hinge_axes = [
+            HingeAxis(
+                name=axis.get("name", f"hinge_{index + 1}"),
+                point=axis["point"],
+                direction=axis["direction"],
+            )
+            for index, axis in enumerate(hinge_axes or [])
+        ]
+        project.sweep = SweepSettings(
+            parameter=sweep_parameter,
+            values=sweep_values or [0.5, 1.0, 1.5, 2.0, 2.5],
+        )
+        if thermal is not None:
+            project.thermal = ThermalParams(
+                enclosure_step_path=thermal.get("enclosure_step_path", ""),
+                vehicle_speed_ms=float(thermal.get("vehicle_speed_ms", 2.0)),
+                ambient_temp_c=float(thermal.get("ambient_temp_c", 25.0)),
+                solar_flux_w_m2=float(thermal.get("solar_flux_w_m2", 800.0)),
+                height_above_roof_m=float(
+                    thermal.get("height_above_roof_m", 0.1)
+                ),
+                sensor_xyz=thermal.get("sensor_xyz", [0.03, 0.02, 0.015]),
+                housing_solar_absorptivity=float(
+                    thermal.get("housing_solar_absorptivity", 0.30)
+                ),
+                roof_solar_absorptivity=float(
+                    thermal.get("roof_solar_absorptivity", 0.65)
+                ),
+                housing_conductivity_w_mk=float(
+                    thermal.get("housing_conductivity_w_mk", 0.18)
+                ),
+            )
+        project.last_mesh_id = mesh_id
+    except Exception as error:
+        return _error(f"invalid parameters: {error}")
+
+    destination = (
+        Path(path)
+        if path
+        else projects_directory(_store().root) / f"{_safe_filename(name)}{PROJECT_EXTENSION}"
+    )
+    try:
+        written = project.save(destination)
+    except ProjectError as error:
+        return _error(str(error))
+
+    return _ok(project_path=str(written), **project.summary())
+
+
+@server.tool(
+    name="load_project",
+    description=(
+        "Read a .atsproj project file and return every setting it contains. "
+        "Use it to continue a study prepared earlier or by a human operator "
+        "in the GUI: the returned mesh_id, flow conditions and hinge axes can "
+        "be passed straight to the simulation tools."
+    ),
+)
+def load_project(path: str) -> dict[str, Any]:
+    """Load a project file.
+
+    Parameters
+    ----------
+    path:
+        Path to the .atsproj file.
+    """
+    try:
+        project = Project.load(path)
+    except ProjectError as error:
+        return _error(str(error), path=path)
+
+    return _ok(
+        project_path=str(Path(path).resolve()),
+        summary=project.summary(),
+        metadata=project.metadata.model_dump(mode="json"),
+        geometry=(
+            project.geometry.model_dump(mode="json") if project.geometry else None
+        ),
+        domain=project.domain.model_dump(mode="json"),
+        mesh=project.mesh.model_dump(mode="json"),
+        flow=project.flow.model_dump(mode="json"),
+        solver=project.solver.model_dump(mode="json"),
+        reference=project.reference.model_dump(mode="json"),
+        hinge_axes=[axis.model_dump(mode="json") for axis in project.hinge_axes],
+        thermal=(
+            project.thermal.model_dump(mode="json") if project.thermal else None
+        ),
+        sweep=project.sweep.model_dump(mode="json"),
+        notes=project.notes,
+        last_mesh_id=project.last_mesh_id,
+    )
+
+
+@server.tool(
+    name="list_saved_projects",
+    description=(
+        "List the project files in the data directory, newest first, with a "
+        "one-line summary of each. Unreadable files are reported with their "
+        "error rather than omitted, so a corrupted project is visible."
+    ),
+)
+def list_saved_projects(directory: str | None = None) -> dict[str, Any]:
+    """List available projects.
+
+    Parameters
+    ----------
+    directory:
+        Folder to scan. Defaults to the projects folder in the data
+        directory, which is where the GUI saves.
+    """
+    target = Path(directory) if directory else projects_directory(_store().root)
+    try:
+        entries = _list_project_files(target)
+    except Exception as error:
+        return _error(str(error), directory=str(target))
+    return _ok(directory=str(target), projects=entries, count=len(entries))
+
+
+@server.tool(
+    name="get_settings",
+    description=(
+        "Read the persistent application preferences: default MPI ranks, "
+        "default colormap and resolutions, recent projects and interface "
+        "behaviour. These are the same settings the GUI's Preferences dialog "
+        "edits."
+    ),
+)
+def get_settings() -> dict[str, Any]:
+    """Return the current application settings."""
+    settings = load_settings(_store().root, refresh=True)
+    return _ok(settings_path=str(AppSettings.path(_store().root)), **settings.as_dict())
+
+
+@server.tool(
+    name="update_settings",
+    description=(
+        "Change persistent application preferences. Only the fields supplied "
+        "are modified; everything else is left alone. The GUI picks the "
+        "changes up the next time it reads its settings."
+    ),
+)
+def update_settings(
+    default_mpi_ranks: int | None = None,
+    default_colormap: str | None = None,
+    default_render_resolution: str | None = None,
+    default_mesh_resolution: str | None = None,
+    confirm_on_exit: bool | None = None,
+    autosave_projects: bool | None = None,
+    live_thermal_preview: bool | None = None,
+    show_environment_warning: bool | None = None,
+) -> dict[str, Any]:
+    """Update selected preferences.
+
+    Parameters
+    ----------
+    default_mpi_ranks:
+        MPI ranks a new run starts with.
+    default_colormap, default_render_resolution:
+        Presentation defaults for renders.
+    default_mesh_resolution:
+        Mesh density a new project starts with.
+    confirm_on_exit, autosave_projects, live_thermal_preview,
+    show_environment_warning:
+        Interface behaviour toggles.
+    """
+    settings = load_settings(_store().root, refresh=True)
+    changes = {
+        "default_mpi_ranks": default_mpi_ranks,
+        "default_colormap": default_colormap,
+        "default_render_resolution": default_render_resolution,
+        "default_mesh_resolution": default_mesh_resolution,
+        "confirm_on_exit": confirm_on_exit,
+        "autosave_projects": autosave_projects,
+        "live_thermal_preview": live_thermal_preview,
+        "show_environment_warning": show_environment_warning,
+    }
+    applied = {key: value for key, value in changes.items() if value is not None}
+
+    try:
+        updated = settings.model_copy(update=applied)
+        AppSettings(**updated.model_dump())  # revalidate the whole object
+    except Exception as error:
+        return _error(f"invalid settings: {error}")
+
+    save_settings(updated, _store().root)
+    return _ok(changed=applied, **updated.as_dict())
+
+
+def _safe_filename(name: str) -> str:
+    """Turn a project name into a filename safe on Windows and POSIX."""
+    keep = [
+        character if (character.isalnum() or character in "-_ ") else "_"
+        for character in name.strip()
+    ]
+    cleaned = "".join(keep).strip().replace(" ", "_")
+    return cleaned or "project"
 
 
 def main() -> None:

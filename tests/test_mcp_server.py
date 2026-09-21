@@ -20,15 +20,26 @@ import mcp_server as server_module  # noqa: E402
 from backend.runner import FakeRunner  # noqa: E402
 from core.store import RunStore  # noqa: E402
 
-EXPECTED_TOOLS = {
+# The five tools named in the specification, plus the supporting ones.
+SPECIFIED_TOOLS = {
     "set_geometry_and_mesh",
     "run_aerodynamic_simulation",
     "run_sensor_thermal_simulation",
     "generate_cfd_visualization",
     "run_parametric_sweep",
+}
+
+SUPPORTING_TOOLS = {
     "list_runs",
     "check_environment",
+    "save_project",
+    "load_project",
+    "list_saved_projects",
+    "get_settings",
+    "update_settings",
 }
+
+EXPECTED_TOOLS = SPECIFIED_TOOLS | SUPPORTING_TOOLS
 
 # Recorded SU2 screen output, as in the aero solver tests.
 SCREEN_HEADER = (
@@ -107,9 +118,11 @@ def call(tool, **kwargs):
 
 
 def test_every_specified_tool_is_registered():
-    """All five specified tools plus the supporting two are exposed."""
+    """Every specified tool, and nothing unexpected, is exposed."""
     tools = asyncio.run(server_module.server.list_tools())
-    assert {tool.name for tool in tools} == EXPECTED_TOOLS
+    names = {tool.name for tool in tools}
+    assert SPECIFIED_TOOLS <= names, f"missing: {SPECIFIED_TOOLS - names}"
+    assert names == EXPECTED_TOOLS
 
 
 def test_tools_carry_thorough_descriptions():
@@ -422,3 +435,115 @@ def test_visualization_renders_from_a_stored_solution(store):
     )
     assert response["ok"], response.get("error")
     assert Path(response["image_path"]).is_file()
+
+
+# ---------------------------------------------------------------------------
+# Projects and settings over MCP
+# ---------------------------------------------------------------------------
+
+
+def test_agent_can_save_and_reload_a_project(store, tmp_path):
+    """An agent prepares a study and a human opens it in the GUI."""
+    path = tmp_path / "agent.atsproj"
+    saved = call(
+        server_module.save_project,
+        name="Agent study",
+        path=str(path),
+        description="Mach sweep for fin sizing",
+        step_file_path="/models/rocket.step",
+        aoa_deg=4.0,
+        velocity_val=2.2,
+        hinge_axes=[
+            {"name": "fin_1", "point": [0.9, 0.05, 0.0], "direction": [0, 1, 0]}
+        ],
+        sweep_parameter="mach",
+        sweep_values=[0.8, 1.6, 2.4],
+        thermal={"vehicle_speed_ms": 3.0, "solar_flux_w_m2": 900.0},
+    )
+    assert saved["ok"], saved.get("error")
+    assert Path(saved["project_path"]).is_file()
+
+    loaded = call(server_module.load_project, path=saved["project_path"])
+    assert loaded["ok"]
+    assert loaded["metadata"]["name"] == "Agent study"
+    assert loaded["flow"]["aoa_deg"] == pytest.approx(4.0)
+    assert loaded["sweep"]["values"] == [0.8, 1.6, 2.4]
+    assert loaded["thermal"]["vehicle_speed_ms"] == pytest.approx(3.0)
+    assert loaded["hinge_axes"][0]["name"] == "fin_1"
+
+
+def test_saved_project_opens_in_the_core_loader(store, tmp_path):
+    """What the agent writes is a real project file, not a lookalike."""
+    from core.project import Project
+
+    saved = call(
+        server_module.save_project,
+        name="Round trip",
+        path=str(tmp_path / "rt.atsproj"),
+        velocity_val=1.5,
+    )
+    project = Project.load(saved["project_path"])
+    assert project.metadata.name == "Round trip"
+    assert project.flow.mach() == pytest.approx(1.5)
+
+
+def test_saving_a_project_with_bad_values_is_refused(store, tmp_path):
+    """Model bounds apply to projects too."""
+    response = call(
+        server_module.save_project,
+        name="Bad",
+        path=str(tmp_path / "bad.atsproj"),
+        aoa_deg=75.0,
+    )
+    assert response["ok"] is False
+    assert "invalid parameters" in response["error"]
+
+
+def test_loading_a_missing_project_is_reported(tmp_path):
+    """A wrong path gives a structured error, not an exception."""
+    response = call(server_module.load_project, path=str(tmp_path / "no.atsproj"))
+    assert response["ok"] is False
+    assert "not found" in response["error"]
+
+
+def test_projects_can_be_listed(store, tmp_path):
+    """An agent can discover what studies already exist."""
+    call(
+        server_module.save_project,
+        name="Listed", path=str(tmp_path / "listed.atsproj")
+    )
+    response = call(server_module.list_saved_projects, directory=str(tmp_path))
+    assert response["ok"]
+    assert response["count"] == 1
+    assert response["projects"][0]["name"] == "Listed"
+
+
+def test_settings_can_be_read_and_updated(store):
+    """Preferences are reachable over MCP, with bounds enforced."""
+    before = call(server_module.get_settings)
+    assert before["ok"]
+    assert "default_mpi_ranks" in before
+
+    updated = call(
+        server_module.update_settings, default_mpi_ranks=6, default_colormap="viridis"
+    )
+    assert updated["ok"]
+    assert updated["default_mpi_ranks"] == 6
+    assert updated["default_colormap"] == "viridis"
+    assert updated["changed"] == {
+        "default_mpi_ranks": 6,
+        "default_colormap": "viridis",
+    }
+
+    rejected = call(server_module.update_settings, default_mpi_ranks=9999)
+    assert rejected["ok"] is False
+
+
+def test_updating_settings_leaves_other_fields_alone(store):
+    """Only the supplied fields change."""
+    call(server_module.update_settings, default_colormap="plasma")
+    before = call(server_module.get_settings)
+    call(server_module.update_settings, default_mpi_ranks=4)
+    after = call(server_module.get_settings)
+    assert after["default_colormap"] == before["default_colormap"] == "plasma"
+    assert after["default_mpi_ranks"] == 4

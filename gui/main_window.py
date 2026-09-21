@@ -36,6 +36,15 @@ from core.models import (
     VelocityType,
 )
 from core.platform_env import probe_environment, recommended_mpi_ranks
+from core.project import (
+    PROJECT_FILTER,
+    Project,
+    ProjectError,
+    SweepSettings,
+    default_project,
+    projects_directory,
+)
+from core.settings import AppSettings, load_settings, save_settings
 from core.store import RunStore, default_store
 from gui.form_builder import LabelledSlider
 from gui.theme import (
@@ -637,13 +646,21 @@ class AerodynamicsTab(QtWidgets.QWidget):
 
     def _on_velocity_type(self) -> None:
         """Rescale the speed slider when the unit changes."""
-        if VelocityType(self.velocity_type.currentData()) is VelocityType.MACH:
+        velocity_type = VelocityType(self.velocity_type.currentData())
+        self._rescale_velocity_slider(velocity_type)
+        self.velocity.setValue(2.0 if velocity_type is VelocityType.MACH else 200.0)
+        self._update_condition_label()
+
+    def _rescale_velocity_slider(self, velocity_type: VelocityType) -> None:
+        """Set the speed slider's range for the selected unit.
+
+        Kept separate from the change handler so loading a project can adjust
+        the range without also resetting the value the project specified.
+        """
+        if velocity_type is VelocityType.MACH:
             self.velocity.slider.setRange(20, 350)
-            self.velocity.setValue(2.0)
         else:
             self.velocity.slider.setRange(1000, 120000)
-            self.velocity.setValue(200.0)
-        self._update_condition_label()
 
     def _update_condition_label(self, *_: Any) -> None:
         """Show the derived freestream state beneath the sliders."""
@@ -730,6 +747,131 @@ class AerodynamicsTab(QtWidgets.QWidget):
                 direction=direction,
             )
         ]
+
+    # -- project round trip ------------------------------------------------
+
+    def write_to_project(self, project: Project) -> None:
+        """Copy the tab's current state into a project.
+
+        Geometry is only recorded once a CAD file has been chosen, so saving
+        an untouched project does not bake in an empty path that would later
+        fail validation.
+        """
+        if self.step_path.text().strip():
+            project.geometry = self.geometry_params()
+        project.domain = self.domain_params()
+        project.flow = self.flow_params()
+        project.hinge_axes = self.hinge_axes()
+        project.mesh = MeshParams(
+            resolution=MeshResolution(self.resolution.currentData()),
+            track=SimulationTrack.AERODYNAMIC,
+            boundary_layers=self.layers.value(),
+            target_yplus=self.target_yplus.value(),
+        )
+        project.solver = SolverParams(mpi_ranks=self.ranks.value())
+        project.sweep = SweepSettings.from_text(
+            self.sweep_parameter.currentText(), self.sweep_values.text()
+        )
+        project.last_mesh_id = self.mesh_id
+
+    def apply_project(self, project: Project) -> None:
+        """Populate the tab from a project.
+
+        Signals are blocked during the update so the half-applied state does
+        not trigger recomputation, and restored before the final refresh.
+        """
+        widgets = [
+            self.step_path, self.custom_nose, self.nose_vector,
+            self.reference_origin, self.scale, self.domain_shape,
+            self.upstream, self.downstream, self.radial,
+            self.velocity_type, self.velocity, self.aoa, self.sideslip,
+            self.altitude, self.hinge_name, self.hinge_point,
+            self.hinge_direction, self.resolution, self.layers,
+            self.target_yplus, self.ranks, self.sweep_values,
+            self.sweep_parameter,
+        ]
+        for widget in widgets:
+            widget.blockSignals(True)
+        try:
+            self._apply_project_locked(project)
+        finally:
+            for widget in widgets:
+                widget.blockSignals(False)
+
+        self._update_condition_label()
+        self.mesh_id = project.last_mesh_id
+        has_mesh = self._mesh_is_usable(project.last_mesh_id)
+        self.run_button.setEnabled(has_mesh)
+        self.sweep_button.setEnabled(has_mesh)
+        if project.last_mesh_id and not has_mesh:
+            self.mesh_id = None
+            self.append_log(
+                f"Mesh {project.last_mesh_id} referenced by the project is no "
+                "longer available; generate a new one."
+            )
+
+    def _apply_project_locked(self, project: Project) -> None:
+        """Write project values into the widgets, signals already blocked."""
+        geometry = project.geometry
+        if geometry is not None:
+            self.step_path.setText(geometry.step_file_path)
+            self.scale.setValue(geometry.scale_to_meters)
+            self.reference_origin.set_value(tuple(geometry.reference_origin))
+            self.custom_nose.setChecked(geometry.nose_vector is not None)
+            self.nose_vector.setEnabled(geometry.nose_vector is not None)
+            if geometry.nose_vector is not None:
+                self.nose_vector.set_value(tuple(geometry.nose_vector))
+            elif geometry.nose_direction is not None:
+                for button in self.axis_buttons.buttons():
+                    button.setChecked(button.text() == geometry.nose_direction.value)
+
+        domain = project.domain
+        index = self.domain_shape.findText(domain.shape.value)
+        if index >= 0:
+            self.domain_shape.setCurrentIndex(index)
+        self.upstream.setValue(domain.upstream_multiplier)
+        self.downstream.setValue(domain.downstream_multiplier)
+        self.radial.setValue(domain.radial_multiplier)
+
+        flow = project.flow
+        type_index = self.velocity_type.findData(flow.velocity_type.value)
+        if type_index < 0:
+            type_index = 0 if flow.velocity_type is VelocityType.MACH else 1
+        self.velocity_type.setCurrentIndex(type_index)
+        self._rescale_velocity_slider(flow.velocity_type)
+        self.velocity.setValue(flow.velocity_value)
+        self.aoa.setValue(flow.aoa_deg)
+        self.sideslip.setValue(flow.sideslip_deg)
+        if flow.altitude_m is not None:
+            self.altitude.setValue(flow.altitude_m)
+
+        if project.hinge_axes:
+            hinge = project.hinge_axes[0]
+            self.hinge_name.setText(hinge.name)
+            self.hinge_point.set_value(tuple(hinge.point))
+            self.hinge_direction.set_value(tuple(hinge.direction))
+
+        mesh_index = self.resolution.findText(project.mesh.resolution.value)
+        if mesh_index >= 0:
+            self.resolution.setCurrentIndex(mesh_index)
+        self.layers.setValue(project.mesh.boundary_layers)
+        self.target_yplus.setValue(project.mesh.target_yplus)
+        self.ranks.setValue(project.solver.mpi_ranks)
+
+        sweep_index = self.sweep_parameter.findText(project.sweep.parameter)
+        if sweep_index >= 0:
+            self.sweep_parameter.setCurrentIndex(sweep_index)
+        self.sweep_values.setText(project.sweep.values_text())
+
+    def _mesh_is_usable(self, mesh_id: str | None) -> bool:
+        """True when a stored mesh still exists on disk."""
+        if not mesh_id:
+            return False
+        try:
+            self.store.resolve_mesh_path(mesh_id)
+        except Exception:
+            return False
+        return True
 
     # -- actions -----------------------------------------------------------
 
@@ -1098,6 +1240,39 @@ class SensorTab(QtWidgets.QWidget):
             roof_solar_absorptivity=self.roof_absorptivity.value(),
         )
 
+    def write_to_project(self, project: Project) -> None:
+        """Copy the sensor scenario into a project."""
+        project.thermal = self.thermal_params()
+
+    def apply_project(self, project: Project) -> None:
+        """Populate the sensor tab from a project."""
+        thermal = project.thermal
+        if thermal is None:
+            return
+
+        widgets = [
+            self.step_path, self.sensor_xyz, self.speed, self.ambient,
+            self.solar, self.height, self.housing_absorptivity,
+            self.roof_absorptivity, self.conductivity,
+        ]
+        for widget in widgets:
+            widget.blockSignals(True)
+        try:
+            if thermal.enclosure_step_path not in ("", "(not supplied)"):
+                self.step_path.setText(thermal.enclosure_step_path)
+            self.sensor_xyz.set_value(tuple(thermal.sensor_xyz))
+            self.speed.setValue(thermal.vehicle_speed_ms)
+            self.ambient.setValue(thermal.ambient_temp_c)
+            self.solar.setValue(thermal.solar_flux_w_m2)
+            self.height.setValue(thermal.height_above_roof_m)
+            self.housing_absorptivity.setValue(thermal.housing_solar_absorptivity)
+            self.roof_absorptivity.setValue(thermal.roof_solar_absorptivity)
+            self.conductivity.setValue(thermal.housing_conductivity_w_mk)
+        finally:
+            for widget in widgets:
+                widget.blockSignals(False)
+        self.recompute()
+
     def recompute(self) -> None:
         """Update the readouts from the analytical model.
 
@@ -1143,6 +1318,168 @@ class SensorTab(QtWidgets.QWidget):
 
 
 # ---------------------------------------------------------------------------
+# Dialogs
+# ---------------------------------------------------------------------------
+
+
+class ProjectDetailsDialog(QtWidgets.QDialog):
+    """Edit a project's name, description, author and working notes."""
+
+    def __init__(self, project: Project, parent: QtWidgets.QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Project details")
+        self.setMinimumWidth(520)
+
+        self.name = QtWidgets.QLineEdit(project.metadata.name)
+        self.description = QtWidgets.QLineEdit(project.metadata.description)
+        self.author = QtWidgets.QLineEdit(project.metadata.author)
+        self.notes = QtWidgets.QPlainTextEdit(project.notes)
+        self.notes.setPlaceholderText(
+            "Working notes carried with the project: what you are testing, "
+            "what you have already ruled out, anything a colleague opening "
+            "this file would need to know."
+        )
+
+        form = QtWidgets.QFormLayout()
+        form.addRow("Name", self.name)
+        form.addRow("Description", self.description)
+        form.addRow("Author", self.author)
+        form.addRow("Notes", self.notes)
+
+        created = QtWidgets.QLabel(
+            f"Created {project.metadata.created_at}  |  "
+            f"last saved {project.metadata.modified_at}"
+        )
+        created.setObjectName("hint")
+
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.StandardButton.Ok
+            | QtWidgets.QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.addLayout(form)
+        layout.addWidget(created)
+        layout.addWidget(buttons)
+
+    def apply_to(self, project: Project) -> None:
+        """Write the edited values back into the project."""
+        project.metadata.name = self.name.text().strip() or "Untitled project"
+        project.metadata.description = self.description.text().strip()
+        project.metadata.author = self.author.text().strip()
+        project.notes = self.notes.toPlainText()
+        project.touch()
+
+
+class SettingsDialog(QtWidgets.QDialog):
+    """Edit the persistent application preferences."""
+
+    def __init__(
+        self, settings: AppSettings, parent: QtWidgets.QWidget | None = None
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Preferences")
+        self.setMinimumWidth(480)
+        self._settings = settings
+
+        self.ranks = QtWidgets.QSpinBox()
+        self.ranks.setRange(1, 64)
+        self.ranks.setValue(settings.default_mpi_ranks)
+        self.ranks.setToolTip(
+            "MPI ranks a new run starts with. Leave two below the thread count "
+            "so the interface stays responsive."
+        )
+
+        self.colormap = QtWidgets.QComboBox()
+        self.colormap.addItems(
+            ["turbo", "coolwarm", "viridis", "jet", "plasma", "inferno"]
+        )
+        self.colormap.setCurrentText(settings.default_colormap)
+
+        self.resolution = QtWidgets.QComboBox()
+        self.resolution.addItems(["preview", "hd", "2k", "4k"])
+        self.resolution.setCurrentText(settings.default_render_resolution)
+
+        self.mesh_resolution = QtWidgets.QComboBox()
+        self.mesh_resolution.addItems(["coarse", "medium", "fine"])
+        self.mesh_resolution.setCurrentText(settings.default_mesh_resolution)
+
+        self.confirm_on_exit = QtWidgets.QCheckBox(
+            "Ask before discarding an unsaved project"
+        )
+        self.confirm_on_exit.setChecked(settings.confirm_on_exit)
+
+        self.autosave = QtWidgets.QCheckBox(
+            "Save the open project automatically before a solve"
+        )
+        self.autosave.setChecked(settings.autosave_projects)
+
+        self.live_preview = QtWidgets.QCheckBox(
+            "Update the sensor prediction live as sliders move"
+        )
+        self.live_preview.setChecked(settings.live_thermal_preview)
+
+        self.environment_warning = QtWidgets.QCheckBox(
+            "Warn at startup when SU2 or MPI cannot be found"
+        )
+        self.environment_warning.setChecked(settings.show_environment_warning)
+
+        form = QtWidgets.QFormLayout()
+        form.addRow("Default MPI ranks", self.ranks)
+        form.addRow("Default colormap", self.colormap)
+        form.addRow("Render resolution", self.resolution)
+        form.addRow("Mesh resolution", self.mesh_resolution)
+
+        behaviour = QtWidgets.QVBoxLayout()
+        for check in (
+            self.confirm_on_exit, self.autosave,
+            self.live_preview, self.environment_warning,
+        ):
+            behaviour.addWidget(check)
+
+        location = QtWidgets.QLabel(f"Settings file: {AppSettings.path()}")
+        location.setObjectName("hint")
+        location.setWordWrap(True)
+
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.StandardButton.Ok
+            | QtWidgets.QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.addLayout(form)
+        layout.addWidget(_separator())
+        layout.addLayout(behaviour)
+        layout.addWidget(location)
+        layout.addWidget(buttons)
+
+    def updated_settings(self) -> AppSettings:
+        """A copy of the settings with the dialog's values applied."""
+        updated = self._settings.model_copy(deep=True)
+        updated.default_mpi_ranks = self.ranks.value()
+        updated.default_colormap = self.colormap.currentText()
+        updated.default_render_resolution = self.resolution.currentText()
+        updated.default_mesh_resolution = self.mesh_resolution.currentText()
+        updated.confirm_on_exit = self.confirm_on_exit.isChecked()
+        updated.autosave_projects = self.autosave.isChecked()
+        updated.live_thermal_preview = self.live_preview.isChecked()
+        updated.show_environment_warning = self.environment_warning.isChecked()
+        return updated
+
+
+def _separator() -> QtWidgets.QFrame:
+    """A horizontal rule between dialog sections."""
+    line = QtWidgets.QFrame()
+    line.setFrameShape(QtWidgets.QFrame.Shape.HLine)
+    line.setFrameShadow(QtWidgets.QFrame.Shadow.Sunken)
+    return line
+
+
+# ---------------------------------------------------------------------------
 # Main window
 # ---------------------------------------------------------------------------
 
@@ -1150,30 +1487,225 @@ class SensorTab(QtWidgets.QWidget):
 class MainWindow(QtWidgets.QMainWindow):
     """Application shell holding the two tracks."""
 
-    def __init__(self, store: RunStore | None = None) -> None:
+    def __init__(
+        self,
+        store: RunStore | None = None,
+        settings: AppSettings | None = None,
+    ) -> None:
         super().__init__()
         self.store = store or default_store()
+        self.settings = settings if settings is not None else load_settings()
 
-        self.setWindowTitle(f"{APP_NAME} - CFD and thermal simulation")
-        self.resize(1560, 980)
+        self.project = default_project()
+        self.project_path: Path | None = None
+
+        self.resize(self.settings.window_width, self.settings.window_height)
+        if self.settings.window_maximised:
+            self.showMaximized()
 
         self.tabs = QtWidgets.QTabWidget()
         self.aero_tab = AerodynamicsTab(self.store)
         self.sensor_tab = SensorTab(self.store)
         self.tabs.addTab(self.aero_tab, "Aerodynamics && Fins")
         self.tabs.addTab(self.sensor_tab, "Sensor Microclimate (BMP580)")
+        self.tabs.setCurrentIndex(
+            min(self.settings.active_tab, self.tabs.count() - 1)
+        )
         self.setCentralWidget(self.tabs)
 
         self.status = self.statusBar()
         self.aero_tab.statusMessage.connect(self.status.showMessage)
         self.sensor_tab.statusMessage.connect(self.status.showMessage)
 
+        self.aero_tab.ranks.setValue(self.settings.default_mpi_ranks)
+
         self._build_menu()
+        self._apply_project_to_tabs()
+        self._update_title()
         self._report_environment()
 
+    # -- project management ------------------------------------------------
+
+    def _collect_project(self) -> Project:
+        """Gather the current state of both tabs into the project."""
+        self.aero_tab.write_to_project(self.project)
+        self.sensor_tab.write_to_project(self.project)
+        return self.project
+
+    def _apply_project_to_tabs(self) -> None:
+        """Push the loaded project into both tabs."""
+        self.aero_tab.apply_project(self.project)
+        self.sensor_tab.apply_project(self.project)
+
+    def _update_title(self) -> None:
+        """Show the project name and file in the title bar."""
+        name = self.project.metadata.name
+        location = self.project_path.name if self.project_path else "unsaved"
+        self.setWindowTitle(f"{name} - {location} - {APP_NAME}")
+
+    def new_project(self) -> None:
+        """Discard the current project and start a fresh one."""
+        if not self._confirm_discard():
+            return
+        self.project = default_project()
+        self.project_path = None
+        self._apply_project_to_tabs()
+        self._update_title()
+        self.status.showMessage("New project", 4000)
+
+    def open_project(self, path: Path | str | None = None) -> bool:
+        """Open a project file, prompting for one when not given.
+
+        Returns
+        -------
+        bool
+            True when a project was loaded.
+        """
+        if path is None:
+            if not self._confirm_discard():
+                return False
+            start = (
+                self.settings.last_project_directory
+                or str(projects_directory(self.store.root))
+            )
+            chosen, _ = QtWidgets.QFileDialog.getOpenFileName(
+                self, "Open project", start, PROJECT_FILTER
+            )
+            if not chosen:
+                return False
+            path = chosen
+
+        try:
+            self.project = Project.load(path)
+        except ProjectError as error:
+            QtWidgets.QMessageBox.warning(self, APP_NAME, str(error))
+            self.settings.forget_project(path)
+            self._refresh_recent_menu()
+            return False
+
+        self.project_path = Path(path)
+        self._apply_project_to_tabs()
+        self._update_title()
+        self.settings.remember_project(self.project_path)
+        save_settings(self.settings, self.store.root)
+        self._refresh_recent_menu()
+        self.status.showMessage(f"Opened {self.project_path.name}", 5000)
+        return True
+
+    def save_project(self) -> bool:
+        """Save to the current file, or prompt when there is none."""
+        if self.project_path is None:
+            return self.save_project_as()
+        return self._write_project(self.project_path)
+
+    def save_project_as(self) -> bool:
+        """Prompt for a destination and save there."""
+        start = str(
+            self.project_path
+            or Path(
+                self.settings.last_project_directory
+                or str(projects_directory(self.store.root))
+            )
+            / f"{self.project.metadata.name}.atsproj"
+        )
+        chosen, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, "Save project as", start, PROJECT_FILTER
+        )
+        if not chosen:
+            return False
+        return self._write_project(Path(chosen))
+
+    def _write_project(self, path: Path) -> bool:
+        """Collect the tabs and write the project to disk."""
+        self._collect_project()
+        try:
+            written = self.project.save(path)
+        except ProjectError as error:
+            QtWidgets.QMessageBox.warning(self, APP_NAME, str(error))
+            return False
+
+        self.project_path = written
+        self.settings.remember_project(written)
+        save_settings(self.settings, self.store.root)
+        self._refresh_recent_menu()
+        self._update_title()
+        self.status.showMessage(f"Saved {written.name}", 5000)
+        return True
+
+    def edit_project_details(self) -> None:
+        """Edit the project name, description and notes."""
+        dialog = ProjectDetailsDialog(self.project, self)
+        if dialog.exec() == QtWidgets.QDialog.DialogCode.Accepted:
+            dialog.apply_to(self.project)
+            self._update_title()
+
+    def _confirm_discard(self) -> bool:
+        """Ask before replacing the current project.
+
+        Offers to save first, so an accidental New or Open cannot silently
+        throw away a setup the operator spent time on.
+        """
+        if not self.settings.confirm_on_exit:
+            return True
+        answer = QtWidgets.QMessageBox.question(
+            self,
+            APP_NAME,
+            "Save the current project before continuing?",
+            QtWidgets.QMessageBox.StandardButton.Save
+            | QtWidgets.QMessageBox.StandardButton.Discard
+            | QtWidgets.QMessageBox.StandardButton.Cancel,
+            QtWidgets.QMessageBox.StandardButton.Discard,
+        )
+        if answer == QtWidgets.QMessageBox.StandardButton.Cancel:
+            return False
+        if answer == QtWidgets.QMessageBox.StandardButton.Save:
+            return self.save_project()
+        return True
+
+    def closeEvent(self, event: QtGui.QCloseEvent) -> None:  # noqa: N802
+        """Persist window state and settings on exit."""
+        self.settings.window_width = self.width()
+        self.settings.window_height = self.height()
+        self.settings.window_maximised = self.isMaximized()
+        self.settings.active_tab = self.tabs.currentIndex()
+        self.settings.default_mpi_ranks = self.aero_tab.ranks.value()
+        save_settings(self.settings, self.store.root)
+        event.accept()
+
     def _build_menu(self) -> None:
-        """File and help menus."""
+        """File, settings and help menus."""
         file_menu = self.menuBar().addMenu("&File")
+
+        new_action = QtGui.QAction("&New project", self)
+        new_action.setShortcut(QtGui.QKeySequence.StandardKey.New)
+        new_action.triggered.connect(self.new_project)
+        file_menu.addAction(new_action)
+
+        open_action = QtGui.QAction("&Open project ...", self)
+        open_action.setShortcut(QtGui.QKeySequence.StandardKey.Open)
+        open_action.triggered.connect(lambda: self.open_project())
+        file_menu.addAction(open_action)
+
+        self.recent_menu = file_menu.addMenu("Open &recent")
+        self._refresh_recent_menu()
+
+        file_menu.addSeparator()
+
+        save_action = QtGui.QAction("&Save project", self)
+        save_action.setShortcut(QtGui.QKeySequence.StandardKey.Save)
+        save_action.triggered.connect(self.save_project)
+        file_menu.addAction(save_action)
+
+        save_as_action = QtGui.QAction("Save project &as ...", self)
+        save_as_action.setShortcut(QtGui.QKeySequence.StandardKey.SaveAs)
+        save_as_action.triggered.connect(self.save_project_as)
+        file_menu.addAction(save_as_action)
+
+        details_action = QtGui.QAction("Project &details ...", self)
+        details_action.triggered.connect(self.edit_project_details)
+        file_menu.addAction(details_action)
+
+        file_menu.addSeparator()
 
         demo = QtGui.QAction("Create sample &rocket CAD", self)
         demo.triggered.connect(self._create_sample_rocket)
@@ -1189,10 +1721,86 @@ class MainWindow(QtWidgets.QMainWindow):
         quit_action.triggered.connect(self.close)
         file_menu.addAction(quit_action)
 
+        settings_menu = self.menuBar().addMenu("&Settings")
+        preferences = QtGui.QAction("&Preferences ...", self)
+        preferences.triggered.connect(self.edit_settings)
+        settings_menu.addAction(preferences)
+
+        open_data = QtGui.QAction("Open &data folder", self)
+        open_data.triggered.connect(self._open_data_folder)
+        settings_menu.addAction(open_data)
+
         help_menu = self.menuBar().addMenu("&Help")
         environment = QtGui.QAction("Check &environment", self)
         environment.triggered.connect(self._show_environment)
         help_menu.addAction(environment)
+
+        documentation = QtGui.QAction("&Documentation", self)
+        documentation.triggered.connect(self._open_documentation)
+        help_menu.addAction(documentation)
+
+    def _refresh_recent_menu(self) -> None:
+        """Rebuild the recent-projects submenu.
+
+        Only files still on disk are offered, so the menu never presents an
+        entry that would immediately fail to open.
+        """
+        menu = getattr(self, "recent_menu", None)
+        if menu is None:
+            return
+        menu.clear()
+
+        existing = self.settings.existing_recent_projects()
+        if not existing:
+            empty = QtGui.QAction("(no recent projects)", self)
+            empty.setEnabled(False)
+            menu.addAction(empty)
+            return
+
+        for item in existing:
+            action = QtGui.QAction(Path(item).name, self)
+            action.setToolTip(item)
+            action.triggered.connect(
+                lambda _checked=False, target=item: self.open_project(target)
+            )
+            menu.addAction(action)
+
+        menu.addSeparator()
+        clear = QtGui.QAction("Clear list", self)
+        clear.triggered.connect(self._clear_recent)
+        menu.addAction(clear)
+
+    def _clear_recent(self) -> None:
+        """Forget every recent project."""
+        self.settings.recent_projects = []
+        save_settings(self.settings, self.store.root)
+        self._refresh_recent_menu()
+
+    def edit_settings(self) -> None:
+        """Open the preferences dialog and apply the result."""
+        dialog = SettingsDialog(self.settings, self)
+        if dialog.exec() == QtWidgets.QDialog.DialogCode.Accepted:
+            self.settings = dialog.updated_settings()
+            save_settings(self.settings, self.store.root)
+            self.aero_tab.ranks.setValue(self.settings.default_mpi_ranks)
+            self.status.showMessage("Preferences saved", 4000)
+
+    def _open_data_folder(self) -> None:
+        """Reveal the data directory in the system file manager."""
+        QtGui.QDesktopServices.openUrl(
+            QtCore.QUrl.fromLocalFile(str(self.store.root))
+        )
+
+    def _open_documentation(self) -> None:
+        """Open the bundled documentation index."""
+        docs = Path(__file__).resolve().parent.parent / "docs"
+        target = docs / "README.md"
+        if target.is_file():
+            QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(target)))
+        else:  # pragma: no cover - docs always shipped
+            QtWidgets.QMessageBox.information(
+                self, APP_NAME, f"Documentation is in {docs}"
+            )
 
     def _create_sample_rocket(self) -> None:
         """Generate the reference rocket and load it into the aero tab."""
