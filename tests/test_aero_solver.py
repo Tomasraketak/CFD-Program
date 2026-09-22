@@ -950,14 +950,61 @@ def test_a_rescue_is_not_attempted_when_it_is_turned_off(tmp_path, mesh_file):
     assert len(runner.calls) == 1
 
 
+def test_a_jst_case_is_rescued_at_genuinely_first_order_and_low_cfl(
+    tmp_path, mesh_file
+):
+    """The Mach 0.7 failure: the rescue repeated the scheme that had failed.
+
+    Turning MUSCL off does nothing to JST, and a start of CFL 0.5 on a
+    doubling ramp is back at 100 in eight iterations. Stage A must switch to
+    first-order Roe and hold the CFL down; stage B returns to JST.
+    """
+    runner = FakeRunner(
+        scripted=[
+            {"lines": diverging_rows(good=5)},
+            {
+                "lines": screen_rows(40, final_residual=-3.0),
+                "artifacts": {"restart_flow.dat": "restart"},
+            },
+            {
+                "lines": screen_rows(60, final_residual=-6.0),
+                "artifacts": {"forces_breakdown.dat": FORCES_BREAKDOWN},
+            },
+        ]
+    )
+    result = run_aero_case(
+        request=make_request(flow=FlowParams(velocity_value=0.7)),
+        mesh_path=mesh_file,
+        working_directory=tmp_path / "run",
+        runner=runner,
+        reference_area_m2=0.01,
+        reference_length_m=0.1,
+    )
+
+    first = parse_config(str(runner.calls[0]["config_text"]))
+    assert first["CONV_NUM_METHOD_FLOW"] == "JST"
+
+    stage_a = parse_config(str(runner.calls[1]["config_text"]))
+    assert stage_a["CONV_NUM_METHOD_FLOW"] == "ROE"
+    assert stage_a["MUSCL_FLOW"] == "NO"
+    assert float(stage_a["CFL_NUMBER"]) == pytest.approx(0.5)
+    assert stage_a["CFL_ADAPT_PARAM"] == "( 0.5, 1.05, 0.1, 10 )"
+
+    stage_b = parse_config(str(runner.calls[2]["config_text"]))
+    assert stage_b["CONV_NUM_METHOD_FLOW"] == "JST"
+    assert stage_b["RESTART_SOL"] == "YES"
+    assert result.rescued
+    assert "first-order Roe" in result.notes[0]
+
+
 def test_a_rescue_that_diverges_too_gives_up_instead_of_looping(
     tmp_path, mesh_file
 ):
-    """Two divergences mean the mesh is wrong, not the numerics."""
+    """Two divergences end the attempt, with an honest account of both."""
     runner = FakeRunner(
         scripted=[{"lines": diverging_rows()}, {"lines": diverging_rows()}]
     )
-    with pytest.raises(AeroSolverError, match="diverged twice"):
+    with pytest.raises(AeroSolverError, match="diverged twice") as caught:
         run_aero_case(
             request=make_request(),
             mesh_path=mesh_file,
@@ -967,6 +1014,12 @@ def test_a_rescue_that_diverges_too_gives_up_instead_of_looping(
             reference_length_m=0.1,
         )
     assert len(runner.calls) == 2
+    message = str(caught.value)
+    # It says what was actually tried, and does not declare a verdict it
+    # cannot know: "a mesh or boundary-condition problem" sent the assistant
+    # remeshing four times over a fault in the numerics.
+    assert "first-order Roe" in message and "1.05x" in message
+    assert "boundary-condition problem" not in message
 
 
 def test_a_stage_without_a_restart_file_says_so(tmp_path, mesh_file):
@@ -1013,17 +1066,77 @@ def test_the_supersonic_config_starts_cautiously():
     assert settings["WRT_RESTART_OVERWRITE"] == "YES"
 
 
-def test_the_subsonic_config_keeps_its_brisker_start():
-    """JST at Mach 0.3 does not need the cautious ramp and should not pay for it."""
+def test_the_subsonic_config_no_longer_doubles_its_cfl():
+    """Low subsonic keeps a brisk start, but not a ramp that doubles.
+
+    A doubling ramp -- CFL 5 to 100 in five iterations -- is what sent a
+    Mach 0.7 case to a NaN on every mesh it was given.
+    """
     text = build_aero_config(
         FlowParams(velocity_value=0.3), SolverParams(), base_context()
     )
     settings = parse_config(text)
 
     assert float(settings["CFL_NUMBER"]) == pytest.approx(5.0)
-    assert settings["CFL_ADAPT_PARAM"] == "( 0.1, 2, 0.5, 100 )"
-    assert settings["NUM_METHOD_GRAD"] == "WEIGHTED_LEAST_SQUARES"
+    assert settings["CFL_ADAPT_PARAM"] == "( 0.5, 1.15, 0.1, 100 )"
+    assert settings["NUM_METHOD_GRAD"] == "GREEN_GAUSS"
+    assert "NUM_METHOD_GRAD_RECON" not in settings
     assert "CFL_REDUCTION_TURB" not in settings
+
+
+def test_mach_0_7_starts_as_cautiously_as_a_transonic_case():
+    """The case that failed: still JST, but started gently."""
+    text = build_aero_config(
+        FlowParams(velocity_value=0.7), SolverParams(), base_context()
+    )
+    settings = parse_config(text)
+
+    assert settings["CONV_NUM_METHOD_FLOW"] == "JST"
+    assert float(settings["CFL_NUMBER"]) == pytest.approx(2.0)
+    assert settings["CFL_ADAPT_PARAM"] == "( 0.5, 1.1, 0.1, 50 )"
+    assert float(settings["CFL_REDUCTION_TURB"]) == pytest.approx(0.5)
+    assert settings["NUM_METHOD_GRAD"] == "GREEN_GAUSS"
+
+
+def test_no_regime_ramps_by_more_than_a_fifth_per_iteration():
+    """The mistake must not come back in some other band."""
+    for mach in (0.2, 0.5, 0.6, 0.7, 0.79, 0.8, 1.0, 1.2, 2.0, 3.5):
+        text = build_aero_config(
+            FlowParams(velocity_value=mach), SolverParams(), base_context()
+        )
+        up = float(parse_config(text)["CFL_ADAPT_PARAM"].strip("( )").split(",")[1])
+        assert up <= 1.2, f"Mach {mach} ramps x{up} per iteration"
+
+
+def test_the_cfl_ramp_can_be_set_explicitly():
+    """A low start means nothing if the ramp takes it straight back up."""
+    text = build_aero_config(
+        FlowParams(velocity_value=0.3),
+        SolverParams(cfl_number=0.5, cfl_growth=1.02, cfl_max=4.0),
+        base_context(),
+    )
+    settings = parse_config(text)
+    assert float(settings["CFL_NUMBER"]) == pytest.approx(0.5)
+    assert settings["CFL_ADAPT_PARAM"] == "( 0.5, 1.02, 0.1, 4 )"
+
+
+def test_a_start_above_the_ceiling_lifts_the_ceiling():
+    """An operator's explicit start is never clipped by a regime default."""
+    text = build_aero_config(
+        FlowParams(velocity_value=2.0), SolverParams(cfl_number=40.0), base_context()
+    )
+    assert parse_config(text)["CFL_ADAPT_PARAM"] == "( 0.5, 1.05, 0.1, 40 )"
+
+
+def test_the_scheme_can_be_overridden():
+    text = build_aero_config(
+        FlowParams(velocity_value=0.7),
+        SolverParams(convective_scheme=ConvectiveScheme.ROE),
+        base_context(),
+    )
+    settings = parse_config(text)
+    assert settings["CONV_NUM_METHOD_FLOW"] == "ROE"
+    assert settings["MUSCL_FLOW"] == "YES"
 
 
 def test_an_explicit_cfl_number_is_still_honoured():

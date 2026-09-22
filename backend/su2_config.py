@@ -42,6 +42,13 @@ VENKAT_LIMITER_COEFF = 0.05
 # gets the cautious start-up numerics below.
 MACH_SUPERSONIC_MIN = 1.2
 
+# Mach number from which a subsonic run is started as cautiously as a
+# transonic one. Well below the scheme switch at 0.8: on a finned body the
+# flow over the nose shoulder and the fin leading edges reaches sonic speed
+# locally around freestream Mach 0.7, and a Mach 0.7 case that diverged on
+# every mesh it was given was the evidence.
+MACH_HIGH_SUBSONIC = 0.6
+
 # Starting CFL by regime. A supersonic cold start is the fragile case: the
 # first iterations reconstruct across a shock that does not exist yet, on a
 # mesh sized for the converged one. Subsonic JST is far more forgiving and
@@ -59,7 +66,12 @@ CFL_SUPERSONIC = 1.0
 # a prism cell goes negative. 1.05 ramps over a few hundred iterations, which
 # is what ramping is supposed to mean. The 0.5 down factor backs off without
 # collapsing to the floor and re-ramping in a limit cycle.
-CFL_ADAPT_SUBSONIC = (0.1, 2.0, 0.5, 100.0)
+#
+# Subsonic runs used to keep the doubling ramp on the grounds that JST is
+# forgiving. It is not that forgiving: the same ramp drove a Mach 0.7 case to
+# a NaN on three different meshes. 1.15 still reaches the cap in about twenty
+# iterations, which costs a low-subsonic run next to nothing.
+CFL_ADAPT_SUBSONIC = (0.5, 1.15, 0.1, 100.0)
 CFL_ADAPT_TRANSONIC = (0.5, 1.10, 0.1, 50.0)
 CFL_ADAPT_SUPERSONIC = (0.5, 1.05, 0.1, 25.0)
 
@@ -70,7 +82,7 @@ def default_cfl(mach: float) -> float:
     An explicitly requested CFL is always honoured verbatim; this only fills
     the blank.
     """
-    if mach < MACH_SUBSONIC_MAX:
+    if mach < MACH_HIGH_SUBSONIC:
         return CFL_SUBSONIC
     if mach < MACH_SUPERSONIC_MIN:
         return CFL_TRANSONIC
@@ -79,7 +91,7 @@ def default_cfl(mach: float) -> float:
 
 def default_cfl_adapt_param(mach: float) -> tuple[float, float, float, float]:
     """The CFL adaption quadruple for a Mach number."""
-    if mach < MACH_SUBSONIC_MAX:
+    if mach < MACH_HIGH_SUBSONIC:
         return CFL_ADAPT_SUBSONIC
     if mach < MACH_SUPERSONIC_MIN:
         return CFL_ADAPT_TRANSONIC
@@ -213,16 +225,15 @@ def build_aero_config(
     add("")
 
     add(_banner("Numerics"))
+    # Weighted least squares is ill-conditioned across the jump from
+    # high-aspect-ratio prisms to isotropic tets that a hybrid mesh has at the
+    # top of its boundary layer. One sliver cell with a bad stencil is among
+    # the commonest causes of an early NaN. JST reconstructs nothing, but the
+    # viscous fluxes and the SST source terms use the same gradients, so the
+    # central branch gets the robust choice too.
+    add("NUM_METHOD_GRAD= GREEN_GAUSS")
     if upwind:
-        # Weighted least squares is ill-conditioned across the jump from
-        # high-aspect-ratio prisms to isotropic tets that a hybrid mesh has at
-        # the top of its boundary layer. One sliver cell with a bad stencil is
-        # among the commonest causes of an early NaN, so the shock-capturing
-        # branch trades some accuracy for a gradient that cannot blow up.
-        add("NUM_METHOD_GRAD= GREEN_GAUSS")
         add("NUM_METHOD_GRAD_RECON= GREEN_GAUSS")
-    else:
-        add("NUM_METHOD_GRAD= WEIGHTED_LEAST_SQUARES")
     add(f"CONV_NUM_METHOD_FLOW= {scheme.value}")
     if upwind:
         add(f"MUSCL_FLOW= {_yes_no(solver.muscl)}")
@@ -245,7 +256,7 @@ def build_aero_config(
     add("CONV_NUM_METHOD_TURB= SCALAR_UPWIND")
     add("MUSCL_TURB= NO")
     add("TIME_DISCRE_TURB= EULER_IMPLICIT")
-    if upwind:
+    if upwind or mach >= MACH_HIGH_SUBSONIC:
         # The SST omega source is stiff at a cold start, where omega spans
         # orders of magnitude in the first cells off the wall. Decoupling the
         # turbulence CFL from the flow CFL is the cheapest stabilisation
@@ -285,6 +296,15 @@ def build_aero_config(
     add(f"CFL_ADAPT= {_yes_no(solver.cfl_adapt)}")
     if solver.cfl_adapt:
         down, up, cfl_min, cfl_max = default_cfl_adapt_param(mach)
+        # An explicit ramp rate or ceiling wins. Without these, a starting
+        # CFL of 0.5 was only a starting point: at a doubling ramp it was
+        # back at 100 within eight iterations, which is how a "low-CFL"
+        # rescue stage was nothing of the kind.
+        if solver.cfl_growth is not None:
+            up = solver.cfl_growth
+        if solver.cfl_max is not None:
+            cfl_max = solver.cfl_max
+        cfl_max = max(cfl_max, cfl)
         # The floor is a constant rather than a fraction of the start, so
         # lowering the starting CFL cannot silently drop it into uselessness.
         add(

@@ -26,6 +26,7 @@ from backend.su2_parser import (
 from core.frames import Frame, to_rocket
 from core.models import (
     AeroResult,
+    ConvectiveScheme,
     AeroRunRequest,
     HingeAxis,
     HingeTorqueResult,
@@ -38,6 +39,11 @@ from core.units import dynamic_pressure
 # get their own names rather than overwriting this, so a post-mortem shows
 # what was actually run at each attempt.
 CONFIG_FILENAME = "solver.cfg"
+# How the first-order rescue stage ramps its CFL: slowly, and not far. It is
+# there to put a plausible flow field in place, not to converge quickly.
+RESCUE_CFL_GROWTH = 1.05
+RESCUE_CFL_MAX = 10.0
+
 RESCUE_A_CONFIG_FILENAME = "solver_stage_a.cfg"
 RESCUE_B_CONFIG_FILENAME = "solver_stage_b.cfg"
 FORCES_BREAKDOWN_FILENAME = "forces_breakdown.dat"
@@ -409,6 +415,11 @@ class _StageOutcome:
     divergence_reason: str = ""
     rescued: bool = False
 
+    @property
+    def last_iteration(self) -> int:
+        """The last iteration the solver reported, 0 if it reported none."""
+        return self.parser.records[-1].iteration if self.parser.records else 0
+
 
 def _run_stage(
     request: AeroRunRequest,
@@ -511,17 +522,28 @@ def _rescue(
     solver = request.solver
     notes = [
         f"The first attempt diverged ({first_attempt.divergence_reason}). "
-        f"It was retried automatically as a first-order stage at CFL "
-        f"{solver.rescue_cfl:g} for {solver.rescue_iterations} iterations, "
-        "followed by a second-order restart from that solution."
+        f"It was retried automatically as a first-order Roe stage starting "
+        f"at CFL {solver.rescue_cfl:g}, growing {RESCUE_CFL_GROWTH:g}x per "
+        f"iteration to at most {RESCUE_CFL_MAX:g}, for "
+        f"{solver.rescue_iterations} iterations, followed by a second-order "
+        "restart from that solution."
     ]
     _announce(on_line, "rescue-a", notes[0])
 
+    # Genuinely first order, whatever the original scheme. Turning MUSCL off
+    # only lowers the order of an upwind scheme; JST has no MUSCL to turn
+    # off, so a JST case used to be "rescued" by running the identical
+    # second-order central scheme again. And genuinely low CFL: the start
+    # alone is not enough when the regime's ramp would take it straight back
+    # up.
     stage_a = run_stage(
         replace(
             solver,
+            convective_scheme=ConvectiveScheme.ROE,
             muscl=False,
             cfl_number=solver.rescue_cfl,
+            cfl_growth=RESCUE_CFL_GROWTH,
+            cfl_max=RESCUE_CFL_MAX,
             max_iterations=solver.rescue_iterations,
             restart=False,
         ),
@@ -535,12 +557,20 @@ def _rescue(
         write_frequency=100,
     )
     if stage_a.diverged:
+        # Worded with care: this message is read by the assistant, and an
+        # earlier version that declared "a mesh or boundary-condition
+        # problem" sent it remeshing and resizing the domain four times over
+        # a fault that was in the numerics all along.
         raise AeroSolverError(
-            "the solve diverged twice: at second order "
-            f"({first_attempt.divergence_reason}), and again at first order, "
-            f"CFL {solver.rescue_cfl:g} ({stage_a.divergence_reason}). This is "
-            "a mesh or boundary-condition problem rather than a numerics one "
-            "-- check the mesh quality report and the freestream conditions."
+            "the solve diverged twice: first with the regular settings "
+            f"({first_attempt.divergence_reason}), then again in the "
+            f"first-order Roe rescue at CFL {solver.rescue_cfl:g} growing "
+            f"{RESCUE_CFL_GROWTH:g}x to {RESCUE_CFL_MAX:g} "
+            f"({stage_a.divergence_reason}), at iteration "
+            f"{stage_a.last_iteration}. A first-order scheme at that CFL "
+            "rarely fails on numerics alone. Look first at the mesh quality "
+            "(a minimum below about 0.2 is suspect), then retry with a "
+            "smaller rescue_cfl or cfl_max."
         )
 
     restart = working_directory / RESTART_FILENAME

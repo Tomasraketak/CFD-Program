@@ -35,6 +35,7 @@ from core.frames import AXIS_CONVENTION, Frame
 from core.models import (
     AeroRunRequest,
     AxisDirection,
+    ConvectiveScheme,
     DomainParams,
     DomainShape,
     FlowParams,
@@ -403,6 +404,9 @@ def run_aerodynamic_simulation(
     convergence_residual: float = -5.0,
     turbulence_model: str = "SST",
     cfl_number: float | None = None,
+    cfl_growth: float | None = None,
+    cfl_max: float | None = None,
+    convective_scheme: str | None = None,
 ) -> dict[str, Any]:
     """Execute one aerodynamic simulation point.
 
@@ -436,6 +440,14 @@ def run_aerodynamic_simulation(
         and pinning a number here is how a Mach 1.3 case blows up at
         iteration six. A diverged run is retried automatically at first
         order, and the reply says so when that happened.
+    cfl_growth, cfl_max:
+        How fast the adaptive CFL grows per iteration (1.0-3.0) and where it
+        stops. Null picks them from the regime. A low cfl_number alone is
+        not a low CFL: the ramp decides where it goes, so to run cautiously
+        lower cfl_max and keep cfl_growth near 1.05.
+    convective_scheme:
+        'JST', 'ROE', 'AUSM' or 'HLLC' to override the automatic choice (JST
+        below Mach 0.8, Roe at and above). Null keeps the automatic choice.
     """
     store = _store()
     try:
@@ -461,6 +473,13 @@ def run_aerodynamic_simulation(
                 convergence_residual=convergence_residual,
                 turbulence_model=turbulence_model,
                 cfl_number=cfl_number,
+                cfl_growth=cfl_growth,
+                cfl_max=cfl_max,
+                convective_scheme=(
+                    ConvectiveScheme(convective_scheme.upper())
+                    if convective_scheme
+                    else None
+                ),
             ),
             reference=ReferenceValues(
                 reference_area_m2=reference_area_m2,

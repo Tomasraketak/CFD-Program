@@ -902,3 +902,34 @@ def test_updating_settings_leaves_other_fields_alone(store):
     after = call(server_module.get_settings)
     assert after["default_colormap"] == before["default_colormap"] == "plasma"
     assert after["default_mpi_ranks"] == 4
+
+
+def test_the_scheme_and_cfl_ramp_reach_the_solver(prepared_mesh):
+    """The assistant said it could not switch the scheme; now it can."""
+
+    response = call(
+        server_module.run_aerodynamic_simulation,
+        mesh_id=prepared_mesh,
+        velocity_val=0.7,
+        mpi_ranks=1,
+        convective_scheme="roe",
+        cfl_number=0.5,
+        cfl_growth=1.03,
+        cfl_max=8.0,
+    )
+    assert response["ok"], response.get("error")
+    run = server_module._store().get(response["sim_id"])
+    text = (run.directory / "solver.cfg").read_text()
+    assert "CONV_NUM_METHOD_FLOW= ROE" in text
+    assert "CFL_ADAPT_PARAM= ( 0.5, 1.03, 0.1, 8 )" in text
+
+
+def test_an_unknown_scheme_is_refused(prepared_mesh):
+    response = call(
+        server_module.run_aerodynamic_simulation,
+        mesh_id=prepared_mesh,
+        mpi_ranks=1,
+        convective_scheme="upwind-please",
+    )
+    assert response["ok"] is False
+    assert "invalid parameters" in response["error"]

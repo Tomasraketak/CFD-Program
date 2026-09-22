@@ -102,6 +102,11 @@ Working rules:
 - Report what the tools actually returned. If 'converged' is false or
   'within_target_band' is false, say so rather than presenting the number as
   settled fact.
+- A solve that diverges is rescued automatically. If even the rescue fails,
+  do not remesh or resize the domain on a hunch: check the mesh's
+  min_quality, then retry with convective_scheme 'ROE', cfl_number 0.5,
+  cfl_growth 1.05 and a low cfl_max such as 10. A low cfl_number alone is
+  not a low CFL, because the adaptive ramp decides where it goes.
 - A centre of pressure of NaN at zero angle of attack is correct, not an
   error: without a transverse force there is no defined centre of pressure.
   Suggest 2-5 degrees instead of inventing a value.

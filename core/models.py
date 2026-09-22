@@ -689,14 +689,37 @@ class SolverParams(StrictModel):
         le=100.0,
         description=(
             "Initial CFL number for the implicit Euler time integration. When "
-            "null it is chosen from the flow regime: 5.0 subsonic, 2.0 "
-            "transonic, 1.0 at Mach 1.2 and above, where a cold start is "
-            "fragile. An explicit value is always used as given."
+            "null it is chosen from the flow regime: 5.0 below Mach 0.6, 2.0 "
+            "from Mach 0.6 to 1.2, 1.0 at Mach 1.2 and above, where a cold "
+            "start is fragile. An explicit value is always used as given; it "
+            "is where the adaptive ramp starts, and 'cfl_growth' and "
+            "'cfl_max' decide where it goes."
         ),
     )
     cfl_adapt: bool = Field(
         default=True,
         description="Enable SU2's adaptive CFL ramping.",
+    )
+    cfl_growth: float | None = Field(
+        default=None,
+        ge=1.0,
+        le=3.0,
+        description=(
+            "Factor the CFL grows by after each successful iteration when "
+            "adaptive CFL is on. Null picks it from the regime: 1.15 below "
+            "Mach 0.6, 1.10 up to Mach 1.2, 1.05 above. Values near 2 double "
+            "the CFL every iteration and are how runs blow up in the first "
+            "ten iterations."
+        ),
+    )
+    cfl_max: float | None = Field(
+        default=None,
+        gt=0.0,
+        le=1000.0,
+        description=(
+            "Ceiling for the adaptive CFL. Null picks it from the regime: "
+            "100 below Mach 0.6, 50 up to Mach 1.2, 25 above."
+        ),
     )
     max_iterations: int = Field(
         default=5000,
@@ -764,8 +787,9 @@ class SolverParams(StrictModel):
         default=True,
         description=(
             "When the solve blows up, automatically retry it as a first-order "
-            "low-CFL stage followed by a second-order restart from that "
-            "solution. A rescued result is flagged as such."
+            "Roe stage at low, slowly ramped CFL, followed by a second-order "
+            "restart from that solution in the scheme originally chosen. A "
+            "rescued result is flagged as such."
         ),
     )
     rescue_iterations: int = Field(

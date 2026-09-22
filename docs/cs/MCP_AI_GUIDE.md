@@ -188,7 +188,10 @@ Spustí jeden bod RANS simulace.
 | `max_iterations` | int | 5000 | |
 | `convergence_residual` | float | −5.0 | log₁₀ RMS hustoty |
 | `turbulence_model` | string | `"SST"` | `SST` nebo `SA` |
-| `cfl_number` | float | null | Při null se vybere podle režimu: 5,0 podzvukově, 2,0 transonicky, 1,0 od Mach 1,2 |
+| `cfl_number` | float | null | Počáteční CFL; při null podle režimu: 5,0 pod Mach 0,6, 2,0 do 1,2, 1,0 nad |
+| `cfl_growth` | float | null | Růst adaptivního CFL za iteraci, 1,0–3,0; výchozí podle režimu 1,15 / 1,10 / 1,05 |
+| `cfl_max` | float | null | Strop adaptivního CFL; výchozí podle režimu 100 / 50 / 25 |
+| `convective_scheme` | string | null | `JST`, `ROE`, `AUSM`, `HLLC`; null volí JST pod Mach 0,8, Roe nad |
 
 Vrací `sim_id`, `mach`, `axis_convention`, `forces_rocket_frame_n`
 (`fx`/`fy`/`fz`), `forces_solver_frame_n`, `drag_n`, `lift_n`,
@@ -213,7 +216,11 @@ režim hrubá.
 
 `cfl_number` nechte null, pokud si uživatel výslovně neřekne o konkrétní
 hodnotu. Pevných 5,0 při Mach 1,3 je přesně to, kvůli čemu se výpočet
-rozpadl na šesté iteraci.
+rozpadl na šesté iteraci. Samotné nízké `cfl_number` z výpočtu opatrný
+neudělá: kam CFL dojde, rozhoduje adaptivní rampa, takže snižte `cfl_max`
+a `cfl_growth` nechte kolem 1,05. Když se rozpadne i záchrana, další
+přesíťování obvykle nepomůže; zkontrolujte `min_quality` sítě a pak zkuste
+`convective_scheme: "ROE"` s nízkým `cfl_max`.
 
 Trvá 3–8 minut na referenčním stroji. Vyžaduje SU2.
 

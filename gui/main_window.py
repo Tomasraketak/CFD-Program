@@ -23,6 +23,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from core.models import (
     AeroRunRequest,
     AxisDirection,
+    ConvectiveScheme,
     DomainParams,
     DomainShape,
     FlowParams,
@@ -639,6 +640,37 @@ class AerodynamicsTab(QtWidgets.QWidget):
         self.ranks.setValue(max(1, recommended_mpi_ranks()))
         layout.addRow("MPI ranks", self.ranks)
 
+        # Solver numerics. "Auto" everywhere means "chosen from the Mach
+        # number", which is right for almost every case; these are here for
+        # the case that is not, and so the interface can do what the
+        # assistant can.
+        self.scheme = QtWidgets.QComboBox()
+        self.scheme.addItem("Auto (JST below Mach 0.8, Roe above)", None)
+        for scheme in ConvectiveScheme:
+            self.scheme.addItem(scheme.value, scheme.value)
+        layout.addRow("Scheme", self.scheme)
+
+        self.cfl_start = _auto_spin(0.05, 100.0, 2, 0.5)
+        self.cfl_start.setToolTip(
+            "Starting CFL. Auto: 5 below Mach 0.6, 2 up to Mach 1.2, 1 above."
+        )
+        layout.addRow("CFL start", self.cfl_start)
+        self.cfl_growth = _auto_spin(1.0, 3.0, 2, 0.05)
+        self.cfl_growth.setToolTip(
+            "Growth per iteration of the adaptive CFL. Auto: 1.15 / 1.10 / "
+            "1.05 by regime. Near 2 it doubles every iteration and blows up."
+        )
+        layout.addRow("CFL growth", self.cfl_growth)
+        self.cfl_max = _auto_spin(0.5, 1000.0, 1, 5.0)
+        self.cfl_max.setToolTip("Ceiling of the adaptive CFL. Auto: 100 / 50 / 25.")
+        layout.addRow("CFL max", self.cfl_max)
+
+        self.max_iterations = QtWidgets.QSpinBox()
+        self.max_iterations.setRange(100, 100_000)
+        self.max_iterations.setSingleStep(500)
+        self.max_iterations.setValue(SolverParams().max_iterations)
+        layout.addRow("Max iterations", self.max_iterations)
+
         self.sweep_values = QtWidgets.QLineEdit("0.5, 1.0, 1.5, 2.0, 2.5")
         self.sweep_values.setToolTip("Comma-separated values for the batch sweep")
         layout.addRow("Sweep values", self.sweep_values)
@@ -991,6 +1023,18 @@ class AerodynamicsTab(QtWidgets.QWidget):
             scale_to_meters=self.scale.value(),
         )
 
+    def solver_params(self) -> SolverParams:
+        """Build SolverParams from the form; Auto fields are left to the regime."""
+        scheme = self.scheme.currentData()
+        return SolverParams(
+            mpi_ranks=self.ranks.value(),
+            convective_scheme=ConvectiveScheme(scheme) if scheme else None,
+            cfl_number=_auto_value(self.cfl_start),
+            cfl_growth=_auto_value(self.cfl_growth),
+            cfl_max=_auto_value(self.cfl_max),
+            max_iterations=self.max_iterations.value(),
+        )
+
     def domain_params(self) -> DomainParams:
         """Build DomainParams from the form."""
         return DomainParams(
@@ -1044,7 +1088,7 @@ class AerodynamicsTab(QtWidgets.QWidget):
             boundary_layers=self.layers.value(),
             target_yplus=self.target_yplus.value(),
         )
-        project.solver = SolverParams(mpi_ranks=self.ranks.value())
+        project.solver = self.solver_params()
         project.sweep = SweepSettings.from_text(
             self.sweep_parameter.currentText(), self.sweep_values.text()
         )
@@ -1063,7 +1107,8 @@ class AerodynamicsTab(QtWidgets.QWidget):
             self.velocity_type, self.velocity, self.aoa, self.sideslip,
             self.altitude, self.hinge_name, self.hinge_point,
             self.hinge_direction, self.resolution, self.layers,
-            self.target_yplus, self.ranks, self.sweep_values,
+            self.target_yplus, self.ranks, self.scheme, self.cfl_start,
+            self.cfl_growth, self.cfl_max, self.max_iterations, self.sweep_values,
             self.sweep_parameter,
         ]
         for widget in widgets:
@@ -1136,6 +1181,21 @@ class AerodynamicsTab(QtWidgets.QWidget):
         self.layers.setValue(project.mesh.boundary_layers)
         self.target_yplus.setValue(project.mesh.target_yplus)
         self.ranks.setValue(project.solver.mpi_ranks)
+        solver = project.solver
+        self.scheme.setCurrentIndex(
+            max(
+                0,
+                self.scheme.findData(
+                    solver.convective_scheme.value
+                    if solver.convective_scheme is not None
+                    else None
+                ),
+            )
+        )
+        _set_auto(self.cfl_start, solver.cfl_number)
+        _set_auto(self.cfl_growth, solver.cfl_growth)
+        _set_auto(self.cfl_max, solver.cfl_max)
+        self.max_iterations.setValue(solver.max_iterations)
 
         sweep_index = self.sweep_parameter.findText(project.sweep.parameter)
         if sweep_index >= 0:
@@ -1217,7 +1277,7 @@ class AerodynamicsTab(QtWidgets.QWidget):
             request = AeroRunRequest(
                 mesh_id=self.mesh_id,
                 flow=self.flow_params(),
-                solver=SolverParams(mpi_ranks=self.ranks.value()),
+                solver=self.solver_params(),
                 hinge_axes=self.hinge_axes(),
             )
         except Exception as error:
@@ -1329,7 +1389,7 @@ class AerodynamicsTab(QtWidgets.QWidget):
             AeroRunRequest(
                 mesh_id=self.mesh_id,
                 flow=self.flow_params(),
-                solver=SolverParams(mpi_ranks=self.ranks.value()),
+                solver=self.solver_params(),
                 hinge_axes=self.hinge_axes(),
             ),
             parameter=self.sweep_parameter.currentText(),
@@ -2270,6 +2330,36 @@ def run_gui(argv: list[str] | None = None) -> int:
     window = MainWindow()
     window.show()
     return app.exec()
+
+
+def _auto_spin(
+    low: float, high: float, decimals: int, step: float
+) -> QtWidgets.QDoubleSpinBox:
+    """A number box whose lowest position reads "Auto" and means None."""
+    box = QtWidgets.QDoubleSpinBox()
+    box.setDecimals(decimals)
+    # One step below the real range is the Auto position.
+    box.setRange(low - step, high)
+    box.setSingleStep(step)
+    box.setSpecialValueText("Auto")
+    box.setProperty("floor", low)
+    box.setValue(box.minimum())
+    return box
+
+
+def _auto_value(box: QtWidgets.QDoubleSpinBox) -> float | None:
+    """None when the box shows Auto, otherwise its value.
+
+    Anything typed below the real range counts as Auto too, rather than
+    reaching the solver settings as a zero CFL.
+    """
+    floor = float(box.property("floor") or box.minimum())
+    return None if box.value() < floor else box.value()
+
+
+def _set_auto(box: QtWidgets.QDoubleSpinBox, value: float | None) -> None:
+    """Show a value, or Auto for None."""
+    box.setValue(box.minimum() if value is None else value)
 
 
 def _opposite_axis(direction: str) -> str:

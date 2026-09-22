@@ -324,14 +324,25 @@ Hlásí se po vysíťování: nejhorší buňka jako podíl dokonale tvarované.
 | Nastavení | Výchozí | Poznámka |
 |---|---|---|
 | Turbulence model | SST | SST k-ω, nebo SA (Spalart–Allmaras) |
-| Convective scheme | automaticky | JST pod Mach 0,8, Roe nad |
-| CFL number | automaticky | 5,0 podzvukově, 2,0 transonicky, 1,0 od Mach 1,2. Větší konverguje rychleji, ale méně robustně; číslo, které zadáte, se použije přesně tak |
+| Scheme | Auto | JST pod Mach 0,8, Roe nad; nebo zvolte JST, ROE, AUSM, HLLC |
+| CFL start | Auto | 5,0 pod Mach 0,6, 2,0 do Mach 1,2, 1,0 nad. Číslo, které zadáte, se použije přesně tak |
+| CFL growth | Auto | Kolikrát adaptivní CFL vzroste za iteraci: 1,15 / 1,10 / 1,05 podle režimu |
+| CFL max | Auto | Kde adaptivní CFL skončí: 100 / 50 / 25 podle režimu |
 | Max iterations | 5000 | Tvrdý strop |
 | Convergence residual | −5,0 | log₁₀ RMS rezidua hustoty |
 | MPI ranks | 10 | O dvě méně než vláken |
 | Rescue on divergence | zapnuto | Rozpadlý výpočet zopakovat v prvním řádu a pak restartovat ve druhém |
 | Stall timeout | 300 s | Vzdát to, když řešič takto dlouho mlčí |
 | Wall-time limit | 7200 s | Vzdát to po této celkové době |
+
+**Start je jen start.** Adaptivní CFL od počáteční hodnoty každou iteraci
+roste. Podzvukové výpočty ho dřív zdvojnásobovaly, takže se CFL 5 dostalo na
+100 za pět iterací a případ Mach 0,7 se rozpadl na každé síti; zadat nízké CFL
+nepomohlo, protože ho rampa hned vyhnala zpátky. Pro opatrný výpočet snižte
+**CFL max** a **CFL growth** nechte kolem 1,05. Od Mach 0,6 se výpočet také
+startuje stejně opatrně jako transonický: u rakety s křidélky dosahuje proud
+přes rameno špičky a náběžné hrany křidélek lokálně rychlosti zvuku už kolem
+Mach 0,7.
 
 ### Když se výpočet rozpadne
 
@@ -345,15 +356,18 @@ Nově se automaticky stane dvojí:
 
 - **Rozpad se zachytí okamžitě.** Běh skončí na iteraci, která přestala být
   konečná, místo aby dojel až na strop iterací.
-- **Výpočet se zopakuje.** Proběhne znovu v prvním řádu a s nízkým CFL, aby
-  vznikl ráz zhruba na správném místě, a z tohoto řešení se restartuje ve
-  druhém řádu. Výsledek je označen jako **rescued** a nese poznámku, že k
+- **Výpočet se zopakuje.** Proběhne znovu jako **Roe prvního řádu** s nízkým
+  CFL (0,5, roste 1,05× za iteraci nejvýš na 10), aby proudění dostalo zhruba
+  správný tvar, a z tohoto řešení se restartuje ve druhém řádu v původně
+  zvoleném schématu. Výsledek je označen jako **rescued** a nese poznámku, že k
   tomu došlo. Čísla platí, ale případ potřeboval pomoc — a to obvykle
   znamená, že síť je na daný režim hrubší, než by měla být. Pokud se to
   stává často, zjemněte síť, místo abyste spoléhali na záchranu.
 
-Když se rozpadne i záchranný běh, chyba uvede oba pokusy i jejich nastavení:
-to už je problém sítě nebo okrajových podmínek, ne numeriky.
+Když se rozpadne i záchranný běh, chyba uvede oba pokusy i jejich nastavení.
+Schéma prvního řádu při takovém CFL málokdy selže jen kvůli numerice, takže
+se nejdřív podívejte na kvalitu sítě — minimum pod zhruba 0,2 je podezřelé —
+a pak zkuste menší CFL max.
 
 ### Výpočet, který se nikdy nevrátí
 

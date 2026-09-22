@@ -410,9 +410,15 @@ RANS solve often reaches usable forces well before the residual target, and
 the forces are what the operator wants.
 
 **Starting a supersonic case** is the fragile part, and the numerics say so.
-The starting CFL and its adaption follow the regime: subsonic JST keeps a
-brisk ramp, while from Mach 1.2 the solve starts at CFL 1 and climbs 5% per
-iteration rather than doubling. Doubling is what killed a Mach 1.3 run at
+The starting CFL and its adaption follow the regime, and no regime doubles
+it any more: low subsonic starts at CFL 5 and grows 15% per iteration, from
+Mach 0.6 the start is CFL 2 growing 10%, and from Mach 1.2 it starts at CFL 1
+and climbs 5% per iteration. The subsonic ramp used to double too, and a
+Mach 0.7 case diverged on three meshes before that was found; the rescue
+had been no help, because its "first order" did nothing to JST and its low
+starting CFL was back at 100 eight iterations later. It now runs genuinely
+first-order Roe with the ramp held down, and scheme, start, growth and
+ceiling can all be set from the GUI and over MCP. Doubling is what killed a Mach 1.3 run at
 iteration six — from CFL 5 it is past 150 by then, far beyond what the linear
 solve can follow, at which point the implicit update is a badly under-relaxed
 explicit one and a prism cell goes negative. The upwind branch also uses

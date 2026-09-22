@@ -332,14 +332,25 @@ one.
 | Setting | Default | Notes |
 |---|---|---|
 | Turbulence model | SST | SST k-ω, or SA (Spalart–Allmaras) |
-| Convective scheme | automatic | JST below Mach 0.8, Roe above |
-| CFL number | automatic | 5.0 subsonic, 2.0 transonic, 1.0 from Mach 1.2. Larger converges faster but less robustly; a number you type is always used as given |
+| Scheme | Auto | JST below Mach 0.8, Roe above; or pick JST, ROE, AUSM, HLLC |
+| CFL start | Auto | 5.0 below Mach 0.6, 2.0 up to Mach 1.2, 1.0 above. A number you type is always used as given |
+| CFL growth | Auto | Factor the adaptive CFL grows by each iteration: 1.15 / 1.10 / 1.05 by regime |
+| CFL max | Auto | Where the adaptive CFL stops: 100 / 50 / 25 by regime |
 | Max iterations | 5000 | Hard cap |
 | Convergence residual | −5.0 | log₁₀ of RMS density residual |
 | MPI ranks | 10 | Two below the thread count |
 | Rescue on divergence | on | Retry a blown-up solve at first order, then restart at second |
 | Stall timeout | 300 s | Give up if the solver goes silent for this long |
 | Wall-time limit | 7200 s | Give up after this long in total |
+
+**The start is only the start.** The adaptive CFL grows from the start
+value every iteration. Subsonic runs used to double it, which took CFL 5 to
+100 in five iterations and made a Mach 0.7 case diverge on every mesh it was
+given; typing a low CFL did not help, because the ramp took it straight back
+up. To run cautiously, lower **CFL max** and keep **CFL growth** near 1.05.
+From Mach 0.6 a run is also started as gently as a transonic one: on a finned
+body the flow over the nose shoulder and the fin leading edges reaches sonic
+speed locally around Mach 0.7.
 
 ### When a solve blows up
 
@@ -353,17 +364,19 @@ Two things now happen automatically:
 
 - **The blow-up is caught immediately.** The run stops at the iteration that
   went non-finite rather than grinding on to the iteration cap.
-- **It is retried.** The solve runs again at first order and a low CFL to
-  establish a shock in roughly the right place, then restarts from that
-  solution at second order. The result is marked **rescued** and carries a
+- **It is retried.** The solve runs again as **first-order Roe** at a low CFL
+  (0.5, growing 1.05× per iteration to at most 10) to establish the flow in
+  roughly the right shape, then restarts from that solution at second order
+  in the scheme originally chosen. The result is marked **rescued** and carries a
   note saying so. The numbers are valid, but the case needed help to get
   there, and that usually means the mesh is coarser than the flow condition
   wants. If it happens often, refine the mesh rather than relying on the
   rescue.
 
 If the rescue diverges too, the failure is reported with both attempts and
-their settings: that is a mesh or boundary-condition problem, not a numerics
-one.
+their settings. A first-order scheme at that CFL rarely fails on numerics
+alone, so look at the mesh quality first — a minimum below about 0.2 is
+suspect — and then try a smaller CFL max.
 
 ### A solve that never returns
 

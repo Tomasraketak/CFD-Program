@@ -190,7 +190,10 @@ Run one RANS simulation point.
 | `max_iterations` | int | 5000 | |
 | `convergence_residual` | float | −5.0 | log₁₀ RMS density |
 | `turbulence_model` | string | `"SST"` | `SST` or `SA` |
-| `cfl_number` | float | null | Chosen from the regime when null: 5.0 subsonic, 2.0 transonic, 1.0 from Mach 1.2 |
+| `cfl_number` | float | null | Starting CFL; from the regime when null: 5.0 below Mach 0.6, 2.0 up to 1.2, 1.0 above |
+| `cfl_growth` | float | null | Adaptive CFL growth per iteration, 1.0–3.0; regime default 1.15 / 1.10 / 1.05 |
+| `cfl_max` | float | null | Adaptive CFL ceiling; regime default 100 / 50 / 25 |
+| `convective_scheme` | string | null | `JST`, `ROE`, `AUSM`, `HLLC`; null chooses JST below Mach 0.8, Roe above |
 
 Returns `sim_id`, `mach`, `axis_convention`, `forces_rocket_frame_n`
 (`fx`/`fy`/`fz`), `forces_solver_frame_n`, `drag_n`, `lift_n`,
@@ -215,7 +218,12 @@ ordinary one, because a case that needed rescuing is usually telling the
 operator their mesh is coarse for the flow condition.
 
 Leave `cfl_number` null unless the operator asks for a specific value.
-Pinning 5.0 at Mach 1.3 is what made the solve diverge at iteration six.
+Pinning 5.0 at Mach 1.3 is what made the solve diverge at iteration six. A
+low `cfl_number` alone does not make a cautious run: the adaptive ramp
+decides where the CFL goes, so lower `cfl_max` and keep `cfl_growth` near
+1.05. If even the rescue diverges, a second remesh is rarely the answer;
+check the mesh's `min_quality`, then try `convective_scheme: "ROE"` with a
+low `cfl_max`.
 
 Takes 3–8 minutes on the reference machine. Requires SU2.
 

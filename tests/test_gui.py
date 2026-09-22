@@ -941,3 +941,42 @@ def test_the_clock_stops_when_the_worker_does(aero_tab):
 
     assert aero_tab.step_label.text() == ""
     assert not aero_tab._step_timer.isActive()
+
+
+def test_solver_numerics_default_to_auto(aero_tab):
+    """Auto leaves every choice to the Mach number."""
+    solver = aero_tab.solver_params()
+    assert solver.convective_scheme is None
+    assert solver.cfl_number is None
+    assert solver.cfl_growth is None
+    assert solver.cfl_max is None
+
+
+def test_solver_numerics_can_be_set_and_round_trip(aero_tab):
+    """The interface can do what the assistant can: pick scheme and ramp."""
+    from core.models import ConvectiveScheme
+    from core.project import default_project
+
+    aero_tab.scheme.setCurrentIndex(aero_tab.scheme.findData("ROE"))
+    aero_tab.cfl_start.setValue(0.5)
+    aero_tab.cfl_growth.setValue(1.05)
+    aero_tab.cfl_max.setValue(10.0)
+    aero_tab.max_iterations.setValue(8000)
+    solver = aero_tab.solver_params()
+    assert solver.convective_scheme is ConvectiveScheme.ROE
+    assert solver.cfl_number == pytest.approx(0.5)
+    assert solver.cfl_growth == pytest.approx(1.05)
+    assert solver.cfl_max == pytest.approx(10.0)
+    assert solver.max_iterations == 8000
+
+    project = default_project()
+    aero_tab.write_to_project(project)
+    aero_tab.scheme.setCurrentIndex(0)
+    aero_tab.cfl_start.setValue(aero_tab.cfl_start.minimum())
+    aero_tab.apply_project(project)
+    assert aero_tab.solver_params() == solver
+
+
+def test_a_cfl_typed_below_the_range_is_auto_not_zero(aero_tab):
+    aero_tab.cfl_start.setValue(0.0)
+    assert aero_tab.solver_params().cfl_number is None
