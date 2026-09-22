@@ -30,7 +30,7 @@ from typing import Sequence
 import numpy as np
 
 from backend.runner import SolverRunner
-from backend.su2_config import parse_config, write_config
+from backend.su2_config import CFL_SUBSONIC, parse_config, write_config
 from backend.su2_parser import SU2OutputParser
 from core.atmosphere import CP_AIR, GAMMA_AIR, R_SPECIFIC_AIR, isa_state
 from core.models import SolverParams, ThermalParams, ThermalResult
@@ -612,7 +612,11 @@ def build_thermal_config(
     add("MUSCL_FLOW= YES")
     add("SLOPE_LIMITER_FLOW= VENKATAKRISHNAN")
     add("TIME_DISCRE_FLOW= EULER_IMPLICIT")
-    add(f"CFL_NUMBER= {solver.cfl_number:g}")
+    # The thermal track is low-speed incompressible throughout, so an
+    # unspecified CFL takes the subsonic value rather than the cautious
+    # supersonic one the aero regime selector would otherwise pick.
+    cfl = solver.cfl_number if solver.cfl_number is not None else CFL_SUBSONIC
+    add(f"CFL_NUMBER= {cfl:g}")
     add(f"ITER= {solver.max_iterations}")
     add(f"CONV_RESIDUAL_MINVAL= {solver.convergence_residual:g}")
     add("")
@@ -707,6 +711,8 @@ def run_thermal_case(
         working_directory=working_directory,
         ranks=solver.mpi_ranks,
         on_line=handle_line,
+        stall_timeout_s=solver.stall_timeout_s,
+        wall_time_limit_s=solver.wall_time_limit_s,
     )
     wall_time = time.perf_counter() - started
 

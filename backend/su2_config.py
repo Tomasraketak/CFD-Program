@@ -38,6 +38,53 @@ WALL_FUNCTION = "STANDARD_WALL_FUNCTION"
 # 0.05 is the usual compromise between shock capture and convergence.
 VENKAT_LIMITER_COEFF = 0.05
 
+# Mach number at and above which a run is treated as properly supersonic and
+# gets the cautious start-up numerics below.
+MACH_SUPERSONIC_MIN = 1.2
+
+# Starting CFL by regime. A supersonic cold start is the fragile case: the
+# first iterations reconstruct across a shock that does not exist yet, on a
+# mesh sized for the converged one. Subsonic JST is far more forgiving and
+# pays nothing for a brisker start.
+CFL_SUBSONIC = 5.0
+CFL_TRANSONIC = 2.0
+CFL_SUPERSONIC = 1.0
+
+# (down factor, up factor, min CFL, max CFL) for CFL_ADAPT_PARAM.
+#
+# The up factor is the load-bearing number. At 2.0 the CFL doubles on every
+# successful iteration, so a run starting at 5 is past 150 by iteration six --
+# far beyond what a 20-iteration FGMRES/ILU(0) solve can actually solve, at
+# which point the "implicit" update is a badly under-relaxed explicit one and
+# a prism cell goes negative. 1.05 ramps over a few hundred iterations, which
+# is what ramping is supposed to mean. The 0.5 down factor backs off without
+# collapsing to the floor and re-ramping in a limit cycle.
+CFL_ADAPT_SUBSONIC = (0.1, 2.0, 0.5, 100.0)
+CFL_ADAPT_TRANSONIC = (0.5, 1.10, 0.1, 50.0)
+CFL_ADAPT_SUPERSONIC = (0.5, 1.05, 0.1, 25.0)
+
+
+def default_cfl(mach: float) -> float:
+    """The starting CFL for a Mach number, when the caller did not choose one.
+
+    An explicitly requested CFL is always honoured verbatim; this only fills
+    the blank.
+    """
+    if mach < MACH_SUBSONIC_MAX:
+        return CFL_SUBSONIC
+    if mach < MACH_SUPERSONIC_MIN:
+        return CFL_TRANSONIC
+    return CFL_SUPERSONIC
+
+
+def default_cfl_adapt_param(mach: float) -> tuple[float, float, float, float]:
+    """The CFL adaption quadruple for a Mach number."""
+    if mach < MACH_SUBSONIC_MAX:
+        return CFL_ADAPT_SUBSONIC
+    if mach < MACH_SUPERSONIC_MIN:
+        return CFL_ADAPT_TRANSONIC
+    return CFL_ADAPT_SUPERSONIC
+
 
 @dataclass
 class ConfigContext:
@@ -50,6 +97,8 @@ class ConfigContext:
     wall_markers: tuple[str, ...]
     has_symmetry: bool = False
     restart_filename: str | None = None
+    history_filename: str = "history"
+    output_write_frequency: int = 250
 
 
 def select_convective_scheme(
@@ -164,7 +213,16 @@ def build_aero_config(
     add("")
 
     add(_banner("Numerics"))
-    add("NUM_METHOD_GRAD= WEIGHTED_LEAST_SQUARES")
+    if upwind:
+        # Weighted least squares is ill-conditioned across the jump from
+        # high-aspect-ratio prisms to isotropic tets that a hybrid mesh has at
+        # the top of its boundary layer. One sliver cell with a bad stencil is
+        # among the commonest causes of an early NaN, so the shock-capturing
+        # branch trades some accuracy for a gradient that cannot blow up.
+        add("NUM_METHOD_GRAD= GREEN_GAUSS")
+        add("NUM_METHOD_GRAD_RECON= GREEN_GAUSS")
+    else:
+        add("NUM_METHOD_GRAD= WEIGHTED_LEAST_SQUARES")
     add(f"CONV_NUM_METHOD_FLOW= {scheme.value}")
     if upwind:
         add(f"MUSCL_FLOW= {_yes_no(solver.muscl)}")
@@ -172,8 +230,13 @@ def build_aero_config(
         add(f"VENKAT_LIMITER_COEFF= {VENKAT_LIMITER_COEFF}")
         if scheme is ConvectiveScheme.ROE:
             # Entropy fix, needed to keep the Roe solver from admitting
-            # expansion shocks at supersonic Mach numbers.
-            add("ENTROPY_FIX_COEFF= 0.05")
+            # expansion shocks at supersonic Mach numbers. 0.05 is the usual
+            # production value once a solution exists; it is thin during a
+            # start-up where u-c changes sign erratically at the nose shock
+            # and the fin leading edges, so a properly supersonic run gets
+            # more. Above roughly 0.2 the shock itself starts to smear.
+            fix = 0.10 if mach >= MACH_SUPERSONIC_MIN else 0.05
+            add(f"ENTROPY_FIX_COEFF= {fix:g}")
     else:
         # JST's 2nd and 4th order dissipation coefficients.
         add("JST_SENSOR_COEFF= ( 0.5, 0.02 )")
@@ -181,24 +244,53 @@ def build_aero_config(
 
     add("CONV_NUM_METHOD_TURB= SCALAR_UPWIND")
     add("MUSCL_TURB= NO")
-    add("SLOPE_LIMITER_TURB= VENKATAKRISHNAN")
     add("TIME_DISCRE_TURB= EULER_IMPLICIT")
+    if upwind:
+        # The SST omega source is stiff at a cold start, where omega spans
+        # orders of magnitude in the first cells off the wall. Decoupling the
+        # turbulence CFL from the flow CFL is the cheapest stabilisation
+        # available.
+        add("CFL_REDUCTION_TURB= 0.5")
+    # Written explicitly rather than left to defaults: SU2's 5% freestream
+    # turbulence is not physical for atmospheric flight, and pinning it keeps
+    # results comparable across SU2 builds.
+    add("FREESTREAM_TURBULENCEINTENSITY= 0.01")
+    add("FREESTREAM_TURB2LAMVISCRATIO= 10.0")
+    add("")
+
+    add(_banner("Wall model"))
+    # These are the v8 defaults, written out so a future SU2 changing one
+    # cannot silently change our results.
+    add("WALLMODEL_KAPPA= 0.41")
+    add("WALLMODEL_B= 5.5")
+    add("WALLMODEL_MAXITER= 200")
+    add("WALLMODEL_RELFAC= 0.5")
     add("")
 
     add(_banner("Linear solver"))
     add("LINEAR_SOLVER= FGMRES")
     add("LINEAR_SOLVER_PREC= ILU")
     add("LINEAR_SOLVER_ILU_FILL_IN= 0")
-    add("LINEAR_SOLVER_ERROR= 1E-6")
-    add("LINEAR_SOLVER_ITER= 10")
+    # 1E-6 is unreachable in ten FGMRES iterations on an ILU(0)-preconditioned
+    # RANS Jacobian, so the old tolerance was decorative and the solve always
+    # burned its iteration cap anyway. 20 iterations at 1E-4 is the usual
+    # production pairing and gives a genuinely implicit update.
+    add("LINEAR_SOLVER_ERROR= 1E-4")
+    add("LINEAR_SOLVER_ITER= 20")
     add("")
 
     add(_banner("Convergence"))
-    add(f"CFL_NUMBER= {solver.cfl_number:g}")
+    cfl = solver.cfl_number if solver.cfl_number is not None else default_cfl(mach)
+    add(f"CFL_NUMBER= {cfl:g}")
     add(f"CFL_ADAPT= {_yes_no(solver.cfl_adapt)}")
     if solver.cfl_adapt:
-        # (down factor, up factor, min CFL, max CFL)
-        add(f"CFL_ADAPT_PARAM= ( 0.1, 2.0, {solver.cfl_number * 0.1:g}, 100.0 )")
+        down, up, cfl_min, cfl_max = default_cfl_adapt_param(mach)
+        # The floor is a constant rather than a fraction of the start, so
+        # lowering the starting CFL cannot silently drop it into uselessness.
+        add(
+            f"CFL_ADAPT_PARAM= ( {down:g}, {up:g}, "
+            f"{min(cfl_min, cfl):g}, {cfl_max:g} )"
+        )
     add(f"ITER= {solver.max_iterations}")
     add("CONV_FIELD= RMS_DENSITY")
     add(f"CONV_RESIDUAL_MINVAL= {solver.convergence_residual:g}")
@@ -209,7 +301,7 @@ def build_aero_config(
     add(f"MESH_FILENAME= {context.mesh_filename}")
     add("MESH_FORMAT= SU2")
     add("TABULAR_FORMAT= CSV")
-    add("CONV_FILENAME= history")
+    add(f"CONV_FILENAME= {context.history_filename}")
     add("VOLUME_FILENAME= flow")
     add("SURFACE_FILENAME= surface_flow")
     add("RESTART_FILENAME= restart_flow.dat")
@@ -217,7 +309,12 @@ def build_aero_config(
         add(f"SOLUTION_FILENAME= {context.restart_filename}")
     add("OUTPUT_FILES= ( RESTART, PARAVIEW_MULTIBLOCK, SURFACE_CSV )")
     add("WRT_VOLUME_OVERWRITE= YES")
-    add("OUTPUT_WRT_FREQ= 250")
+    # Without this the restart lands as restart_flow_00400.dat and anything
+    # that expects to find restart_flow.dat -- the rescue's stage handover,
+    # among others -- fails on a missing file.
+    add("WRT_RESTART_OVERWRITE= YES")
+    add("READ_BINARY_RESTART= YES")
+    add(f"OUTPUT_WRT_FREQ= {context.output_write_frequency}")
     add(
         "SCREEN_OUTPUT= ( INNER_ITER, RMS_DENSITY, RMS_ENERGY, LIFT, DRAG, "
         "SIDEFORCE, MOMENT_X, MOMENT_Y, MOMENT_Z )"
@@ -239,6 +336,10 @@ def build_config_for_request(
     measured_length_m: float,
     wall_markers: tuple[str, ...] = (MARKER_WALL_ROCKET, MARKER_WALL_FINS),
     has_symmetry: bool = False,
+    solver: SolverParams | None = None,
+    restart_filename: str | None = None,
+    history_filename: str = "history",
+    output_write_frequency: int = 250,
 ) -> str:
     """Build a configuration from an :class:`AeroRunRequest`.
 
@@ -246,6 +347,9 @@ def build_config_for_request(
     the operator did not specify them. The moment origin defaults to the first
     hinge axis point when one is defined, so hinge moments are reported about
     the hinge rather than about an unrelated origin.
+
+    ``solver`` overrides the request's own settings, which is how the rescue
+    runs a first-order stage without altering what the operator asked for.
     """
     area = reference.reference_area_m2 or measured_area_m2
     length = reference.reference_length_m or measured_length_m
@@ -264,8 +368,11 @@ def build_config_for_request(
         moment_origin=origin,  # type: ignore[arg-type]
         wall_markers=wall_markers,
         has_symmetry=has_symmetry,
+        restart_filename=restart_filename,
+        history_filename=history_filename,
+        output_write_frequency=output_write_frequency,
     )
-    return build_aero_config(request.flow, request.solver, context)
+    return build_aero_config(request.flow, solver or request.solver, context)
 
 
 def write_config(text: str, path: Path | str) -> Path:

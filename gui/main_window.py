@@ -191,6 +191,11 @@ class ResidualChart(QtWidgets.QWidget):
 
         self._iterations: list[int] = []
         self._series: dict[str, list[float]] = {}
+        # A rescued run is several solver invocations, each counting its own
+        # iterations from 1. Without an offset the trace folds back on itself
+        # and the chart looks broken.
+        self._stage_offset = 0
+        self._last_iteration = 0
 
         if not HAVE_CHARTS:  # pragma: no cover - optional dependency
             placeholder = QtWidgets.QLabel(
@@ -226,14 +231,26 @@ class ResidualChart(QtWidgets.QWidget):
         """Reset the chart for a new run."""
         self._iterations.clear()
         self._series.clear()
+        self._stage_offset = 0
+        self._last_iteration = 0
         for curve in self.curves.values():
             curve.setData([], [])
+
+    def begin_stage(self) -> None:
+        """Continue the x axis into a new solver stage.
+
+        Called when a diverged run is retried: the solver restarts its
+        iteration counter, but the operator is watching one continuous solve.
+        """
+        self._stage_offset = self._last_iteration
 
     def add_record(self, record) -> None:
         """Append one solver iteration."""
         if not self.curves:
             return
-        self._iterations.append(record.iteration)
+        iteration = record.iteration + self._stage_offset
+        self._last_iteration = iteration
+        self._iterations.append(iteration)
         for name, curve in self.curves.items():
             value = record.get(name)
             series = self._series.setdefault(name, [])
@@ -1145,10 +1162,18 @@ class AerodynamicsTab(QtWidgets.QWidget):
             reference_length_m=float(mesh_record.metadata.get("reference_length_m", 1.0)),
         )
         worker.signals.progress.connect(self.append_log)
+        worker.signals.progress.connect(self._watch_for_stage_change)
         worker.signals.iteration.connect(self.chart.add_record)
         worker.signals.finished.connect(self._run_finished)
         worker.signals.failed.connect(self._operation_failed)
         self._start(worker, "Solving ...")
+
+    def _watch_for_stage_change(self, line: str) -> None:
+        """Keep the convergence chart continuous across a rescue stage."""
+        from backend.aero_solver import STAGE_MARKER_PREFIX
+
+        if line.startswith(STAGE_MARKER_PREFIX):
+            self.chart.begin_stage()
 
     def _run_finished(self, result: Any) -> None:
         """Populate the result cards."""
@@ -1161,11 +1186,20 @@ class AerodynamicsTab(QtWidgets.QWidget):
             self.card_torque.set_value(result.hinge_torques[0].torque_nm, "{:.4f}")
         cop_x = result.center_of_pressure[0]
         self.card_cop.set_value(cop_x, "{:.4f}")
-        self.card_cd.set_colour(SUCCESS if result.converged else WARNING)
+        # A rescued run converged in the end, but it needed help getting
+        # there -- which the operator should see on the card, not only in the
+        # log they may have scrolled past.
+        self.card_cd.set_colour(
+            SUCCESS if result.converged and not result.rescued
+            else WARNING if result.converged
+            else DANGER
+        )
         self.append_log(
             f"Converged={result.converged} after {result.iterations} iterations "
             f"({result.wall_time_s:.1f}s)"
         )
+        for note in getattr(result, "notes", []):
+            self.append_log(note)
 
     def run_sweep(self) -> None:
         """Start a parametric sweep."""

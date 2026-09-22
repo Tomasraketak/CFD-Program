@@ -377,7 +377,7 @@ def run_aerodynamic_simulation(
     max_iterations: int = 5000,
     convergence_residual: float = -5.0,
     turbulence_model: str = "SST",
-    cfl_number: float = 5.0,
+    cfl_number: float | None = None,
 ) -> dict[str, Any]:
     """Execute one aerodynamic simulation point.
 
@@ -402,8 +402,14 @@ def run_aerodynamic_simulation(
         Override the values measured from the CAD.
     mpi_ranks:
         MPI ranks for the solver; 10 suits a 6-core/12-thread machine.
-    max_iterations, convergence_residual, turbulence_model, cfl_number:
+    max_iterations, convergence_residual, turbulence_model:
         Solver controls.
+    cfl_number:
+        Starting CFL. Leave null to pick it from the flow regime: a cold
+        supersonic start needs a far more cautious one than a subsonic run,
+        and pinning a number here is how a Mach 1.3 case blows up at
+        iteration six. A diverged run is retried automatically at first
+        order, and the reply says so when that happened.
     """
     store = _store()
     try:
@@ -506,6 +512,10 @@ def run_aerodynamic_simulation(
         final_residual_rho=result.final_residual_rho,
         converged=result.converged,
         wall_time_s=result.wall_time_s,
+        # An operator who is handed a silently rescued number will over-trust
+        # it, so the assistant is told and asked to pass it on.
+        rescued=result.rescued,
+        notes=result.notes,
     )
 
 

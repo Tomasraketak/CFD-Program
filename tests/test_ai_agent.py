@@ -857,3 +857,41 @@ def test_a_retry_reaches_the_transcript(monkeypatch, instant_backoff):
     assistant.ask("hello")
 
     assert any(event.kind == EVENT_RETRY for event in events)
+
+
+def test_a_stop_request_ends_the_conversation_after_the_current_round():
+    """Stop must unwind cleanly, not leave the panel locked forever.
+
+    The stop arrives while a request is in flight -- that is the only time
+    the button exists -- so it is raised from inside the client call.
+    """
+    assistant = AIAssistant(
+        FakeChatClient([tool_reply("check_environment", {}), text_reply("second")])
+    )
+
+    original = assistant.client.complete
+
+    def complete_then_stop(*args, **kwargs):
+        message = original(*args, **kwargs)
+        assistant.request_stop()
+        return message
+
+    assistant.client.complete = complete_then_stop
+
+    reply = assistant.ask("do something long")
+
+    assert reply.stopped_early
+    assert "stopped at your request" in reply.text.lower()
+    assert reply.rounds == 1
+
+
+def test_a_stop_applies_only_to_the_request_it_interrupted():
+    """The next question must not inherit the previous one's cancellation."""
+    assistant = AIAssistant(FakeChatClient([text_reply("answer")]))
+    assistant.request_stop()
+
+    # A stop nobody is waiting on is stale by the time the next question is
+    # asked, so it must not silence the answer.
+    reply = assistant.ask("a fresh question")
+    assert not reply.stopped_early
+    assert reply.text == "answer"

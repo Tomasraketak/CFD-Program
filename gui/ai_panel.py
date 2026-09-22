@@ -325,9 +325,17 @@ class AITab(QtWidgets.QWidget):
         self.send_button = QtWidgets.QPushButton("Send")
         self.send_button.setObjectName("primary")
         self.send_button.clicked.connect(self.send)
+        self.stop_button = QtWidgets.QPushButton("Stop")
+        self.stop_button.setToolTip(
+            "Cancel the running solve and stop the assistant after the "
+            "current step."
+        )
+        self.stop_button.setEnabled(False)
+        self.stop_button.clicked.connect(self.stop)
         self.new_chat_button = QtWidgets.QPushButton("New conversation")
         self.new_chat_button.clicked.connect(self.new_conversation)
         controls.addWidget(self.send_button)
+        controls.addWidget(self.stop_button)
         controls.addWidget(self.new_chat_button)
         controls.addStretch(1)
         layout.addLayout(controls)
@@ -563,11 +571,27 @@ class AITab(QtWidgets.QWidget):
         self._start_meter()
         self.pool.start(worker)
 
+    def stop(self) -> None:
+        """Cancel the running solve and stop the assistant.
+
+        The panel is not unlocked here: the worker is still unwinding, and
+        it unlocks itself when it reports back. Pressing Stop twice does no
+        harm.
+        """
+        if not self._busy or self.assistant is None:
+            return
+        self._append_note("Stopping — cancelling any running solver …")
+        self.stop_button.setEnabled(False)
+        self.stop_button.setText("Stopping …")
+        self.assistant.request_stop()
+
     def _set_busy(self, busy: bool) -> None:
         """Enable or disable input while a request is in flight."""
         self._busy = busy
         self.send_button.setEnabled(not busy)
         self.send_button.setText("Working …" if busy else "Send")
+        self.stop_button.setEnabled(busy)
+        self.stop_button.setText("Stop")
         self.input.setReadOnly(busy)
 
     def _start_meter(self) -> None:

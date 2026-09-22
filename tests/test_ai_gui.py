@@ -567,3 +567,43 @@ def test_a_long_argument_is_clipped_not_dumped(ai_tab):
     line = ai_tab.transcript.toPlainText().strip().splitlines()[-1]
     assert len(line) < 120
     assert line.endswith("…)")
+
+
+# -- stopping ---------------------------------------------------------------
+
+
+def test_stop_cancels_the_running_solve_and_unlocks_the_panel(ai_tab, qt_app):
+    """Without this the only way out of a wedged solve was closing the program.
+
+    The tab's Cancel button never knew about the runner the MCP layer builds
+    for an assistant-run solve, so a fifteen-minute hang locked the panel for
+    good.
+    """
+    from backend.runner import FakeRunner, _register_runner, _unregister_runner
+
+    assistant = make_assistant(ai_tab, [text_reply("ok")])
+    solving = FakeRunner(lines=[])
+    _register_runner(solving)
+    try:
+        ai_tab._set_busy(True)
+        assert ai_tab.stop_button.isEnabled()
+
+        ai_tab.stop()
+
+        assert assistant.stop_requested
+        assert solving._cancelled.is_set(), "the running solve was not cancelled"
+    finally:
+        _unregister_runner(solving)
+
+    # The worker unlocks the panel when it reports back.
+    ai_tab._set_busy(False)
+    assert not ai_tab.stop_button.isEnabled()
+    assert ai_tab.send_button.isEnabled()
+
+
+def test_stop_does_nothing_when_nothing_is_running(ai_tab, qt_app):
+    """Pressing Stop on an idle panel must not disturb it."""
+    make_assistant(ai_tab, [text_reply("ok")])
+    ai_tab.stop()
+    assert not ai_tab.assistant.stop_requested
+    assert ai_tab.send_button.isEnabled()

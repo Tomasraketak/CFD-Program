@@ -7,6 +7,7 @@ machine that has no solver installed.
 
 from __future__ import annotations
 
+import os
 import sys
 import textwrap
 import time
@@ -17,9 +18,13 @@ import pytest
 from backend.runner import (
     BackgroundRun,
     FakeRunner,
+    RunOutcome,
     SolverFailedError,
     SolverNotAvailableError,
+    SolverTimeoutError,
     SU2Runner,
+    cancel_all_runs,
+    live_runners,
 )
 
 
@@ -127,16 +132,166 @@ def test_working_directory_is_created_and_used(tmp_path, script):
 
 
 def test_timeout_ends_the_run(tmp_path, script):
-    """A run exceeding its timeout stops rather than hanging."""
+    """A chatty solver that never finishes hits the wall-clock cap.
+
+    The run is abandoned, so it raises rather than returning: a partial
+    outcome reported as a good one is how a given-up solve came to look
+    finished.
+    """
     runner = ScriptRunner(script, ["100000"])
     started = time.perf_counter()
-    outcome = runner.run(
-        config_path=tmp_path / "c.cfg",
-        working_directory=tmp_path,
-        timeout_s=0.5,
-    )
+    with pytest.raises(SolverTimeoutError) as excinfo:
+        runner.run(
+            config_path=tmp_path / "c.cfg",
+            working_directory=tmp_path,
+            timeout_s=0.5,
+        )
     assert time.perf_counter() - started < 30.0
-    assert outcome.lines
+    assert excinfo.value.limit == "wall"
+    assert "line" in str(excinfo.value)
+    assert not runner.is_running
+
+
+def test_a_silent_solver_is_given_up_on(tmp_path):
+    """A solver that stops talking is abandoned instead of hanging forever.
+
+    This is the operator's exact failure: a killed MPI job left a rank
+    holding the stdout pipe, the read blocked, and the program sat at 1% CPU
+    for fifteen minutes. The timeout used to be checked only when a line
+    arrived, so a silent child was never caught.
+    """
+    quiet = tmp_path / "quiet.py"
+    quiet.write_text(
+        textwrap.dedent(
+            """
+            import sys, time
+            print("starting", flush=True)
+            time.sleep(600)
+            """
+        )
+    )
+    runner = ScriptRunner(quiet)
+    started = time.perf_counter()
+    with pytest.raises(SolverTimeoutError) as excinfo:
+        runner.run(
+            config_path=tmp_path / "c.cfg",
+            working_directory=tmp_path,
+            stall_timeout_s=1.0,
+        )
+    elapsed = time.perf_counter() - started
+    assert elapsed < 30.0
+    assert excinfo.value.limit == "stall"
+    assert "starting" in str(excinfo.value)
+    assert not runner.is_running
+
+
+def test_killing_reaches_the_children(tmp_path):
+    """Cancelling kills the whole tree, not just the launcher it started.
+
+    Under MS-MPI the ranks outlive ``mpiexec``, and a surviving rank keeps the
+    inherited stdout pipe open. Killing only the launcher is what made the
+    read block forever.
+    """
+    parent = tmp_path / "parent.py"
+    parent.write_text(
+        textwrap.dedent(
+            """
+            import subprocess, sys, time
+            child = subprocess.Popen(
+                [sys.executable, "-c",
+                 "import time; time.sleep(600)"],
+                stdout=None,
+            )
+            print(f"child {child.pid}", flush=True)
+            time.sleep(600)
+            """
+        )
+    )
+    runner = ScriptRunner(parent)
+    background = BackgroundRun(runner)
+    background.start(config_path=tmp_path / "c.cfg", working_directory=tmp_path)
+
+    first = next(background.lines())
+    child_pid = int(first.split()[1])
+    background.cancel()
+    outcome = background.join(timeout=30)
+
+    assert outcome.cancelled
+    assert not runner.is_running
+    deadline = time.perf_counter() + 10.0
+    while time.perf_counter() < deadline and _process_alive(child_pid):
+        time.sleep(0.1)
+    assert not _process_alive(child_pid), "the spawned child outlived the cancel"
+
+
+def _process_alive(pid: int) -> bool:
+    """True while ``pid`` still exists (zombies do not count as alive)."""
+    try:
+        os.kill(pid, 0)
+    except (OSError, ProcessLookupError):
+        return False
+    status = Path(f"/proc/{pid}/stat")
+    if status.exists():
+        try:
+            return status.read_text().rsplit(") ", 1)[1].split()[0] != "Z"
+        except (OSError, IndexError):  # pragma: no cover - race with reaping
+            return False
+    return True
+
+
+def test_a_stopped_run_succeeds_but_a_timed_out_one_does_not():
+    """An early stop is a result; a deadline is a failure.
+
+    ``stopped_early`` means the convergence monitor decided the answer was in.
+    ``timed_out`` means we gave up. Treating the two alike is what let a
+    fifteen-minute hang be reported as a finished solve.
+    """
+    stopped = RunOutcome(
+        return_code=1, lines=[], wall_time_s=1.0, stopped_early=True
+    )
+    assert stopped.succeeded
+
+    for flag in ("timed_out", "stalled"):
+        abandoned = RunOutcome(
+            return_code=1, lines=[], wall_time_s=1.0, **{flag: True}
+        )
+        assert not abandoned.succeeded, f"{flag} must not count as success"
+
+
+def test_a_second_run_on_a_busy_runner_is_refused(tmp_path, script):
+    """Starting a second solve on a running runner would orphan the first."""
+    runner = ScriptRunner(script, ["100000"])
+    background = BackgroundRun(runner)
+    background.start(config_path=tmp_path / "c.cfg", working_directory=tmp_path)
+    assert next(background.lines()).startswith("line")
+
+    try:
+        with pytest.raises(RuntimeError, match="already running"):
+            runner.run(config_path=tmp_path / "c.cfg", working_directory=tmp_path)
+    finally:
+        background.cancel()
+        background.join(timeout=30)
+
+
+def test_a_running_solve_can_be_cancelled_by_someone_who_did_not_start_it(
+    tmp_path, script
+):
+    """The registry is what lets a Stop button reach an assistant's solve.
+
+    The MCP layer builds its own runner that nothing else holds a reference
+    to, so without this the only remedy was closing the program.
+    """
+    runner = ScriptRunner(script, ["100000"])
+    background = BackgroundRun(runner)
+    background.start(config_path=tmp_path / "c.cfg", working_directory=tmp_path)
+    assert next(background.lines()).startswith("line")
+
+    assert runner in live_runners()
+    assert cancel_all_runs() >= 1
+
+    outcome = background.join(timeout=30)
+    assert outcome.cancelled
+    assert runner not in live_runners()
 
 
 # ---------------------------------------------------------------------------
@@ -290,3 +445,32 @@ def test_joining_an_unstarted_run_is_an_error():
     """Joining before starting is caught rather than hanging."""
     with pytest.raises(RuntimeError, match="not been started"):
         BackgroundRun(FakeRunner(lines=[])).join()
+
+
+def test_a_slow_but_talking_solver_is_not_mistaken_for_a_stalled_one(tmp_path):
+    """A false stall would abandon good solves, which is worse than the bug.
+
+    A real solve can take minutes per output line on a fine mesh. The stall
+    deadline measures silence, not slowness.
+    """
+    slow = tmp_path / "slow.py"
+    slow.write_text(
+        textwrap.dedent(
+            """
+            import sys, time
+            for i in range(6):
+                print(f"line {i}", flush=True)
+                time.sleep(0.4)
+            """
+        )
+    )
+    runner = ScriptRunner(slow)
+    outcome = runner.run(
+        config_path=tmp_path / "c.cfg",
+        working_directory=tmp_path,
+        # Shorter than the total run, longer than any single gap.
+        stall_timeout_s=1.0,
+        wall_time_limit_s=60.0,
+    )
+    assert outcome.succeeded
+    assert len(outcome.lines) == 6

@@ -306,10 +306,46 @@ one.
 |---|---|---|
 | Turbulence model | SST | SST k-ω, or SA (Spalart–Allmaras) |
 | Convective scheme | automatic | JST below Mach 0.8, Roe above |
-| CFL number | 5.0 | Larger converges faster but less robustly |
+| CFL number | automatic | 5.0 subsonic, 2.0 transonic, 1.0 from Mach 1.2. Larger converges faster but less robustly; a number you type is always used as given |
 | Max iterations | 5000 | Hard cap |
 | Convergence residual | −5.0 | log₁₀ of RMS density residual |
 | MPI ranks | 10 | Two below the thread count |
+| Rescue on divergence | on | Retry a blown-up solve at first order, then restart at second |
+| Stall timeout | 300 s | Give up if the solver goes silent for this long |
+| Wall-time limit | 7200 s | Give up after this long in total |
+
+### When a solve blows up
+
+A supersonic cold start is the fragile case. The first iterations reconstruct
+across a shock that does not exist yet, on a mesh sized for the converged
+solution, and if the CFL number is climbing fast at the same time the solve
+can reach a negative pressure and die with `SU2 has diverged (NaN detected)`
+within a handful of iterations.
+
+Two things now happen automatically:
+
+- **The blow-up is caught immediately.** The run stops at the iteration that
+  went non-finite rather than grinding on to the iteration cap.
+- **It is retried.** The solve runs again at first order and a low CFL to
+  establish a shock in roughly the right place, then restarts from that
+  solution at second order. The result is marked **rescued** and carries a
+  note saying so. The numbers are valid, but the case needed help to get
+  there, and that usually means the mesh is coarser than the flow condition
+  wants. If it happens often, refine the mesh rather than relying on the
+  rescue.
+
+If the rescue diverges too, the failure is reported with both attempts and
+their settings: that is a mesh or boundary-condition problem, not a numerics
+one.
+
+### A solve that never returns
+
+A solver run now has two deadlines, both settable above. **Stall** catches the
+worst case: an aborted MPI job can leave a rank alive holding the output pipe,
+and the program used to wait on that read forever — no output, no solver
+working, no end. Whichever deadline is reached, the whole process tree is
+killed and the run fails with a reason rather than sitting silent. A solve
+started by the assistant can also be ended with its **Stop** button.
 
 ### Scheme selection
 

@@ -188,11 +188,23 @@ Spustí jeden bod RANS simulace.
 | `max_iterations` | int | 5000 | |
 | `convergence_residual` | float | −5.0 | log₁₀ RMS hustoty |
 | `turbulence_model` | string | `"SST"` | `SST` nebo `SA` |
-| `cfl_number` | float | 5.0 | |
+| `cfl_number` | float | null | Při null se vybere podle režimu: 5,0 podzvukově, 2,0 transonicky, 1,0 od Mach 1,2 |
 
 Vrací `sim_id`, `mach`, `forces_n` (`fx`/`fy`/`fz`), `drag_n`, `lift_n`,
 `sideforce_n`, `coefficients` (`cd`/`cl`/`cs`/`cm_pitch`),
-`center_of_pressure`, `hinge_torques`, `iterations`, `converged`.
+`center_of_pressure`, `hinge_torques`, `iterations`, `converged` a dále
+`rescued` s `notes`.
+
+Studený nadzvukový start se může během několika iterací rozpadnout. To se
+nyní zachytí okamžitě a výpočet se automaticky zopakuje v prvním řádu a pak
+z jeho výsledku restartuje ve druhém. Pokud k tomu došlo, je `rescued` true
+a `notes` to vysvětlí — řekněte to v odpovědi a neprezentujte číslo jako
+běžné: případ, který potřeboval záchranu, obvykle znamená, že síť je na daný
+režim hrubá.
+
+`cfl_number` nechte null, pokud si uživatel výslovně neřekne o konkrétní
+hodnotu. Pevných 5,0 při Mach 1,3 je přesně to, kvůli čemu se výpočet
+rozpadl na šesté iteraci.
 
 Trvá 3–8 minut na referenčním stroji. Vyžaduje SU2.
 

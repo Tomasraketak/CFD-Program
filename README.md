@@ -401,6 +401,30 @@ Convergence stops on *either* the residual threshold or steady forces — a
 RANS solve often reaches usable forces well before the residual target, and
 the forces are what the operator wants.
 
+**Starting a supersonic case** is the fragile part, and the numerics say so.
+The starting CFL and its adaption follow the regime: subsonic JST keeps a
+brisk ramp, while from Mach 1.2 the solve starts at CFL 1 and climbs 5% per
+iteration rather than doubling. Doubling is what killed a Mach 1.3 run at
+iteration six — from CFL 5 it is past 150 by then, far beyond what the linear
+solve can follow, at which point the implicit update is a badly under-relaxed
+explicit one and a prism cell goes negative. The upwind branch also uses
+Green-Gauss gradients, which are less accurate than weighted least squares
+but cannot blow up on the sliver cells where a hybrid mesh changes character.
+
+When a solve diverges anyway, it is caught at the iteration that went
+non-finite — not at the iteration cap, and not by hanging — and retried
+automatically: first order at low CFL to establish the shock, then a
+second-order restart from that solution. The result carries `rescued` and a
+note explaining it, because a rescued number is valid but the case needed
+help, which usually says something about the mesh.
+
+**A solve can no longer sit silently.** It has a stall deadline (no output at
+all) and a wall-clock deadline, checked on a timer rather than only when a
+line arrives, and whichever fires kills the whole process tree. The failure
+this replaces was specific: an aborted MPI job left a rank holding the
+inherited stdout pipe, killing the launcher alone did not reach it, and the
+read blocked forever — fifteen minutes at 1% CPU with nothing running.
+
 ---
 
 ## Sensor microclimate
@@ -540,7 +564,9 @@ Gmsh, NumPy, SciPy, PyVista and Qt are exercised for real. SU2 is replaced by
 `FakeRunner`, which replays recorded solver output, so the config, parsing,
 convergence and force-reduction layers are all covered on a machine with no
 solver installed — and the real subprocess path is tested with small scripts,
-so streaming, cancellation and timeouts are genuinely verified too.
+so streaming, cancellation and timeouts are genuinely verified too, including
+a child that goes silent and one that spawns a grandchild holding the output
+pipe.
 
 Physics is checked against closed-form results rather than golden numbers: ISA
 values against the published tables, exact y⁺ sizing round trips, a force

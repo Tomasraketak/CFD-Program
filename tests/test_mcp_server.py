@@ -472,6 +472,32 @@ def test_aerodynamic_simulation_returns_forces_and_torques(prepared_mesh):
     assert response["sim_id"]
 
 
+def test_a_rescued_run_tells_the_assistant_it_was_rescued(prepared_mesh):
+    """An assistant that is not told cannot pass it on.
+
+    A rescued number is valid but the case needed help to reach it, and the
+    operator hears about the run only through the assistant's answer.
+    """
+    response = call(
+        server_module.run_aerodynamic_simulation,
+        mesh_id=prepared_mesh,
+        velocity_val=2.0,
+        mpi_ranks=1,
+    )
+    assert response["ok"], response.get("error")
+    # This run converged first time, so the fields are present and quiet.
+    assert response["rescued"] is False
+    assert response["notes"] == []
+
+
+def test_the_cfl_number_defaults_to_the_regime(prepared_mesh):
+    """Pinning 5.0 at Mach 1.3 is what made a solve diverge at iteration six."""
+    schema = asyncio.run(server_module.server.list_tools())
+    tool = next(t for t in schema if t.name == "run_aerodynamic_simulation")
+    cfl = tool.input_schema["properties"]["cfl_number"]
+    assert cfl.get("default") is None
+
+
 def test_true_airspeed_is_accepted(prepared_mesh):
     """velocity_type='tas' interprets the value as m/s."""
     response = call(

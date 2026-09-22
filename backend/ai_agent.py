@@ -24,10 +24,13 @@ tested without a network or an API key.
 from __future__ import annotations
 
 import json
+import threading
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Sequence
+
+from backend.runner import cancel_all_runs
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
@@ -675,6 +678,26 @@ class AIAssistant:
         self.messages: list[dict[str, Any]] = [
             {"role": "system", "content": system_prompt}
         ]
+        self._stop_requested = threading.Event()
+
+    def request_stop(self) -> None:
+        """Ask the assistant to stop after the round in flight.
+
+        This also cancels any solve currently running, which makes the tool
+        call return an error and unwinds the round cleanly. Without it the
+        only way out of a wedged solve was closing the program.
+        """
+        self._stop_requested.set()
+        cancel_all_runs()
+
+    def clear_stop(self) -> None:
+        """Forget an earlier stop request, before a new conversation turn."""
+        self._stop_requested.clear()
+
+    @property
+    def stop_requested(self) -> bool:
+        """True once someone has asked the assistant to stop."""
+        return self._stop_requested.is_set()
 
     # -- conversation ------------------------------------------------------
 
@@ -694,6 +717,33 @@ class AIAssistant:
     def report_retry(self, message: str) -> None:
         """Announce a transport retry. Called by the HTTP client."""
         self._emit(ProgressEvent(kind=EVENT_RETRY, message=message))
+
+    def _stopped_reply(
+        self,
+        invocations: list[ToolInvocation],
+        rounds: int,
+        usage: dict[str, Any],
+        metrics: UsageMetrics,
+        started: float,
+    ) -> AgentReply:
+        """The reply given when the operator pressed Stop."""
+        metrics.elapsed_seconds = time.perf_counter() - started
+        self._emit(
+            ProgressEvent(kind=EVENT_LIMIT, message="Stopped at your request.")
+        )
+        text = (
+            "I stopped at your request. Any solver that was running has been "
+            "cancelled; whatever finished before then is still in the project."
+        )
+        self.messages.append({"role": "assistant", "content": text})
+        return AgentReply(
+            text=text,
+            tool_calls=invocations,
+            rounds=rounds,
+            stopped_early=True,
+            usage=usage,
+            metrics=metrics,
+        )
 
     def _emit(self, event: ProgressEvent) -> None:
         """Announce one step on both channels.
@@ -736,6 +786,9 @@ class AIAssistant:
         if not (prompt or "").strip():
             raise AIAgentError("the request is empty")
 
+        # A stop applies to the request it interrupted, not to the next one.
+        self._stop_requested.clear()
+
         import mcp_server
 
         self.messages.append({"role": "user", "content": prompt})
@@ -749,6 +802,8 @@ class AIAssistant:
         rounds = 0
 
         for rounds in range(1, self.max_rounds + 1):
+            if self._stop_requested.is_set():
+                return self._stopped_reply(invocations, rounds, usage, metrics, started)
             self._emit(
                 ProgressEvent(
                     kind=EVENT_ROUND,
@@ -803,8 +858,12 @@ class AIAssistant:
                 )
                 if invocation.declined:
                     stopped_early = True
+                if self._stop_requested.is_set():
+                    break
             metrics.elapsed_seconds = time.perf_counter() - started
             self._report_metrics(metrics)
+            if self._stop_requested.is_set():
+                return self._stopped_reply(invocations, rounds, usage, metrics, started)
 
         self._emit(
             ProgressEvent(kind=EVENT_LIMIT, message="Reached the tool-call limit.")

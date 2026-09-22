@@ -299,10 +299,45 @@ Hlásí se po vysíťování: nejhorší buňka jako podíl dokonale tvarované.
 |---|---|---|
 | Turbulence model | SST | SST k-ω, nebo SA (Spalart–Allmaras) |
 | Convective scheme | automaticky | JST pod Mach 0,8, Roe nad |
-| CFL number | 5,0 | Větší konverguje rychleji, ale méně robustně |
+| CFL number | automaticky | 5,0 podzvukově, 2,0 transonicky, 1,0 od Mach 1,2. Větší konverguje rychleji, ale méně robustně; číslo, které zadáte, se použije přesně tak |
 | Max iterations | 5000 | Tvrdý strop |
 | Convergence residual | −5,0 | log₁₀ RMS rezidua hustoty |
 | MPI ranks | 10 | O dvě méně než vláken |
+| Rescue on divergence | zapnuto | Rozpadlý výpočet zopakovat v prvním řádu a pak restartovat ve druhém |
+| Stall timeout | 300 s | Vzdát to, když řešič takto dlouho mlčí |
+| Wall-time limit | 7200 s | Vzdát to po této celkové době |
+
+### Když se výpočet rozpadne
+
+Křehký případ je studený nadzvukový start. První iterace rekonstruují přes
+ráz, který ještě neexistuje, na síti dimenzované na zkonvergované řešení —
+a pokud zároveň rychle stoupá CFL číslo, výpočet může dojít k zápornému
+tlaku a během několika iterací skončit hláškou
+`SU2 has diverged (NaN detected)`.
+
+Nově se automaticky stane dvojí:
+
+- **Rozpad se zachytí okamžitě.** Běh skončí na iteraci, která přestala být
+  konečná, místo aby dojel až na strop iterací.
+- **Výpočet se zopakuje.** Proběhne znovu v prvním řádu a s nízkým CFL, aby
+  vznikl ráz zhruba na správném místě, a z tohoto řešení se restartuje ve
+  druhém řádu. Výsledek je označen jako **rescued** a nese poznámku, že k
+  tomu došlo. Čísla platí, ale případ potřeboval pomoc — a to obvykle
+  znamená, že síť je na daný režim hrubší, než by měla být. Pokud se to
+  stává často, zjemněte síť, místo abyste spoléhali na záchranu.
+
+Když se rozpadne i záchranný běh, chyba uvede oba pokusy i jejich nastavení:
+to už je problém sítě nebo okrajových podmínek, ne numeriky.
+
+### Výpočet, který se nikdy nevrátí
+
+Běh řešiče má nově dva časové limity, oba nastavitelné výše. **Stall**
+zachytává ten nejhorší případ: zhavarovaná MPI úloha může nechat naživu
+proces, který drží výstupní rouru, a program na toto čtení dřív čekal
+donekonečna — žádný výstup, žádný počítající řešič, žádný konec. Ať se
+dosáhne kteréhokoli limitu, ukončí se celý strom procesů a běh selže
+s vysvětlením, místo aby tiše seděl. Výpočet spuštěný asistentem jde navíc
+ukončit jeho tlačítkem **Stop**.
 
 ### Volba schématu
 

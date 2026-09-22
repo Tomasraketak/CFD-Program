@@ -29,12 +29,28 @@ from core.models import (
     HingeAxis,
     HingeTorqueResult,
     ReferenceValues,
+    SolverParams,
 )
 from core.units import dynamic_pressure
 
-# Name of the config file written into each run directory.
+# Name of the config file written into each run directory. The rescue stages
+# get their own names rather than overwriting this, so a post-mortem shows
+# what was actually run at each attempt.
 CONFIG_FILENAME = "solver.cfg"
+RESCUE_A_CONFIG_FILENAME = "solver_stage_a.cfg"
+RESCUE_B_CONFIG_FILENAME = "solver_stage_b.cfg"
 FORCES_BREAKDOWN_FILENAME = "forces_breakdown.dat"
+
+# SU2 writes its restart here; stage B reads a copy under a distinct name.
+# Aliasing the two usually works serially and is one MPI-IO ordering change
+# away from reading a file that was just truncated.
+RESTART_FILENAME = "restart_flow.dat"
+SOLUTION_FILENAME = "solution_flow.dat"
+
+# Marker emitted on the line stream when a rescue stage begins, so the live
+# residual plot can start a new series instead of drawing a sawtooth when the
+# iteration counter restarts at 1.
+STAGE_MARKER_PREFIX = "### AeroThermalStudio stage:"
 
 
 class AeroSolverError(RuntimeError):
@@ -291,21 +307,142 @@ def run_aero_case(
     if mesh_path.resolve() != local_mesh.resolve():
         local_mesh.write_bytes(mesh_path.read_bytes())
 
+    solver = request.solver
+    started = time.perf_counter()
+    notes: list[str] = []
+
+    def run_stage(
+        stage_solver,
+        config_name: str,
+        allow_early_stop: bool,
+        history_filename: str = "history",
+        restart_from: str | None = None,
+        write_frequency: int = 250,
+    ) -> _StageOutcome:
+        return _run_stage(
+            request=request,
+            solver=stage_solver,
+            mesh_filename=local_mesh.name,
+            reference_area_m2=reference_area_m2,
+            reference_length_m=reference_length_m,
+            working_directory=working_directory,
+            runner=runner,
+            config_name=config_name,
+            allow_early_stop=allow_early_stop,
+            history_filename=history_filename,
+            restart_from=restart_from,
+            write_frequency=write_frequency,
+            on_line=on_line,
+            on_iteration=on_iteration,
+        )
+
+    stage = run_stage(solver, CONFIG_FILENAME, allow_early_stop=True)
+
+    if stage.diverged:
+        if not solver.rescue_on_divergence:
+            raise AeroSolverError(
+                f"the solve diverged ({stage.divergence_reason}). Automatic "
+                "rescue is disabled; lower the CFL number, turn off MUSCL "
+                "reconstruction, or refine the mesh."
+            )
+        stage, notes = _rescue(
+            request=request,
+            first_attempt=stage,
+            working_directory=working_directory,
+            run_stage=run_stage,
+            on_line=on_line,
+        )
+
+    wall_time = time.perf_counter() - started
+    parser = stage.parser
+
+    if parser.errors:
+        raise AeroSolverError(
+            "SU2 reported an error:\n" + "\n".join(parser.errors[:5])
+        )
+    if not parser.records:
+        raise AeroSolverError(
+            "no iteration history was parsed from the solver output; the run "
+            "probably failed to start.\n" + "\n".join(stage.outcome.tail(15))
+        )
+
+    notes.extend(_warning_notes(parser))
+
+    coefficients = _collect_coefficients(parser, working_directory)
+    result = _build_result(
+        request=request,
+        sim_id=sim_id or working_directory.name,
+        mesh_path=mesh_path,
+        coefficients=coefficients,
+        parser=parser,
+        monitor=stage.monitor,
+        reference_area_m2=(
+            request.reference.reference_area_m2 or reference_area_m2
+        ),
+        reference_length_m=(
+            request.reference.reference_length_m or reference_length_m
+        ),
+        wall_time_s=wall_time,
+        stopped_early=stage.outcome.stopped_early,
+    )
+    return result.model_copy(update={"rescued": stage.rescued, "notes": notes})
+
+
+@dataclass
+class _StageOutcome:
+    """What one solver invocation produced."""
+
+    parser: SU2OutputParser
+    monitor: ConvergenceMonitor
+    outcome: RunOutcome
+    diverged: bool
+    divergence_reason: str = ""
+    rescued: bool = False
+
+
+def _run_stage(
+    request: AeroRunRequest,
+    solver,
+    mesh_filename: str,
+    reference_area_m2: float,
+    reference_length_m: float,
+    working_directory: Path,
+    runner: SolverRunner,
+    config_name: str,
+    allow_early_stop: bool,
+    history_filename: str,
+    restart_from: str | None,
+    write_frequency: int,
+    on_line: callable | None,
+    on_iteration: callable | None,
+) -> _StageOutcome:
+    """Write a config, run it, and parse the stream it produces.
+
+    Each stage gets a fresh parser and monitor. Sharing them would leave a
+    previous stage's blown-up rows in the history, so divergence would re-fire
+    immediately and the reported iteration count would belong to the wrong
+    attempt.
+    """
     config_text = build_config_for_request(
         request,
-        mesh_filename=local_mesh.name,
+        mesh_filename=mesh_filename,
         reference=request.reference,
         measured_area_m2=reference_area_m2,
         measured_length_m=reference_length_m,
+        solver=solver,
+        restart_filename=restart_from,
+        history_filename=history_filename,
+        output_write_frequency=write_frequency,
     )
-    config_path = write_config(config_text, working_directory / CONFIG_FILENAME)
+    config_path = write_config(config_text, working_directory / config_name)
 
     parser = SU2OutputParser()
     monitor = ConvergenceMonitor(
-        residual_threshold=request.solver.convergence_residual,
-        force_window=request.solver.force_stabilization_window,
-        force_tolerance=request.solver.force_stabilization_tol,
+        residual_threshold=solver.convergence_residual,
+        force_window=solver.force_stabilization_window,
+        force_tolerance=solver.force_stabilization_tol,
     )
+    state = {"diverged": False, "reason": ""}
 
     def handle_line(line: str) -> None:
         record = parser.feed(line)
@@ -315,45 +452,150 @@ def run_aero_case(
             on_iteration(record)
 
     def should_stop(_: str) -> bool:
-        return monitor.should_stop(parser)
+        if monitor.diverged(parser):
+            state["diverged"] = True
+            state["reason"] = monitor.reason
+            # Stopping here is what keeps a blow-up cheap: the alternative is
+            # grinding to ITER= 5000 or wedging on an aborted MPI job.
+            return True
+        return allow_early_stop and monitor.should_stop(parser)
 
-    started = time.perf_counter()
     outcome: RunOutcome = runner.run(
         config_path=config_path,
         working_directory=working_directory,
-        ranks=request.solver.mpi_ranks,
+        ranks=solver.mpi_ranks,
         on_line=handle_line,
         should_stop=should_stop,
+        stall_timeout_s=solver.stall_timeout_s,
+        wall_time_limit_s=solver.wall_time_limit_s,
     )
-    wall_time = time.perf_counter() - started
 
-    if parser.errors:
-        raise AeroSolverError(
-            "SU2 reported an error:\n" + "\n".join(parser.errors[:5])
-        )
-    if not parser.records:
-        raise AeroSolverError(
-            "no iteration history was parsed from the solver output; the run "
-            "probably failed to start.\n" + "\n".join(outcome.tail(15))
-        )
+    # A divergence message can arrive after the last line the predicate saw,
+    # so the parser gets the final word.
+    if not state["diverged"] and monitor.diverged(parser):
+        state["diverged"] = True
+        state["reason"] = monitor.reason
 
-    coefficients = _collect_coefficients(parser, working_directory)
-    return _build_result(
-        request=request,
-        sim_id=sim_id or working_directory.name,
-        mesh_path=mesh_path,
-        coefficients=coefficients,
+    return _StageOutcome(
         parser=parser,
         monitor=monitor,
-        reference_area_m2=(
-            request.reference.reference_area_m2 or reference_area_m2
-        ),
-        reference_length_m=(
-            request.reference.reference_length_m or reference_length_m
-        ),
-        wall_time_s=wall_time,
-        stopped_early=outcome.stopped_early,
+        outcome=outcome,
+        diverged=bool(state["diverged"]),
+        divergence_reason=str(state["reason"]),
     )
+
+
+def _rescue(
+    request: AeroRunRequest,
+    first_attempt: _StageOutcome,
+    working_directory: Path,
+    run_stage: callable,
+    on_line: callable | None,
+) -> tuple[_StageOutcome, list[str]]:
+    """Retry a diverged solve as first order, then restart at second order.
+
+    A cold supersonic start is the fragile part; once a first-order solution
+    exists there is a shock in roughly the right place and the second-order
+    scheme has something sane to reconstruct from.
+    """
+    solver = request.solver
+    notes = [
+        f"The first attempt diverged ({first_attempt.divergence_reason}). "
+        f"It was retried automatically as a first-order stage at CFL "
+        f"{solver.rescue_cfl:g} for {solver.rescue_iterations} iterations, "
+        "followed by a second-order restart from that solution."
+    ]
+    _announce(on_line, "rescue-a", notes[0])
+
+    stage_a = run_stage(
+        replace(
+            solver,
+            muscl=False,
+            cfl_number=solver.rescue_cfl,
+            max_iterations=solver.rescue_iterations,
+            restart=False,
+        ),
+        RESCUE_A_CONFIG_FILENAME,
+        # Divergence detection only. The force-steadiness predicate trips
+        # easily on a first-order stage, where drag plateaus quickly and
+        # falsely -- and a stage killed mid-run never writes the final restart
+        # that stage B needs.
+        allow_early_stop=False,
+        history_filename="history_firstorder",
+        write_frequency=100,
+    )
+    if stage_a.diverged:
+        raise AeroSolverError(
+            "the solve diverged twice: at second order "
+            f"({first_attempt.divergence_reason}), and again at first order, "
+            f"CFL {solver.rescue_cfl:g} ({stage_a.divergence_reason}). This is "
+            "a mesh or boundary-condition problem rather than a numerics one "
+            "-- check the mesh quality report and the freestream conditions."
+        )
+
+    restart = working_directory / RESTART_FILENAME
+    if not restart.is_file():
+        raise AeroSolverError(
+            "the first-order rescue stage finished but wrote no restart file "
+            f"({RESTART_FILENAME}), so the second-order stage has nothing to "
+            "continue from."
+        )
+    solution = working_directory / SOLUTION_FILENAME
+    solution.write_bytes(restart.read_bytes())
+
+    # A stale breakdown from stage A would otherwise be picked up silently if
+    # stage B failed before writing its own, reporting a first-order number as
+    # if it were the answer.
+    breakdown = working_directory / FORCES_BREAKDOWN_FILENAME
+    if breakdown.is_file():
+        breakdown.unlink()
+
+    _announce(
+        on_line,
+        "rescue-b",
+        "First-order stage converged; restarting at second order.",
+    )
+    stage_b = run_stage(
+        replace(solver, restart=True),
+        RESCUE_B_CONFIG_FILENAME,
+        allow_early_stop=True,
+        restart_from=SOLUTION_FILENAME,
+    )
+    if stage_b.diverged:
+        raise AeroSolverError(
+            "the second-order stage diverged even when restarted from a "
+            f"converged first-order solution ({stage_b.divergence_reason}). "
+            "Lower the CFL number or turn off MUSCL reconstruction for this "
+            "case."
+        )
+    stage_b.rescued = True
+    return stage_b, notes
+
+
+def replace(solver: SolverParams, **changes) -> SolverParams:
+    """A ``dataclasses.replace`` for the Pydantic solver settings.
+
+    Reconstructing rather than copying keeps the field validators in play, so
+    a rescue cannot quietly produce settings the operator could not have typed
+    themselves.
+    """
+    return SolverParams(**{**solver.model_dump(), **changes})
+
+
+def _announce(on_line: callable | None, stage: str, message: str) -> None:
+    """Put a stage boundary on the line stream, for the log and the plot."""
+    if on_line is not None:
+        on_line(f"{STAGE_MARKER_PREFIX} {stage}")
+        on_line(message)
+
+
+def _warning_notes(parser: SU2OutputParser) -> list[str]:
+    """Solver warnings worth carrying into the result.
+
+    SU2 telling the operator something about their mesh is not ours to
+    swallow, which is what used to happen to every one of these.
+    """
+    return [f"Solver warning: {text}" for text in parser.warnings[:5]]
 
 
 def _collect_coefficients(

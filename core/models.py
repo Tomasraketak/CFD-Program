@@ -639,11 +639,16 @@ class SolverParams(StrictModel):
         default="VENKATAKRISHNAN",
         description="Slope limiter used with MUSCL reconstruction.",
     )
-    cfl_number: float = Field(
-        default=5.0,
+    cfl_number: float | None = Field(
+        default=None,
         gt=0.0,
         le=100.0,
-        description="Initial CFL number for the implicit Euler time integration.",
+        description=(
+            "Initial CFL number for the implicit Euler time integration. When "
+            "null it is chosen from the flow regime: 5.0 subsonic, 2.0 "
+            "transonic, 1.0 at Mach 1.2 and above, where a cold start is "
+            "fragile. An explicit value is always used as given."
+        ),
     )
     cfl_adapt: bool = Field(
         default=True,
@@ -692,6 +697,44 @@ class SolverParams(StrictModel):
     restart: bool = Field(
         default=False,
         description="Restart from a previous solution file if one is present.",
+    )
+    stall_timeout_s: float = Field(
+        default=300.0,
+        gt=0.0,
+        description=(
+            "Give up if the solver produces no output at all for this many "
+            "seconds. A solver that has stopped talking has stopped working, "
+            "usually because an aborted MPI job left a rank holding the "
+            "output pipe open."
+        ),
+    )
+    wall_time_limit_s: float = Field(
+        default=7200.0,
+        gt=0.0,
+        description=(
+            "Give up after this many seconds in total, however chatty the run "
+            "has been. Catches a solve that never converges."
+        ),
+    )
+    rescue_on_divergence: bool = Field(
+        default=True,
+        description=(
+            "When the solve blows up, automatically retry it as a first-order "
+            "low-CFL stage followed by a second-order restart from that "
+            "solution. A rescued result is flagged as such."
+        ),
+    )
+    rescue_iterations: int = Field(
+        default=400,
+        ge=1,
+        le=100_000,
+        description="Iteration budget for the first-order rescue stage.",
+    )
+    rescue_cfl: float = Field(
+        default=0.5,
+        gt=0.0,
+        le=100.0,
+        description="Starting CFL for the first-order rescue stage.",
     )
 
 
@@ -813,6 +856,21 @@ class AeroResult(StrictModel):
     final_residual_rho: float = Field(description="Final log10 RMS[Rho].")
     converged: bool
     wall_time_s: float
+    rescued: bool = Field(
+        default=False,
+        description=(
+            "True when the first attempt blew up and the result comes from "
+            "the automatic first-order rescue. The numbers are still valid, "
+            "but the case needed help to get there and that is worth knowing."
+        ),
+    )
+    notes: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Remarks about how this result was obtained, including solver "
+            "warnings and any rescue that was performed."
+        ),
+    )
 
 
 class ThermalResult(StrictModel):

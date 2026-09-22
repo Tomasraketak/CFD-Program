@@ -190,11 +190,22 @@ Run one RANS simulation point.
 | `max_iterations` | int | 5000 | |
 | `convergence_residual` | float | −5.0 | log₁₀ RMS density |
 | `turbulence_model` | string | `"SST"` | `SST` or `SA` |
-| `cfl_number` | float | 5.0 | |
+| `cfl_number` | float | null | Chosen from the regime when null: 5.0 subsonic, 2.0 transonic, 1.0 from Mach 1.2 |
 
 Returns `sim_id`, `mach`, `forces_n` (`fx`/`fy`/`fz`), `drag_n`, `lift_n`,
 `sideforce_n`, `coefficients` (`cd`/`cl`/`cs`/`cm_pitch`),
-`center_of_pressure`, `hinge_torques`, `iterations`, `converged`.
+`center_of_pressure`, `hinge_torques`, `iterations`, `converged`, and
+`rescued` with `notes`.
+
+A supersonic cold start can blow up in a few iterations. That is now caught
+at once and retried automatically at first order, then restarted at second
+order from the result. When that happened `rescued` is true and `notes`
+explains it — say so in your answer rather than presenting the number as an
+ordinary one, because a case that needed rescuing is usually telling the
+operator their mesh is coarse for the flow condition.
+
+Leave `cfl_number` null unless the operator asks for a specific value.
+Pinning 5.0 at Mach 1.3 is what made the solve diverge at iteration six.
 
 Takes 3–8 minutes on the reference machine. Requires SU2.
 

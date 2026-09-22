@@ -771,3 +771,294 @@ def test_incidence_tilts_the_drag_the_way_the_freestream_leans():
     )
     assert force[0] == pytest.approx(100.0 * math.cos(math.radians(10.0)))
     assert force[2] == pytest.approx(100.0 * math.sin(math.radians(10.0)))
+
+
+# ---------------------------------------------------------------------------
+# Divergence detection and the automatic rescue
+# ---------------------------------------------------------------------------
+
+
+def diverging_rows(good: int = 5) -> list[str]:
+    """Screen output that blows up, the way the operator's Mach 1.3 run did.
+
+    A few healthy iterations, a NaN row, then SU2's own announcement.
+    """
+    lines = screen_rows(good, final_residual=-1.5)
+    lines.append(
+        "|{:12d}|{:>12}|{:>12}|{:>12}|{:>12}|{:>12}"
+        "|{:>12}|{:>12}|{:>12}|".format(
+            good, "nan", "nan", "nan", "nan", "nan", "nan", "nan", "nan"
+        )
+    )
+    lines.append(
+        'Error in "void CSolver::SetResidual_RMS(CGeometry *, CConfig *)": '
+    )
+    lines.append("SU2 has diverged (NaN detected).")
+    return lines
+
+
+def test_nan_rows_are_recorded_rather_than_discarded():
+    """A blown-up iteration is data; dropping it hid the blow-up entirely.
+
+    The numeric pattern used to reject 'nan', so the row vanished and the
+    last good value stood in for it -- which is why divergence detection
+    could never fire.
+    """
+    parser = SU2OutputParser()
+    for line in diverging_rows(good=3):
+        parser.feed(line)
+
+    assert len(parser.records) == 4
+    assert not math.isfinite(parser.records[-1].rms_rho)
+    # The most recent *finite* value is still what final_value reports: that
+    # contract is right for reporting and must not change.
+    assert math.isfinite(parser.final_value("rms_rho"))
+
+
+def test_a_divergence_message_is_not_a_hard_error():
+    """SU2's NaN announcement must not land in errors.
+
+    Anything in errors aborts the run before the rescue can start, which
+    would make the whole recovery path unreachable.
+    """
+    parser = SU2OutputParser()
+    for line in diverging_rows():
+        parser.feed(line)
+
+    assert parser.divergence_messages
+    assert not parser.errors
+    assert ConvergenceMonitor().diverged(parser)
+
+
+def test_solver_warnings_are_kept_rather_than_swallowed():
+    """A y+ warning is the solver telling the operator about their mesh."""
+    parser = SU2OutputParser()
+    parser.feed(
+        "Warning: y+ < 5 in 329 points, for which the wall model is not active."
+    )
+    assert parser.warnings
+    assert not parser.errors
+
+
+def test_a_diverging_run_is_stopped_within_a_few_iterations(tmp_path, mesh_file):
+    """A blow-up ends the run at once instead of grinding to ITER= 5000."""
+    lines = diverging_rows(good=5) + screen_rows(400)
+    runner = FakeRunner(lines=lines)
+    request = make_request(
+        solver=SolverParams(
+            mpi_ranks=1, force_stabilization_window=10, rescue_on_divergence=False
+        )
+    )
+
+    with pytest.raises(AeroSolverError, match="diverged"):
+        run_aero_case(
+            request=request,
+            mesh_path=mesh_file,
+            working_directory=tmp_path / "run",
+            runner=runner,
+            reference_area_m2=0.01,
+            reference_length_m=0.1,
+        )
+    # Six rows parsed, then stopped: nowhere near the 400 that followed.
+    assert len(runner.calls) == 1
+
+
+def test_the_rescue_runs_on_divergence_and_reports_itself(tmp_path, mesh_file):
+    """A diverged solve is retried first order, then restarted second order.
+
+    The result is valid, but the operator must be told it needed help --
+    otherwise a rescued number looks exactly like one that converged first
+    time.
+    """
+    runner = FakeRunner(
+        scripted=[
+            {"lines": diverging_rows(good=5)},
+            # Stage A: first order, must run to its cap and leave a restart.
+            {
+                "lines": screen_rows(40, final_residual=-3.0),
+                "artifacts": {"restart_flow.dat": "binary-ish restart"},
+            },
+            # Stage B: second order from that restart.
+            {
+                "lines": screen_rows(60, final_residual=-6.0),
+                "artifacts": {"forces_breakdown.dat": FORCES_BREAKDOWN},
+            },
+        ]
+    )
+    result = run_aero_case(
+        request=make_request(),
+        mesh_path=mesh_file,
+        working_directory=tmp_path / "run",
+        runner=runner,
+        reference_area_m2=0.01,
+        reference_length_m=0.1,
+    )
+
+    assert len(runner.calls) == 3
+    stage_a = parse_config(str(runner.calls[1]["config_text"]))
+    assert stage_a["MUSCL_FLOW"] == "NO"
+    assert stage_a["CONV_NUM_METHOD_FLOW"] == "ROE"
+    assert stage_a["CONV_FILENAME"] == "history_firstorder"
+
+    stage_b = parse_config(str(runner.calls[2]["config_text"]))
+    assert stage_b["RESTART_SOL"] == "YES"
+    assert stage_b["SOLUTION_FILENAME"] == "solution_flow.dat"
+    assert stage_b["MUSCL_FLOW"] == "YES"
+
+    # The restart really was handed over, under its own name.
+    assert (tmp_path / "run" / "solution_flow.dat").is_file()
+
+    assert result.rescued
+    assert result.notes and "diverged" in result.notes[0]
+    assert result.cd == pytest.approx(0.42)
+
+
+def test_a_healthy_run_is_left_completely_alone(tmp_path, mesh_file):
+    """One invocation, no rescue: the untouched path must stay untouched."""
+    runner = FakeRunner(
+        lines=screen_rows(60),
+        artifacts={"forces_breakdown.dat": FORCES_BREAKDOWN},
+    )
+    result = run_aero_case(
+        request=make_request(),
+        mesh_path=mesh_file,
+        working_directory=tmp_path / "run",
+        runner=runner,
+        reference_area_m2=0.01,
+        reference_length_m=0.1,
+    )
+    assert len(runner.calls) == 1
+    assert not result.rescued
+    assert not result.notes
+
+
+def test_a_rescue_is_not_attempted_when_it_is_turned_off(tmp_path, mesh_file):
+    """Turning the rescue off must fail loudly, not retry anyway."""
+    runner = FakeRunner(lines=diverging_rows())
+    request = make_request(
+        solver=SolverParams(mpi_ranks=1, rescue_on_divergence=False)
+    )
+    with pytest.raises(AeroSolverError, match="rescue is disabled"):
+        run_aero_case(
+            request=request,
+            mesh_path=mesh_file,
+            working_directory=tmp_path / "run",
+            runner=runner,
+            reference_area_m2=0.01,
+            reference_length_m=0.1,
+        )
+    assert len(runner.calls) == 1
+
+
+def test_a_rescue_that_diverges_too_gives_up_instead_of_looping(
+    tmp_path, mesh_file
+):
+    """Two divergences mean the mesh is wrong, not the numerics."""
+    runner = FakeRunner(
+        scripted=[{"lines": diverging_rows()}, {"lines": diverging_rows()}]
+    )
+    with pytest.raises(AeroSolverError, match="diverged twice"):
+        run_aero_case(
+            request=make_request(),
+            mesh_path=mesh_file,
+            working_directory=tmp_path / "run",
+            runner=runner,
+            reference_area_m2=0.01,
+            reference_length_m=0.1,
+        )
+    assert len(runner.calls) == 2
+
+
+def test_a_stage_without_a_restart_file_says_so(tmp_path, mesh_file):
+    """Stage B with nothing to continue from must not restart from freestream."""
+    runner = FakeRunner(
+        scripted=[
+            {"lines": diverging_rows()},
+            {"lines": screen_rows(40, final_residual=-3.0)},  # no restart written
+        ]
+    )
+    with pytest.raises(AeroSolverError, match="no restart file"):
+        run_aero_case(
+            request=make_request(),
+            mesh_path=mesh_file,
+            working_directory=tmp_path / "run",
+            runner=runner,
+            reference_area_m2=0.01,
+            reference_length_m=0.1,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Regime-dependent numerics
+# ---------------------------------------------------------------------------
+
+
+def test_the_supersonic_config_starts_cautiously():
+    """A cold supersonic start gets the gentle ramp that keeps it alive.
+
+    Doubling the CFL every iteration from 5 puts a Mach 1.3 run past 150 by
+    iteration six, which no 20-iteration linear solve can follow.
+    """
+    text = build_aero_config(
+        FlowParams(velocity_value=1.3), SolverParams(), base_context()
+    )
+    settings = parse_config(text)
+
+    assert float(settings["CFL_NUMBER"]) == pytest.approx(1.0)
+    assert settings["CFL_ADAPT_PARAM"] == "( 0.5, 1.05, 0.1, 25 )"
+    assert float(settings["ENTROPY_FIX_COEFF"]) == pytest.approx(0.10)
+    assert float(settings["CFL_REDUCTION_TURB"]) == pytest.approx(0.5)
+    assert settings["NUM_METHOD_GRAD"] == "GREEN_GAUSS"
+    assert int(settings["LINEAR_SOLVER_ITER"]) == 20
+    assert settings["WRT_RESTART_OVERWRITE"] == "YES"
+
+
+def test_the_subsonic_config_keeps_its_brisker_start():
+    """JST at Mach 0.3 does not need the cautious ramp and should not pay for it."""
+    text = build_aero_config(
+        FlowParams(velocity_value=0.3), SolverParams(), base_context()
+    )
+    settings = parse_config(text)
+
+    assert float(settings["CFL_NUMBER"]) == pytest.approx(5.0)
+    assert settings["CFL_ADAPT_PARAM"] == "( 0.1, 2, 0.5, 100 )"
+    assert settings["NUM_METHOD_GRAD"] == "WEIGHTED_LEAST_SQUARES"
+    assert "CFL_REDUCTION_TURB" not in settings
+
+
+def test_an_explicit_cfl_number_is_still_honoured():
+    """Choosing a default must never override a number the operator typed."""
+    text = build_aero_config(
+        FlowParams(velocity_value=1.3),
+        SolverParams(cfl_number=12.5),
+        base_context(),
+    )
+    assert float(parse_config(text)["CFL_NUMBER"]) == pytest.approx(12.5)
+
+
+def test_first_order_is_a_per_stage_override_not_a_new_default():
+    """The rescue lowers the order for one stage; the default stays second."""
+    from backend.aero_solver import replace
+
+    solver = SolverParams()
+    text = build_aero_config(
+        FlowParams(velocity_value=1.3), replace(solver, muscl=False), base_context()
+    )
+    settings = parse_config(text)
+    assert settings["MUSCL_FLOW"] == "NO"
+    assert settings["CONV_NUM_METHOD_FLOW"] == "ROE"
+    assert solver.muscl is True
+
+
+def test_a_restart_needs_both_the_flag_and_the_filename():
+    """Setting one without the other is a silent no-op."""
+    from dataclasses import replace as dc_replace
+
+    context = dc_replace(base_context(), restart_filename="solution_flow.dat")
+    settings = parse_config(
+        build_aero_config(
+            FlowParams(velocity_value=1.3), SolverParams(restart=True), context
+        )
+    )
+    assert settings["RESTART_SOL"] == "YES"
+    assert settings["SOLUTION_FILENAME"] == "solution_flow.dat"

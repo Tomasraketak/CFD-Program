@@ -58,9 +58,12 @@ _COLUMN_ALIASES: dict[str, str] = {
 }
 
 # A screen row is a sequence of numeric fields separated by whitespace and/or
-# the vertical bars SU2 draws between columns.
+# the vertical bars SU2 draws between columns. ``nan`` and ``inf`` count: a
+# blown-up iteration is data, and discarding it is what made divergence
+# undetectable -- the row vanished and the last good value stood in for it.
 _NUMERIC = re.compile(
-    r"^[+-]?(\d+\.?\d*|\.\d+)([eEdD][+-]?\d+)?$"
+    r"^[+-]?((\d+\.?\d*|\.\d+)([eEdD][+-]?\d+)?|nan|inf(inity)?)$",
+    re.IGNORECASE,
 )
 
 # Lines announcing a failure that should abort the run rather than be parsed.
@@ -70,6 +73,21 @@ _ERROR_MARKERS = (
     "terminate called",
     "Segmentation fault",
     "MPI_ABORT",
+)
+
+# Divergence is deliberately NOT an error marker. Anything landing in
+# ``errors`` aborts the run before the first-order rescue can start, and
+# divergence is the one failure we can recover from. It gets its own channel.
+_DIVERGENCE_MARKERS = (
+    "SU2 has diverged",
+    "NaN detected",
+    "Non-physical",
+)
+
+# Solver remarks worth showing the operator but not worth failing over.
+_WARNING_MARKERS = (
+    "Warning",
+    "WARNING",
 )
 
 
@@ -112,7 +130,12 @@ class SU2OutputParser:
         self.columns: list[str] = []
         self.records: list[IterationRecord] = []
         self.errors: list[str] = []
+        self.warnings: list[str] = []
+        self.divergence_messages: list[str] = []
         self._raw_headers: list[str] = []
+        # Index of the error line just banked, in case the next line reveals
+        # it to be the first half of a divergence announcement.
+        self._pending_error_index: int | None = None
 
     def feed(self, line: str) -> IterationRecord | None:
         """Consume one output line.
@@ -126,9 +149,38 @@ class SU2OutputParser:
         if not stripped:
             return None
 
+        lowered = stripped.lower()
+
+        # Divergence is checked first: SU2 announces it as
+        # 'Error in "void CSolver::SetResidual_RMS(...)": SU2 has diverged
+        # (NaN detected).', which also matches an error marker. Recording it
+        # as a hard error would abort before the rescue could run.
+        for marker in _DIVERGENCE_MARKERS:
+            if marker.lower() in lowered:
+                self.divergence_messages.append(stripped)
+                # SU2 wraps that announcement across two lines, so the
+                # 'Error in "..."' half has usually been banked already.
+                # Reclassify it: this failure is recoverable.
+                if self.errors and self._pending_error_index is not None:
+                    self.divergence_messages.insert(
+                        -1, self.errors.pop(self._pending_error_index)
+                    )
+                self._pending_error_index = None
+                return None
+
         for marker in _ERROR_MARKERS:
-            if marker.lower() in stripped.lower():
+            if marker.lower() in lowered:
                 self.errors.append(stripped)
+                # Only the immediately preceding error can belong to a
+                # divergence announcement on the next line.
+                self._pending_error_index = len(self.errors) - 1
+                return None
+
+        self._pending_error_index = None
+
+        for marker in _WARNING_MARKERS:
+            if marker in stripped:
+                self.warnings.append(stripped)
                 return None
 
         fields = _split_row(stripped)
@@ -152,7 +204,12 @@ class SU2OutputParser:
             if value is not None:
                 values[name] = value
 
-        iteration = int(values.get("iteration", len(self.records)))
+        # A blown-up row can carry a non-finite iteration number, which int()
+        # refuses; fall back to the position in the history.
+        raw_iteration = values.get("iteration", float(len(self.records)))
+        iteration = (
+            int(raw_iteration) if math.isfinite(raw_iteration) else len(self.records)
+        )
         record = IterationRecord(iteration=iteration, values=values)
         self.records.append(record)
         return record
@@ -280,10 +337,24 @@ class ConvergenceMonitor:
         return False
 
     def diverged(self, parser: SU2OutputParser) -> bool:
-        """True when the residual has gone non-finite or is climbing away."""
-        residual = parser.final_value("rms_rho")
-        if not math.isfinite(residual):
-            return len(parser.records) > 0
+        """True when the solve has blown up and will not recover.
+
+        This reads the *last* record rather than ``final_value``, which
+        deliberately returns the most recent *finite* value -- a contract that
+        is right for reporting and useless here, since it can never be
+        non-finite by construction.
+        """
+        if parser.divergence_messages:
+            self.reason = parser.divergence_messages[-1]
+            return True
+
+        last = parser.last
+        if last is not None and not math.isfinite(last.rms_rho):
+            self.reason = (
+                f"density residual went non-finite at iteration {last.iteration}"
+            )
+            return True
+
         history = parser.history("rms_rho")
         finite = history[np.isfinite(history)]
         if finite.size < 20:
