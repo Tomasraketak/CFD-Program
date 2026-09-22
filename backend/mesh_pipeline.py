@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import math
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -47,6 +48,7 @@ from backend.su2_mesh import (
 from core.atmosphere import isa_state
 from core.models import (
     DomainShape,
+    GeometryParams,
     MeshRequest,
     MeshResult,
     SimulationTrack,
@@ -75,6 +77,21 @@ _MAX_SIZE_SCALE = 20.0
 
 class MeshPipelineError(RuntimeError):
     """Raised when a mesh cannot be produced from the given inputs."""
+
+
+@contextmanager
+def _timed(notify: callable, message: str):
+    """Announce a step, then report how long it took.
+
+    Meshing spends minutes inside single Gmsh calls that say nothing while
+    they run. Announcing before and reporting after turns a frozen-looking
+    log into one that shows where the time actually goes — and the pair of
+    lines is what lets the interface put a clock on the current step.
+    """
+    notify(f"{message} …")
+    started = time.perf_counter()
+    yield
+    notify(f"{message} — {time.perf_counter() - started:.1f} s")
 
 
 @dataclass
@@ -354,6 +371,16 @@ def _import_and_heal(
     _plain_import(step_path, tolerance, sew=False)
 
     volumes = gmsh.model.getEntities(3)
+    if not volumes and not gmsh.model.getEntities(2):
+        # Nothing at all came through -- not a solid, not even a face. There
+        # is nothing to sew, and attempting the rescue anyway re-imports the
+        # file into a fresh model, which OpenCASCADE answers by aborting the
+        # *process*. A file this empty gets a sentence, not a crash.
+        raise MeshPipelineError(
+            f"'{step_path.name}' contains no geometry that OpenCASCADE can "
+            "read. Check that it is a real STEP export and not an empty or "
+            "truncated file."
+        )
     if not volumes and not _rebuild_volume_from_shell(
         step_path, tolerance, report
     ):
@@ -746,6 +773,135 @@ def _build_farfield(
 
 
 # ---------------------------------------------------------------------------
+# Quick look at the geometry
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class GeometryPreview:
+    """A coarse triangulation of the body, for looking at."""
+
+    points: np.ndarray
+    triangles: np.ndarray
+    metrics: GeometryMetrics
+    split: bool = False
+    notes: list[str] = field(default_factory=list)
+
+    @property
+    def nose_x(self) -> float:
+        """Axial position of the foremost point, metres."""
+        return float(self.points[:, 0].min()) if self.points.size else 0.0
+
+
+def tessellate_geometry(
+    geometry: GeometryParams,
+    target_triangles: int = 20_000,
+    notify: callable | None = None,
+) -> GeometryPreview:
+    """Triangulate a CAD file coarsely, aligned to the wind-tunnel frame.
+
+    This is for showing the operator what they just imported, so it skips
+    everything that makes meshing slow: no curvature sizing, no boundary
+    layers, no farfield, no cell-count targeting. A few seconds, not a few
+    minutes.
+
+    **Aligning it is the point.** The body comes back in the frame the
+    solver will use -- nose at minimum X -- so a picture of it is a check on
+    the nose direction that was inferred from the shape. A picture of the
+    raw CAD would check nothing.
+
+    Parameters
+    ----------
+    geometry:
+        The same parameters meshing takes, so the preview shows the
+        orientation and scale that a solve would actually use.
+    target_triangles:
+        Roughly how many triangles to aim for. Only sets the element size;
+        the real count depends on the body.
+    notify:
+        Optional progress callback.
+
+    Returns
+    -------
+    GeometryPreview
+        Points in metres and their triangulation.
+
+    Raises
+    ------
+    MeshPipelineError
+        If the file cannot be imported or tessellated at all.
+    """
+    report = notify or (lambda message: None)
+    step_path = Path(geometry.step_file_path)
+    scale = geometry.scale_to_meters
+    split = False
+
+    with gmsh_session("aerothermal_preview", threads=0):
+        report(f"reading {step_path.name} …")
+        healing = _import_and_heal(step_path, False, geometry.heal_tolerance_m / scale)
+
+        volumes = [tag for _, tag in gmsh.model.getEntities(3)]
+        _apply_alignment(
+            [(3, tag) for tag in volumes],
+            geometry.resolved_nose_vector(),
+            tuple(geometry.reference_origin),
+        )
+
+        cad_metrics = _measure_geometry(
+            [tag for _, tag in gmsh.model.getEntities(3)]
+        )
+        # Aim for the requested triangle count by area: a surface of A square
+        # units carries about 2A/s² triangles of characteristic size s.
+        area = max(cad_metrics.surface_area_m2, 1.0e-12)
+        size = math.sqrt(2.0 * area / max(target_triangles, 64))
+        for attempt in range(2):
+            gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 0)
+            gmsh.option.setNumber("Mesh.MeshSizeMin", size * 0.05)
+            gmsh.option.setNumber("Mesh.MeshSizeMax", size)
+            try:
+                report("tessellating the surface …")
+                gmsh.model.mesh.generate(2)
+                break
+            except Exception as error:
+                if attempt or not _is_closed_face_failure(error):
+                    raise MeshPipelineError(
+                        f"could not tessellate '{step_path.name}': {error}"
+                    ) from error
+                # The same face-closes-on-itself case the mesher handles.
+                gmsh.model.mesh.clear()
+                _split_closed_faces(
+                    [tag for _, tag in gmsh.model.getEntities(3)], healing
+                )
+                split = True
+
+        wall_tags = _wall_surface_tags(
+            [tag for _, tag in gmsh.model.getEntities(3)]
+        )
+        points, _, per_surface = extract_triangulation(wall_tags)
+        triangles = (
+            np.concatenate(list(per_surface.values()))
+            if per_surface
+            else np.empty((0, 3), dtype=np.int64)
+        )
+        if triangles.size == 0:
+            raise MeshPipelineError(
+                f"'{step_path.name}' produced no surface triangles to show"
+            )
+        points, triangles, _ = compact_triangulation(points, triangles)
+
+    if scale != 1.0:
+        points = points * scale
+
+    return GeometryPreview(
+        points=points,
+        triangles=triangles,
+        metrics=cad_metrics.scaled(scale),
+        split=split,
+        notes=list(healing.notes),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
 
@@ -787,11 +943,16 @@ def generate_mesh(
     size_scale = 1.0
     best: dict | None = None
     attempts = 0
+    # Whether this body turned out to need splitting. Discovering it costs a
+    # failed surface mesh, and the loop below runs up to five times, so the
+    # answer is remembered rather than rediscovered on every attempt.
+    needs_split = False
 
     for iteration in range(request.mesh.max_targeting_iterations + 1):
         attempts = iteration + 1
         notify(f"meshing attempt {attempts} (size scale {size_scale:.3f})")
-        attempt = _mesh_once(request, size_scale, notify)
+        attempt = _mesh_once(request, size_scale, notify, split=needs_split)
+        needs_split = bool(attempt["split"])
         cells = attempt["cell_count"]
 
         if best is None or abs(cells - target_cells) < abs(
@@ -815,9 +976,9 @@ def generate_mesh(
     if best is None:  # pragma: no cover - loop always runs once
         raise MeshPipelineError("meshing produced no result")
 
-    notify("writing SU2 mesh")
     mesh: SU2Mesh = best["mesh"]
-    mesh.write(output_path)
+    with _timed(notify, "writing SU2 mesh"):
+        mesh.write(output_path)
 
     metrics: GeometryMetrics = best["metrics"]
     prisms: PrismLayerResult = best["prisms"]
@@ -993,11 +1154,12 @@ def _build_surface_mesh(
         # boolean that splits it -- on the rocket this cost the nose cone,
         # 200 mm of it, silently. The split is itself a repair, so when one
         # is needed the healing pass is skipped rather than fought.
-        healing = _import_and_heal(
-            step_path,
-            geometry.heal_geometry and not split,
-            geometry.heal_tolerance_m / scale,
-        )
+        with _timed(notify, f"importing {step_path.name}"):
+            healing = _import_and_heal(
+                step_path,
+                geometry.heal_geometry and not split,
+                geometry.heal_tolerance_m / scale,
+            )
 
         body_volumes = [tag for _, tag in gmsh.model.getEntities(3)]
         _apply_alignment(
@@ -1007,10 +1169,10 @@ def _build_surface_mesh(
         )
 
         if split:
-            notify("splitting closed faces along the body axis")
-            _split_closed_faces(
-                [tag for _, tag in gmsh.model.getEntities(3)], healing
-            )
+            with _timed(notify, "splitting closed faces along the body axis"):
+                _split_closed_faces(
+                    [tag for _, tag in gmsh.model.getEntities(3)], healing
+                )
 
         body_volumes = [tag for _, tag in gmsh.model.getEntities(3)]
         cad_metrics = _measure_geometry(body_volumes)
@@ -1032,8 +1194,8 @@ def _build_surface_mesh(
             airframe_tags, fin_tags, cad_metrics, request, size_scale
         )
 
-        notify("generating surface mesh")
-        gmsh.model.mesh.generate(2)
+        with _timed(notify, "generating surface mesh"):
+            gmsh.model.mesh.generate(2)
 
         points, _, per_surface = extract_triangulation(wall_tags)
         all_triangles = (
@@ -1043,6 +1205,7 @@ def _build_surface_mesh(
         )
         if all_triangles.size == 0:
             raise MeshPipelineError("surface meshing produced no wall triangles")
+        notify(f"surface mesh has {len(all_triangles)} wall triangles")
 
         wall_points, wall_triangles, _ = compact_triangulation(points, all_triangles)
         # Everything from here on is metres: prism heights come from y+, the
@@ -1067,27 +1230,38 @@ def _build_surface_mesh(
 
 
 def _mesh_once(
-    request: MeshRequest, size_scale: float, notify: callable
+    request: MeshRequest, size_scale: float, notify: callable, split: bool = False
 ) -> dict:
-    """Run one complete meshing attempt at a given characteristic size."""
+    """Run one complete meshing attempt at a given characteristic size.
+
+    ``split`` says the caller already knows this body has a face that closes
+    on itself, so the attempt goes straight to the split form. Discovering
+    that costs a failed surface mesh, and the targeting loop runs this
+    several times; there is no reason to pay for the same discovery twice.
+    """
     try:
-        stage = _build_surface_mesh(request, size_scale, notify, split=False)
+        stage = _build_surface_mesh(request, size_scale, notify, split=split)
     except Exception as error:
-        if not _is_closed_face_failure(error):
+        # A body that fails *after* splitting has a different problem, and
+        # retrying the same thing would only waste more of the operator's
+        # afternoon.
+        if split or not _is_closed_face_failure(error):
             raise
-        # Worth one more attempt: this failure is Gmsh declining a face that
-        # closes on itself, not a defect in the geometry.
-        notify(f"surface meshing failed ({error}); retrying on a split body")
+        notify(
+            "a face of this body closes on itself, which Gmsh cannot mesh "
+            f"directly ({error}) — meshing it split along its axis instead"
+        )
         stage = _build_surface_mesh(request, size_scale, notify, split=True)
+        split = True
 
     metrics = stage.metrics
-    notify(
-        f"extruding prism layers from {len(stage.wall_triangles)} wall triangles"
-    )
     first_height = _first_layer_height(request, metrics)
-    prisms = _extrude(
-        request, stage.wall_points, stage.wall_triangles, first_height
-    )
+    with _timed(
+        notify, f"extruding prism layers from {len(stage.wall_triangles)} wall triangles"
+    ):
+        prisms = _extrude(
+            request, stage.wall_points, stage.wall_triangles, first_height, notify
+        )
     healing = stage.healing
     airframe_radius = stage.airframe_radius
     airframe_triangle_count = stage.airframe_triangle_count
@@ -1118,6 +1292,7 @@ def _mesh_once(
         "first_height": first_height,
         "airframe_diameter": 2.0 * airframe_radius,
         "min_quality": min_quality,
+        "split": split,
     }
 
 
@@ -1141,12 +1316,14 @@ def _extrude(
     wall_points: np.ndarray,
     wall_triangles: np.ndarray,
     first_height: float,
+    notify: callable | None = None,
 ) -> PrismLayerResult:
     """Extrude the boundary layer, tolerating CAD defects on a second pass."""
     arguments = {
         "first_height": first_height,
         "layers": request.mesh.boundary_layers,
         "growth_rate": request.mesh.boundary_layer_growth,
+        "notify": notify,
     }
     try:
         return extrude_prism_layers(wall_points, wall_triangles, **arguments)
@@ -1184,7 +1361,8 @@ def _mesh_farfield(
         gmsh.option.setNumber(
             "Mesh.MeshSizeMax", nominal * request.mesh.farfield_size_multiplier
         )
-        gmsh.model.mesh.generate(2)
+        with _timed(notify, "meshing the farfield boundary"):
+            gmsh.model.mesh.generate(2)
 
         # Insert the prism shell as a discrete surface with an explicit tag.
         gmsh.model.addDiscreteEntity(2, _SHELL_SURFACE_TAG)
@@ -1204,9 +1382,11 @@ def _mesh_farfield(
         gmsh.model.geo.addVolume([loop])
         gmsh.model.geo.synchronize()
 
-        notify("generating tetrahedral farfield mesh")
         try:
-            gmsh.model.mesh.generate(3)
+            with _timed(notify, "generating tetrahedral farfield mesh"):
+                gmsh.model.mesh.generate(3)
+        except MeshPipelineError:  # pragma: no cover - re-raised below
+            raise
         except Exception as error:
             raise MeshPipelineError(
                 f"farfield tetrahedralisation failed: {error}"
@@ -1214,7 +1394,8 @@ def _mesh_farfield(
 
         if request.mesh.optimize_netgen:
             try:
-                gmsh.model.mesh.optimize("Netgen")
+                with _timed(notify, "optimising the tetrahedra"):
+                    gmsh.model.mesh.optimize("Netgen")
             except Exception:  # pragma: no cover - optimiser is optional
                 pass
 

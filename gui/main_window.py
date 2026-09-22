@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import math
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -58,9 +59,23 @@ from gui.theme import (
     TEXT_MUTED,
     WARNING,
 )
-from gui.workers import AeroWorker, MeshWorker, SweepWorker, ThermalWorker
+from gui.workers import (
+    AeroWorker,
+    GeometryPreviewWorker,
+    MeshWorker,
+    SweepWorker,
+    ThermalWorker,
+)
 
 APP_NAME = "AeroThermalStudio"
+
+# How often the clock beside the progress bar redraws. The step itself only
+# changes when the worker reports one; this is purely so the seconds move.
+STEP_CLOCK_INTERVAL_MS = 500
+
+# CAD beyond this is not worth tessellating just to look at; the import
+# itself would take longer than the operator's patience.
+MAX_PREVIEW_BYTES = 150 * 1024 * 1024
 
 # Optional viewport and charting dependencies, both degraded gracefully.
 try:  # pragma: no cover - import guard
@@ -344,6 +359,13 @@ class AerodynamicsTab(QtWidgets.QWidget):
         self.mesh_result: Any = None
         self.pool = QtCore.QThreadPool.globalInstance()
         self._worker: Any = None
+        self._step_text = ""
+        self._step_started: float | None = None
+        self._step_timer = QtCore.QTimer(self)
+        self._step_timer.timeout.connect(self._refresh_step_clock)
+        # Bumped on every import so a slow preview cannot paint the previous
+        # rocket over the one the operator has just opened.
+        self._preview_token = 0
 
         self.setAcceptDrops(True)
 
@@ -576,6 +598,15 @@ class AerodynamicsTab(QtWidgets.QWidget):
         self.progress.setVisible(False)
         layout.addWidget(self.progress)
 
+        # What the worker is doing right now, with a clock on it. Meshing
+        # spends minutes inside single Gmsh calls; without the seconds
+        # ticking, a working program is indistinguishable from a hung one.
+        self.step_label = QtWidgets.QLabel()
+        self.step_label.setObjectName("hint")
+        self.step_label.setWordWrap(True)
+        self.step_label.setVisible(False)
+        layout.addWidget(self.step_label)
+
         row = QtWidgets.QHBoxLayout()
         self.mesh_button = QtWidgets.QPushButton("Generate mesh")
         self.mesh_button.clicked.connect(self.generate_mesh)
@@ -710,6 +741,90 @@ class AerodynamicsTab(QtWidgets.QWidget):
         self.geometry_note.setProperty("warn", bool(questions))
         self.append_log(f"Loaded {Path(path).name}: {note}")
         self.statusMessage.emit(note)
+        self._start_preview()
+
+    # -- geometry preview --------------------------------------------------
+
+    def _start_preview(self) -> None:
+        """Tessellate the loaded CAD and show it, from the side.
+
+        The picture is a check, not decoration: the model appears in the
+        frame the solver will use, so a rocket whose nose ends up pointing
+        downstream is visible before anyone pays for a mesh.
+        """
+        if not self.viewport.available:
+            return
+        path = Path(self.step_path.text().strip())
+        if not path.is_file():
+            return
+        try:
+            if path.stat().st_size > MAX_PREVIEW_BYTES:
+                self.append_log(
+                    f"Preview skipped: {path.name} is larger than "
+                    f"{MAX_PREVIEW_BYTES // (1024 * 1024)} MB."
+                )
+                return
+        except OSError:  # pragma: no cover - vanished between checks
+            return
+
+        try:
+            geometry = self.geometry_params()
+        except Exception as error:  # noqa: BLE001 - a picture is not worth failing over
+            self._preview_failed(str(error))
+            return
+
+        self._preview_token += 1
+        worker = GeometryPreviewWorker(geometry, self._preview_token)
+        worker.signals.finished.connect(self._preview_ready)
+        worker.signals.failed.connect(self._preview_failed)
+        self.pool.start(worker)
+
+    def _preview_ready(self, payload: Any) -> None:
+        """Show a finished preview, unless it has been overtaken."""
+        token, preview = payload
+        if token != self._preview_token:
+            # The operator opened another file while this one was rendering.
+            return
+        try:
+            import numpy as np
+            import pyvista as pv
+
+            faces = np.hstack(
+                [
+                    np.full((len(preview.triangles), 1), 3, dtype=np.int64),
+                    preview.triangles,
+                ]
+            ).ravel()
+            surface = pv.PolyData(preview.points, faces)
+        except Exception as error:  # noqa: BLE001 - preview is optional
+            self._preview_failed(str(error))
+            return
+
+        self.viewport.show_mesh(
+            surface, color="#8aa0c0", show_edges=False, smooth_shading=True
+        )
+        # Set the camera directly: the combo may already read "side", and
+        # then setting it emits nothing and leaves the camera where
+        # show_mesh's reset_camera put it.
+        self.viewport._apply_view("side")
+        # Keep the combo honest about which view is on screen, without
+        # letting it re-drive the camera it has just been told about.
+        was_blocked = self.viewport.view.blockSignals(True)
+        self.viewport.view.setCurrentText("side")
+        self.viewport.view.blockSignals(was_blocked)
+        self.append_log(
+            f"Preview: {len(preview.triangles)} triangles, "
+            f"{preview.metrics.reference_length_m:.3f} m long, nose upstream."
+        )
+
+    def _preview_failed(self, message: str) -> None:
+        """Note a preview that could not be built, and carry on.
+
+        A body that will not tessellate coarsely may still mesh properly
+        with the real settings, so this is never allowed to block an import
+        or look like a verdict on the geometry.
+        """
+        self.append_log(f"Preview unavailable: {message.splitlines()[0]}")
 
     def _on_velocity_type(self) -> None:
         """Rescale the speed slider when the unit changes."""
@@ -1125,11 +1240,17 @@ class AerodynamicsTab(QtWidgets.QWidget):
             button.setEnabled(False)
         self.append_log(message)
         self.statusMessage.emit(message)
+        self._step_text = message.rstrip(" .…")
+        self._step_started = time.monotonic()
+        self.step_label.setVisible(True)
+        self._refresh_step_clock()
+        self._step_timer.start(STEP_CLOCK_INTERVAL_MS)
         self.pool.start(worker)
 
     def _finish(self) -> None:
         """Restore the UI after a worker completes."""
         self._worker = None
+        self._stop_step_clock()
         self.progress.setVisible(False)
         self.cancel_button.setEnabled(False)
         self.mesh_button.setEnabled(True)
@@ -1143,8 +1264,36 @@ class AerodynamicsTab(QtWidgets.QWidget):
         self.statusMessage.emit("Operation failed")
 
     def append_log(self, message: str) -> None:
-        """Append a line to the log panel."""
+        """Append a line to the log panel and restart the step clock.
+
+        Each incoming line marks the start of whatever comes next, so the
+        clock beside the progress bar measures the step actually running
+        rather than the whole operation.
+        """
         self.log.appendPlainText(message)
+        stripped = message.strip()
+        # A completion line ("… — 12.3 s") closes a step rather than opening
+        # one; leaving the clock on it would count time nothing is spending.
+        if stripped.endswith("…"):
+            self._step_text = stripped.rstrip(" …")
+            self._step_started = time.monotonic()
+            self._refresh_step_clock()
+
+    def _refresh_step_clock(self) -> None:
+        """Redraw the current step with its elapsed time."""
+        if not self._step_text or self._step_started is None:
+            self.step_label.clear()
+            return
+        elapsed = time.monotonic() - self._step_started
+        self.step_label.setText(f"{self._step_text} — {elapsed:.0f} s")
+
+    def _stop_step_clock(self) -> None:
+        """Forget the current step once the worker has finished."""
+        self._step_timer.stop()
+        self._step_text = ""
+        self._step_started = None
+        self.step_label.clear()
+        self.step_label.setVisible(False)
 
     def _warn(self, message: str) -> None:
         """Show a modal warning."""

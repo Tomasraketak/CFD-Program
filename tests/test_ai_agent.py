@@ -556,3 +556,304 @@ def test_cost_accounting_is_requested_from_openrouter(monkeypatch):
     assert message["_usage"]["cost"] == pytest.approx(0.1)
     # Time spent waiting on the model is measured here, not guessed later.
     assert message["_usage"]["generation_seconds"] >= 0.0
+
+
+# ---------------------------------------------------------------------------
+# A running account of what the assistant is doing
+# ---------------------------------------------------------------------------
+
+
+def test_every_step_is_announced_as_it_happens():
+    """A long request must narrate itself, not report at the end.
+
+    The operator's seventeen-minute request showed nothing at all while it
+    ran. These events are what the transcript is built from.
+    """
+    from backend.ai_agent import (
+        EVENT_ROUND,
+        EVENT_TEXT,
+        EVENT_TOOL_FINISHED,
+        EVENT_TOOL_STARTED,
+    )
+
+    thinking = tool_reply("check_environment", {})
+    thinking["content"] = "Checking the toolchain first."
+    events = []
+    assistant = AIAssistant(
+        FakeChatClient([thinking, text_reply("Ready.")]), on_event=events.append
+    )
+    assistant.ask("can I solve?")
+
+    kinds = [event.kind for event in events]
+    assert kinds == [
+        EVENT_ROUND,
+        EVENT_TEXT,
+        EVENT_TOOL_STARTED,
+        EVENT_TOOL_FINISHED,
+        EVENT_ROUND,
+    ]
+
+
+def test_the_models_own_commentary_is_surfaced():
+    """The model explains itself before calling a tool; show that.
+
+    It was being stored in the message list and never displayed, which
+    threw away the best account of what was happening that anyone gets --
+    and it had already been paid for.
+    """
+    from backend.ai_agent import EVENT_TEXT
+
+    thinking = tool_reply("check_environment", {})
+    thinking["content"] = "I will look at the environment before meshing."
+    events = []
+    AIAssistant(
+        FakeChatClient([thinking, text_reply("done")]), on_event=events.append
+    ).ask("go")
+
+    said = [event.message for event in events if event.kind == EVENT_TEXT]
+    assert said == ["I will look at the environment before meshing."]
+
+
+def test_a_tools_arguments_are_announced_before_it_runs():
+    """Four minutes into a mesh, "Running set_geometry_and_mesh" is not enough."""
+    from backend.ai_agent import EVENT_TOOL_STARTED
+
+    events = []
+    AIAssistant(
+        FakeChatClient(
+            [
+                tool_reply("run_sensor_thermal_simulation", {"analytic_only": True}),
+                text_reply("done"),
+            ]
+        ),
+        on_event=events.append,
+    ).ask("how far off is it?")
+
+    started = [e for e in events if e.kind == EVENT_TOOL_STARTED]
+    assert len(started) == 1
+    assert started[0].tool == "run_sensor_thermal_simulation"
+    assert started[0].arguments == {"analytic_only": True}
+
+
+def test_a_finished_tool_reports_how_long_it_took():
+    """Cost is time as much as money, and the operator is paying both."""
+    from backend.ai_agent import EVENT_TOOL_FINISHED
+
+    events = []
+    AIAssistant(
+        FakeChatClient(
+            [tool_reply("check_environment", {}), text_reply("done")]
+        ),
+        on_event=events.append,
+    ).ask("check")
+
+    finished = [e for e in events if e.kind == EVENT_TOOL_FINISHED]
+    assert len(finished) == 1
+    assert finished[0].duration_s >= 0.0
+    assert finished[0].failed is False
+
+
+def test_a_declined_tool_is_announced_as_a_failure():
+    """Declining must be visible; a silent skip looks like a hang."""
+    from backend.ai_agent import EVENT_TOOL_FINISHED
+
+    events = []
+    AIAssistant(
+        FakeChatClient(
+            [
+                tool_reply("run_parametric_sweep", {"parameter": "mach"}),
+                text_reply("stopped"),
+            ]
+        ),
+        approve=lambda name, arguments: False,
+        on_event=events.append,
+    ).ask("sweep")
+
+    declined = [
+        e for e in events if e.kind == EVENT_TOOL_FINISHED and e.failed
+    ]
+    assert declined and "Declined" in declined[0].message
+
+
+def test_the_plain_progress_channel_still_carries_the_same_lines():
+    """Adding the structured channel must not break anything reading text."""
+    lines = []
+    events = []
+    AIAssistant(
+        FakeChatClient(
+            [tool_reply("check_environment", {}), text_reply("done")]
+        ),
+        on_progress=lines.append,
+        on_event=events.append,
+    ).ask("check")
+
+    assert any("Thinking (round 1)" in line for line in lines)
+    assert any("Running check_environment" in line for line in lines)
+    # Every event reached the text channel too.
+    assert [event.message for event in events] == lines
+
+
+# ---------------------------------------------------------------------------
+# Surviving a dropped connection
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def instant_backoff(monkeypatch):
+    """Retry without the wait, so these tests are about behaviour not patience."""
+    import backend.ai_agent as module
+
+    monkeypatch.setattr(module, "_RETRY_BACKOFF_S", (0.0, 0.0, 0.0))
+
+
+def test_a_dropped_connection_is_retried(monkeypatch, instant_backoff):
+    """The failure that cost the operator a seventeen-minute request.
+
+    Windows resets a connection mid-request and the whole conversation,
+    tool work and tokens already paid for, used to go with it.
+    """
+    attempts = {"n": 0}
+
+    def flaky(method, url, **kwargs):
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise ConnectionResetError(10054, "forcibly closed by the remote host")
+        return FakeResponse(
+            200, {"choices": [{"message": {"role": "assistant", "content": "back"}}]}
+        )
+
+    monkeypatch.setattr("requests.request", flaky)
+    reported = []
+    client = OpenRouterClient("sk-or-v1-test", on_retry=reported.append)
+
+    message = client.complete([{"role": "user", "content": "hi"}])
+
+    assert attempts["n"] == 2
+    assert message["content"] == "back"
+    assert reported and "retrying" in reported[0]
+
+
+@pytest.mark.parametrize("status", [408, 425, 429, 500, 502, 503, 504])
+def test_transient_server_failures_are_retried(monkeypatch, instant_backoff, status):
+    """A provider having a bad second should not end the session."""
+    attempts = {"n": 0}
+
+    def flaky(method, url, **kwargs):
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            return FakeResponse(status, {"error": {"message": "later"}})
+        return FakeResponse(
+            200, {"choices": [{"message": {"role": "assistant", "content": "ok"}}]}
+        )
+
+    monkeypatch.setattr("requests.request", flaky)
+    message = OpenRouterClient("sk-or-v1-test").complete(
+        [{"role": "user", "content": "hi"}]
+    )
+    assert attempts["n"] == 2
+    assert message["content"] == "ok"
+
+
+@pytest.mark.parametrize("status", [400, 401, 402, 403, 404])
+def test_permanent_failures_are_not_retried(monkeypatch, instant_backoff, status):
+    """A bad key or an empty balance will not improve by asking again.
+
+    Retrying these would delay a clear answer and, for a completion, could
+    bill the operator more than once for the same mistake.
+    """
+    attempts = {"n": 0}
+
+    def denied(method, url, **kwargs):
+        attempts["n"] += 1
+        return FakeResponse(status, {"error": {"message": "no"}})
+
+    monkeypatch.setattr("requests.request", denied)
+    with pytest.raises(AIAgentError):
+        OpenRouterClient("sk-or-v1-test").complete([{"role": "user", "content": "x"}])
+    assert attempts["n"] == 1
+
+
+def test_retrying_can_be_turned_off(monkeypatch, instant_backoff):
+    """A completion is not idempotent for billing, so this is the operator's call."""
+    attempts = {"n": 0}
+
+    def flaky(method, url, **kwargs):
+        attempts["n"] += 1
+        raise ConnectionResetError(10054, "forcibly closed")
+
+    monkeypatch.setattr("requests.request", flaky)
+    with pytest.raises(AIAgentError):
+        OpenRouterClient("sk-or-v1-test", max_attempts=1).complete(
+            [{"role": "user", "content": "x"}]
+        )
+    assert attempts["n"] == 1
+
+
+def test_a_server_that_says_when_to_come_back_is_obeyed(monkeypatch):
+    """Retry-After is the server telling us what it wants; honour it."""
+    import backend.ai_agent as module
+
+    waited = []
+    monkeypatch.setattr(module.time, "sleep", waited.append)
+    attempts = {"n": 0}
+
+    def limited(method, url, **kwargs):
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            response = FakeResponse(429, {"error": {"message": "slow down"}})
+            response.headers = {"Retry-After": "7"}
+            return response
+        return FakeResponse(
+            200, {"choices": [{"message": {"role": "assistant", "content": "ok"}}]}
+        )
+
+    monkeypatch.setattr("requests.request", limited)
+    OpenRouterClient("sk-or-v1-test").complete([{"role": "user", "content": "x"}])
+    assert waited == [7.0]
+
+
+def test_an_absurd_retry_after_is_capped(monkeypatch):
+    """A server asking for an hour must not freeze the interface for one."""
+    import backend.ai_agent as module
+
+    waited = []
+    monkeypatch.setattr(module.time, "sleep", waited.append)
+    attempts = {"n": 0}
+
+    def limited(method, url, **kwargs):
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            response = FakeResponse(429, {"error": {"message": "much later"}})
+            response.headers = {"Retry-After": "3600"}
+            return response
+        return FakeResponse(
+            200, {"choices": [{"message": {"role": "assistant", "content": "ok"}}]}
+        )
+
+    monkeypatch.setattr("requests.request", limited)
+    OpenRouterClient("sk-or-v1-test").complete([{"role": "user", "content": "x"}])
+    assert waited == [module._MAX_RETRY_AFTER_S]
+
+
+def test_a_retry_reaches_the_transcript(monkeypatch, instant_backoff):
+    """A silent retry is indistinguishable from a hang."""
+    from backend.ai_agent import EVENT_RETRY
+
+    attempts = {"n": 0}
+
+    def flaky(method, url, **kwargs):
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise ConnectionResetError(10054, "forcibly closed")
+        return FakeResponse(
+            200, {"choices": [{"message": {"role": "assistant", "content": "back"}}]}
+        )
+
+    monkeypatch.setattr("requests.request", flaky)
+    monkeypatch.setattr("core.credentials.load_api_key", lambda *a, **k: "sk-or-v1-x")
+
+    events = []
+    assistant = create_assistant(api_key="sk-or-v1-test", on_event=events.append)
+    assistant.ask("hello")
+
+    assert any(event.kind == EVENT_RETRY for event in events)

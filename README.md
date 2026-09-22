@@ -372,6 +372,15 @@ The last one is the reason for the extent check rather than a comment. A
 body that quietly loses 200 mm still meshes, still solves, and returns drag
 figures that look entirely reasonable.
 
+Two of those recoveries cost time as well as clarity. The closed-face split
+used to be rediscovered on every pass of the cell-count loop — up to five
+doomed surface meshes on one body — so the answer is now remembered for the
+rest of the run. And every long step announces itself and reports its own
+duration, because a Gmsh call that runs for four minutes in silence is
+indistinguishable from a hung program. Measured on the rocket that prompted
+this, at the interface's own defaults: **126.3 s → 101.6 s for the same
+429,832-cell mesh.**
+
 ---
 
 ## Aerodynamics
@@ -458,6 +467,14 @@ identical — a tool cannot exist on one surface and be missing from the other.
 The tool list *is* the boundary: no shell, no arbitrary file access, no code
 execution. Meshing, solving and sweeping are confirmed with the operator
 before they start, and a round cap bounds what one confused request can spend.
+
+The transcript is written as the work happens: each round, the model's own
+commentary before a tool call (which was previously received and discarded),
+the call with its arguments, and the outcome with its duration. A request that
+spends twenty minutes calling tools now leaves a record of what it did instead
+of a blank panel. Transport failures — a reset connection, a rate limit, a 502
+— are retried with backoff and the retry is written into that record; a
+rejected key is not retried, because it will not improve.
 
 Spending is shown as it happens rather than totalled afterwards — tokens,
 generation rate and OpenRouter's own cost figure, updated after every round,

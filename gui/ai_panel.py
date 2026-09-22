@@ -21,6 +21,12 @@ from PySide6 import QtCore, QtGui, QtWidgets
 
 from backend.ai_agent import (
     DEFAULT_MODEL,
+    EVENT_LIMIT,
+    EVENT_RETRY,
+    EVENT_ROUND,
+    EVENT_TEXT,
+    EVENT_TOOL_FINISHED,
+    EVENT_TOOL_STARTED,
     SUGGESTED_MODELS,
     AIAgentError,
     AuthenticationError,
@@ -64,6 +70,24 @@ EXAMPLE_PROMPTS = (
 )
 
 
+def _render_call(tool: str, arguments: dict[str, Any] | None) -> str:
+    """Render a tool call the way an operator would write it.
+
+    Long paths and long strings are clipped: the point is to recognise the
+    call, not to reproduce it.
+    """
+    rendered = ", ".join(
+        f"{key}={_clip(value)}" for key, value in (arguments or {}).items()
+    )
+    return f"{tool}({rendered})"
+
+
+def _clip(value: Any, limit: int = 44) -> str:
+    """Shorten one argument for display."""
+    text = value if isinstance(value, str) else repr(value)
+    return text if len(text) <= limit else f"{text[: limit - 1]}…"
+
+
 class AIWorker(QtCore.QRunnable):
     """Runs one assistant request off the GUI thread.
 
@@ -75,6 +99,7 @@ class AIWorker(QtCore.QRunnable):
         """Signals emitted as the request proceeds."""
 
         progress = QtCore.Signal(str)
+        event = QtCore.Signal(object)
         metrics = QtCore.Signal(object)
         finished = QtCore.Signal(object)
         failed = QtCore.Signal(str)
@@ -91,6 +116,7 @@ class AIWorker(QtCore.QRunnable):
         """Execute the request and report the outcome."""
         try:
             self.assistant.on_progress = self.signals.progress.emit
+            self.assistant.on_event = self.signals.event.emit
             self.assistant.on_metrics = self.signals.metrics.emit
             reply = self.assistant.ask(self.prompt)
             self.signals.finished.emit(reply)
@@ -435,6 +461,7 @@ class AITab(QtWidgets.QWidget):
             self.assistant = create_assistant(
                 model=self.selected_model(),
                 approve=self._approve_tool,
+                retry_attempts=self.settings.ai_retry_attempts,
             )
         except AuthenticationError as error:
             self._append_error(str(error))
@@ -529,6 +556,7 @@ class AITab(QtWidgets.QWidget):
 
         worker = AIWorker(self.assistant, prompt)
         worker.signals.progress.connect(self._on_progress)
+        worker.signals.event.connect(self._on_event)
         worker.signals.metrics.connect(self._on_metrics)
         worker.signals.finished.connect(self._on_finished)
         worker.signals.failed.connect(self._on_failed)
@@ -581,6 +609,48 @@ class AITab(QtWidgets.QWidget):
         self.activity.setText(message)
         self.statusMessage.emit(message)
 
+    def _on_event(self, event: Any) -> None:
+        """Write one step into the transcript as it happens.
+
+        The transcript used to stay empty until the whole request finished,
+        which on a seventeen-minute request meant seventeen minutes of a
+        blank panel and one status line being overwritten. Everything the
+        assistant does now lands here while it is happening, and survives
+        as scrollback afterwards.
+        """
+        kind = getattr(event, "kind", "")
+        if kind == EVENT_ROUND:
+            self._append(
+                f'<p style="margin-top:10px;color:{TEXT_MUTED};font-size:11px;">'
+                f"— round {event.round} —</p>"
+            )
+        elif kind == EVENT_TEXT:
+            # The model's own account of what it is about to do.
+            self._append(
+                f'<p style="margin-top:6px;color:{TEXT_MUTED};"><i>'
+                f'{html.escape(event.message).replace(chr(10), "<br>")}</i></p>'
+            )
+        elif kind == EVENT_TOOL_STARTED:
+            self._append(
+                f'<p style="margin-top:6px;color:{ACCENT};">▸ '
+                f"{html.escape(_render_call(event.tool, event.arguments))}</p>"
+            )
+        elif kind == EVENT_TOOL_FINISHED:
+            colour = DANGER if event.failed else TEXT_MUTED
+            detail = (
+                f"failed: {event.message}"
+                if event.failed
+                else f"ok — {event.duration_s:.1f} s"
+            )
+            self._append(
+                f'<p style="margin:0 0 0 14px;color:{colour};">'
+                f"{html.escape(detail)}</p>"
+            )
+        elif kind == EVENT_RETRY:
+            self._append_note(event.message)
+        elif kind == EVENT_LIMIT:
+            self._append_note(event.message)
+
     def _on_finished(self, reply: Any) -> None:
         """Render the completed reply."""
         self._set_busy(False)
@@ -589,8 +659,8 @@ class AITab(QtWidgets.QWidget):
             self._metrics = reply.metrics
         self._stop_meter()
 
-        if reply.tool_calls:
-            self._append_tool_calls(reply.tool_calls)
+        # The tool calls were written as they happened; listing them again
+        # here would show the whole run twice.
         self._append_assistant(reply.text or "(no answer)")
 
         if reply.stopped_early:

@@ -752,3 +752,163 @@ def test_window_state_is_persisted_on_close(qt_app, store):
         assert window.settings.default_mpi_ranks == 9
     finally:
         window.deleteLater()
+
+
+# -- the geometry preview ---------------------------------------------------
+
+
+class FakeViewport:
+    """A viewport that records what it was asked to show."""
+
+    def __init__(self, available=True):
+        self.available = available
+        self.shown = None
+        self.view_applied = None
+
+        class _Combo:
+            def __init__(self):
+                self.text = ""
+
+            def setCurrentText(self, value):
+                self.text = value
+
+            def blockSignals(self, value):
+                return False
+
+        self.view = _Combo()
+
+    def show_mesh(self, mesh, **kwargs):
+        self.shown = mesh
+
+    def _apply_view(self, name):
+        self.view_applied = name
+
+
+def preview_for(points=None, triangles=None, length=1.32):
+    """A GeometryPreview standing in for real tessellation."""
+    import numpy as np
+
+    from backend.mesh_pipeline import GeometryMetrics, GeometryPreview
+
+    points = np.array(
+        points if points is not None else [[0, 0, 0], [1, 0, 0], [0, 1, 0]],
+        dtype=float,
+    )
+    triangles = np.array(
+        triangles if triangles is not None else [[0, 1, 2]], dtype=np.int64
+    )
+    metrics = GeometryMetrics(
+        reference_length_m=length,
+        reference_diameter_m=0.075,
+        reference_area_m2=0.004,
+        bounding_box_min=(0.0, 0.0, 0.0),
+        bounding_box_max=(length, 0.1, 0.1),
+        surface_area_m2=0.3,
+        volume_m3=0.005,
+    )
+    return GeometryPreview(points=points, triangles=triangles, metrics=metrics)
+
+
+def test_a_finished_preview_reaches_the_viewport_side_on(aero_tab):
+    """The model appears in the frame the solver will use, seen from the side.
+
+    The viewport has existed since the beginning and never displayed
+    anything; this is what finally puts the rocket in it.
+    """
+    pytest.importorskip("pyvista")
+    aero_tab.viewport = FakeViewport()
+    aero_tab._preview_token = 4
+
+    aero_tab._preview_ready((4, preview_for()))
+
+    assert aero_tab.viewport.shown is not None
+    assert aero_tab.viewport.view_applied == "side"
+    assert "Preview:" in aero_tab.log.toPlainText()
+
+
+def test_a_preview_overtaken_by_another_import_is_discarded(aero_tab):
+    """Opening a second file must not leave the first rocket on screen."""
+    pytest.importorskip("pyvista")
+    aero_tab.viewport = FakeViewport()
+    aero_tab._preview_token = 7
+
+    # A preview from the previous file, arriving late.
+    aero_tab._preview_ready((6, preview_for()))
+
+    assert aero_tab.viewport.shown is None
+
+
+def test_a_preview_that_fails_leaves_the_import_alone(aero_tab):
+    """A body that will not tessellate coarsely may still mesh properly.
+
+    The picture is a convenience, so its failure is a log line and nothing
+    more -- never a blocked import or a verdict on the geometry.
+    """
+    aero_tab._preview_failed("'x.step' contains no geometry\nsecond line")
+    log = aero_tab.log.toPlainText()
+    assert "Preview unavailable" in log
+    assert "second line" not in log
+
+
+def test_no_preview_is_attempted_without_a_viewport(aero_tab, tmp_path):
+    """Nothing to draw on means nothing worth spending seconds of Gmsh on."""
+    from tests.test_step_inspect import MILLIMETRES, rocket_points, write_step
+
+    aero_tab.viewport = FakeViewport(available=False)
+    path = write_step(tmp_path / "r.step", MILLIMETRES, rocket_points())
+    aero_tab.step_path.setText(path)
+    before = aero_tab._preview_token
+
+    aero_tab._start_preview()
+
+    assert aero_tab._preview_token == before
+
+
+def test_an_enormous_file_is_not_previewed(aero_tab, tmp_path, monkeypatch):
+    """Tessellating a gigabyte to look at it would outlast anyone's patience."""
+    from gui import main_window
+    from tests.test_step_inspect import MILLIMETRES, rocket_points, write_step
+
+    aero_tab.viewport = FakeViewport()
+    path = write_step(tmp_path / "huge.step", MILLIMETRES, rocket_points())
+    aero_tab.step_path.setText(path)
+    monkeypatch.setattr(main_window, "MAX_PREVIEW_BYTES", 10)
+    before = aero_tab._preview_token
+
+    aero_tab._start_preview()
+
+    assert aero_tab._preview_token == before
+    assert "Preview skipped" in aero_tab.log.toPlainText()
+
+
+# -- the step clock ---------------------------------------------------------
+
+
+def test_the_log_puts_a_clock_on_the_step_now_running(aero_tab):
+    """Meshing goes quiet for minutes inside one Gmsh call.
+
+    Without the seconds moving, a working program looks like a hung one.
+    """
+    aero_tab.append_log("generating tetrahedral farfield mesh …")
+    aero_tab._refresh_step_clock()
+
+    assert "generating tetrahedral farfield mesh" in aero_tab.step_label.text()
+    assert aero_tab.step_label.text().endswith(" s")
+
+
+def test_a_completed_step_does_not_restart_the_clock(aero_tab):
+    """A line reporting a duration closes a step; it does not open one."""
+    aero_tab.append_log("generating surface mesh …")
+    first = aero_tab._step_started
+    aero_tab.append_log("generating surface mesh — 12.0 s")
+
+    assert aero_tab._step_started == first
+
+
+def test_the_clock_stops_when_the_worker_does(aero_tab):
+    """A stale step name left on screen would misreport what is happening."""
+    aero_tab.append_log("generating surface mesh …")
+    aero_tab._stop_step_clock()
+
+    assert aero_tab.step_label.text() == ""
+    assert not aero_tab._step_timer.isActive()

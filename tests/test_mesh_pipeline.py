@@ -456,3 +456,213 @@ def test_step_file_without_solids_is_reported_clearly(tmp_path):
     request = MeshRequest(geometry=GeometryParams(step_file_path=str(path)))
     with pytest.raises(MeshPipelineError, match="no solid"):
         generate_mesh(request, tmp_path / "out.su2")
+
+
+# ---------------------------------------------------------------------------
+# Not repeating work we already know will fail
+# ---------------------------------------------------------------------------
+
+
+def test_the_split_is_discovered_once_not_once_per_attempt(monkeypatch, tmp_path):
+    """Learning that a body needs splitting should be paid for once.
+
+    The cell-count loop runs up to five times. The operator's rocket has a
+    face that closes on itself, so every attempt used to re-import the CAD,
+    re-classify its faces and re-run the surface mesh that was always going
+    to fail, before splitting and starting again.
+    """
+    import backend.mesh_pipeline as pipeline
+
+    calls: list[bool] = []
+    real = pipeline._build_surface_mesh
+
+    def counted(request, size_scale, notify, split):
+        calls.append(split)
+        if not split:
+            raise RuntimeError("Impossible to mesh periodic surface 8")
+        return real(request, size_scale, notify, split=False)
+
+    monkeypatch.setattr(pipeline, "_build_surface_mesh", counted)
+
+    request = capsule_request(
+        capsule_step_for(tmp_path), mesh={"max_targeting_iterations": 2}
+    )
+    pipeline.generate_mesh(request, tmp_path / "sticky.su2")
+
+    # One doomed attempt at the start, and never again.
+    assert calls.count(False) == 1
+    assert len(calls) > 2, "the targeting loop did not run more than once"
+
+
+def capsule_step_for(tmp_path):
+    """A capsule written fresh, for tests that cannot share the module fixture."""
+    path = tmp_path / "capsule_local.step"
+    with gmsh_session("capsule_local"):
+        occ = gmsh.model.occ
+        barrel = occ.addCylinder(0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.04)
+        nose = occ.addSphere(0.0, 0.0, 0.0, 0.04)
+        occ.fuse([(3, barrel)], [(3, nose)])
+        occ.synchronize()
+        gmsh.write(str(path))
+    return path
+
+
+def test_a_body_that_fails_even_split_is_not_retried_forever(monkeypatch, tmp_path):
+    """Splitting is one repair, not a loop to spin in."""
+    import backend.mesh_pipeline as pipeline
+
+    attempts = {"n": 0}
+
+    def always_fails(request, size_scale, notify, split):
+        attempts["n"] += 1
+        raise RuntimeError("Impossible to mesh periodic surface 8")
+
+    monkeypatch.setattr(pipeline, "_build_surface_mesh", always_fails)
+    with pytest.raises(RuntimeError):
+        pipeline.generate_mesh(
+            capsule_request(capsule_step_for(tmp_path)), tmp_path / "x.su2"
+        )
+    assert attempts["n"] == 2
+
+
+def test_the_recovery_is_not_reported_as_a_failure(monkeypatch, tmp_path):
+    """It always recovers, and the word "failed" made operators think otherwise."""
+    import backend.mesh_pipeline as pipeline
+
+    real = pipeline._build_surface_mesh
+    state = {"first": True}
+
+    def once(request, size_scale, notify, split):
+        if state["first"] and not split:
+            state["first"] = False
+            raise RuntimeError("Impossible to mesh periodic surface 8")
+        return real(request, size_scale, notify, split=False)
+
+    monkeypatch.setattr(pipeline, "_build_surface_mesh", once)
+    lines: list[str] = []
+    pipeline.generate_mesh(
+        capsule_request(
+            capsule_step_for(tmp_path), mesh={"max_targeting_iterations": 0}
+        ),
+        tmp_path / "worded.su2",
+        progress=lines.append,
+    )
+
+    recovery = [line for line in lines if "closes on itself" in line]
+    assert recovery, "the recovery was not explained"
+    assert not any("failed" in line for line in recovery)
+
+
+@pytest.mark.slow
+def test_each_step_reports_how_long_it_took(capsule_step, tmp_path):
+    """A four-minute step that says nothing is indistinguishable from a hang."""
+    lines: list[str] = []
+    generate_mesh(
+        capsule_request(capsule_step), tmp_path / "timed.su2", progress=lines.append
+    )
+
+    for step in (
+        "generating surface mesh",
+        "generating tetrahedral farfield mesh",
+        "writing SU2 mesh",
+    ):
+        assert any(line.startswith(f"{step} …") for line in lines), f"no start: {step}"
+        assert any(
+            line.startswith(f"{step} —") and line.endswith(" s") for line in lines
+        ), f"no duration: {step}"
+
+
+@pytest.mark.slow
+def test_the_prism_march_reports_each_layer(capsule_step, tmp_path):
+    """The stack takes minutes on a real body; per-layer is the honest unit."""
+    lines: list[str] = []
+    request = capsule_request(capsule_step, mesh={"boundary_layers": 5})
+    generate_mesh(request, tmp_path / "layers.su2", progress=lines.append)
+
+    layer_lines = [line for line in lines if line.strip().startswith("prism layer")]
+    assert len(layer_lines) == 5
+    assert "1 of 5" in layer_lines[0]
+    assert "5 of 5" in layer_lines[-1]
+
+
+# ---------------------------------------------------------------------------
+# A quick look at the geometry
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.slow
+def test_a_preview_comes_back_aligned_nose_first(tmp_path):
+    """The preview is a check on the nose direction, not decoration.
+
+    Showing the model in the frame the solver will use means a rocket that
+    would fly tail-first is visible before anyone pays for a mesh.
+    """
+    from backend.mesh_pipeline import tessellate_geometry
+    from backend.sample_geometry import create_reference_rocket_step
+
+    path = create_reference_rocket_step(tmp_path / "rocket.step")
+    preview = tessellate_geometry(
+        GeometryParams(step_file_path=str(path), nose_direction=AxisDirection.PLUS_X)
+    )
+
+    assert len(preview.triangles) > 500
+    assert preview.points.shape[1] == 3
+    # The tapering end must sit at minimum X, where the flow arrives.
+    low, high = preview.points[:, 0].min(), preview.points[:, 0].max()
+    margin = 0.1 * (high - low)
+    nose_radius = np.linalg.norm(
+        preview.points[preview.points[:, 0] <= low + margin][:, 1:], axis=1
+    ).mean()
+    tail_radius = np.linalg.norm(
+        preview.points[preview.points[:, 0] >= high - margin][:, 1:], axis=1
+    ).mean()
+    assert nose_radius < tail_radius
+
+
+@pytest.mark.slow
+def test_a_preview_is_measured_in_metres(tmp_path):
+    """Millimetre CAD must come back the size it really is."""
+    from backend.mesh_pipeline import tessellate_geometry
+
+    path = tmp_path / "capsule_mm.step"
+    with gmsh_session("preview_mm"):
+        occ = gmsh.model.occ
+        occ.addCylinder(0.0, 0.0, 0.0, 500.0, 0.0, 0.0, 40.0)
+        occ.synchronize()
+        gmsh.write(str(path))
+
+    preview = tessellate_geometry(
+        GeometryParams(step_file_path=str(path), scale_to_meters=0.001)
+    )
+    span = preview.points.max(axis=0) - preview.points.min(axis=0)
+    assert span[0] == pytest.approx(0.5, rel=0.05)
+
+
+@pytest.mark.slow
+def test_a_preview_handles_a_face_that_closes_on_itself(tmp_path):
+    """The preview meets the same geometry the mesher does, so it splits too."""
+    from backend.mesh_pipeline import tessellate_geometry
+
+    path = tmp_path / "closed.step"
+    with gmsh_session("preview_closed"):
+        occ = gmsh.model.occ
+        occ.addCylinder(0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.05)
+        occ.synchronize()
+        gmsh.write(str(path))
+
+    preview = tessellate_geometry(GeometryParams(step_file_path=str(path)))
+    assert len(preview.triangles) > 100
+
+
+def test_a_file_with_no_geometry_is_reported_not_crashed_on(tmp_path):
+    """OpenCASCADE aborts the whole process on a re-import of an empty file.
+
+    That used to take the application down with it, and the preview made it
+    happen on import rather than on demand. A sentence is the right answer.
+    """
+    from backend.mesh_pipeline import tessellate_geometry
+    from tests.test_step_inspect import MILLIMETRES, write_step
+
+    path = write_step(tmp_path / "empty.step", MILLIMETRES, [(0, 0, 0), (10, 1, 1)])
+    with pytest.raises(MeshPipelineError, match="no geometry"):
+        tessellate_geometry(GeometryParams(step_file_path=path))

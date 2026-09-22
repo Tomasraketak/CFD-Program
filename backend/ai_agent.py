@@ -58,9 +58,26 @@ SUGGESTED_MODELS = (
 MAX_TOOL_ROUNDS = 12
 
 # Network timeouts in seconds. Generous, because a long prompt to a slow model
-# legitimately takes a while.
+# legitimately takes a while: a reasoning model writing a long answer in one
+# round can be silent for several minutes without anything being wrong.
 CONNECT_TIMEOUT = 15.0
-READ_TIMEOUT = 180.0
+READ_TIMEOUT = 600.0
+
+# Server responses worth trying again. 408 and 425 are the server asking for
+# a repeat; 429 is rate limiting; 5xx is the provider having a bad moment.
+# Everything else -- a bad key, no credit, a malformed request -- will fail
+# exactly the same way the second time.
+_RETRY_STATUSES = frozenset({408, 425, 429, 500, 502, 503, 504})
+
+# How many times one HTTP call may be attempted, and the gap before each
+# retry. Short enough not to look like a hang, long enough for a provider to
+# come back.
+DEFAULT_RETRY_ATTEMPTS = 3
+_RETRY_BACKOFF_S = (2.0, 8.0, 20.0)
+
+# Never wait longer than this for a server's own Retry-After. Beyond it the
+# operator would rather be told than left staring at a frozen window.
+_MAX_RETRY_AFTER_S = 30.0
 
 SYSTEM_PROMPT = """\
 You are the assistant built into AeroThermalStudio, a CFD and thermal
@@ -217,6 +234,39 @@ class UsageMetrics:
         }
 
 
+# What a progress event is telling the interface about.
+EVENT_ROUND = "round"
+EVENT_TEXT = "text"
+EVENT_TOOL_STARTED = "tool_started"
+EVENT_TOOL_FINISHED = "tool_finished"
+EVENT_RETRY = "retry"
+EVENT_LIMIT = "limit"
+
+
+@dataclass
+class ProgressEvent:
+    """One thing the assistant did, as it happens.
+
+    The plain progress string was enough for a one-line status label, but a
+    request that spends a quarter of an hour calling tools needs a running
+    account the operator can read afterwards: which round, what the model
+    said, which tool with which arguments, how long it took. Carrying the
+    parts separately lets the interface style them instead of parsing a
+    sentence back apart.
+    """
+
+    kind: str
+    message: str
+    tool: str = ""
+    arguments: dict[str, Any] = field(default_factory=dict)
+    duration_s: float = 0.0
+    round: int = 0
+    failed: bool = False
+
+    def __str__(self) -> str:  # pragma: no cover - convenience
+        return self.message
+
+
 @dataclass
 class AgentReply:
     """The outcome of one request to the assistant."""
@@ -268,7 +318,13 @@ class OpenRouterClient(ChatClient):
         Override for testing against a local stub.
     """
 
-    def __init__(self, api_key: str, base_url: str = OPENROUTER_BASE_URL) -> None:
+    def __init__(
+        self,
+        api_key: str,
+        base_url: str = OPENROUTER_BASE_URL,
+        max_attempts: int = DEFAULT_RETRY_ATTEMPTS,
+        on_retry: ProgressCallback | None = None,
+    ) -> None:
         if not (api_key or "").strip():
             raise AuthenticationError(
                 "No OpenRouter API key is set. Open Settings > AI assistant and "
@@ -276,6 +332,34 @@ class OpenRouterClient(ChatClient):
             )
         self.api_key = api_key.strip()
         self.base_url = base_url.rstrip("/")
+        self.max_attempts = max(1, int(max_attempts))
+        self.on_retry = on_retry
+
+    def _wait_before_retry(
+        self, attempt: int, reason: str, response: Any
+    ) -> None:
+        """Pause before another try, and say so.
+
+        Silence here is what a hang looks like, so the wait is announced
+        before it is taken rather than after.
+        """
+        delay = _RETRY_BACKOFF_S[min(attempt - 1, len(_RETRY_BACKOFF_S) - 1)]
+        if response is not None:
+            # A server that says how long to wait knows better than we do,
+            # within reason.
+            header = getattr(response, "headers", None) or {}
+            try:
+                requested = float(header.get("Retry-After", ""))
+            except (TypeError, ValueError):
+                requested = 0.0
+            if requested > 0.0:
+                delay = min(requested, _MAX_RETRY_AFTER_S)
+        if self.on_retry is not None:
+            self.on_retry(
+                f"OpenRouter did not answer ({reason}); "
+                f"retrying in {delay:.0f} s"
+            )
+        time.sleep(delay)
 
     def _headers(self) -> dict[str, str]:
         """Authorisation and attribution headers."""
@@ -356,7 +440,21 @@ class OpenRouterClient(ChatClient):
     def _request(
         self, method: str, path: str, payload: dict[str, Any] | None
     ) -> dict[str, Any]:
-        """Perform an HTTP request, turning failures into readable errors."""
+        """Perform an HTTP request, retrying the failures worth retrying.
+
+        A dropped connection used to end the request, and with it whatever
+        tool work the conversation had already paid for -- a quarter of an
+        hour and thirty-five thousand tokens, in the case that prompted
+        this. Network faults and the server's own transient refusals are
+        therefore retried a few times with a widening gap.
+
+        The honest caveat: a completion is not idempotent for billing. If
+        the connection drops *after* the model has generated, retrying pays
+        for that generation twice. Losing the whole session costs more, so
+        retrying is the default -- but every retry is announced, and
+        ``max_attempts=1`` turns it off for an operator who would rather
+        not gamble.
+        """
         try:
             import requests
         except ImportError as error:  # pragma: no cover - dependency is declared
@@ -366,19 +464,34 @@ class OpenRouterClient(ChatClient):
             ) from error
 
         url = f"{self.base_url}{path}"
-        try:
-            response = requests.request(
-                method,
-                url,
-                headers=self._headers(),
-                json=payload,
-                timeout=(CONNECT_TIMEOUT, READ_TIMEOUT),
-            )
-        except Exception as error:
-            raise AIAgentError(
-                f"could not reach OpenRouter: {error}. Check your internet "
-                "connection and any proxy or firewall."
-            ) from error
+        attempts = max(1, self.max_attempts)
+        for attempt in range(1, attempts + 1):
+            last = attempt == attempts
+            try:
+                response = requests.request(
+                    method,
+                    url,
+                    headers=self._headers(),
+                    json=payload,
+                    timeout=(CONNECT_TIMEOUT, READ_TIMEOUT),
+                )
+            except Exception as error:
+                if last:
+                    raise AIAgentError(
+                        f"could not reach OpenRouter: {error}. Check your "
+                        "internet connection and any proxy or firewall."
+                    ) from error
+                self._wait_before_retry(
+                    attempt, f"{type(error).__name__}: {error}", None
+                )
+                continue
+
+            if response.status_code in _RETRY_STATUSES and not last:
+                self._wait_before_retry(
+                    attempt, f"HTTP {response.status_code}", response
+                )
+                continue
+            break
 
         if response.status_code in (401, 403):
             raise AuthenticationError(
@@ -511,6 +624,9 @@ ApprovalCallback = Callable[[str, dict[str, Any]], bool]
 # Called with human-readable progress lines.
 ProgressCallback = Callable[[str], None]
 MetricsCallback = Callable[["UsageMetrics"], None]
+# Called with the same news in structured form. Both channels are served, so
+# anything that only wants a line of text keeps working unchanged.
+EventCallback = Callable[[ProgressEvent], None]
 
 
 class AIAssistant:
@@ -531,6 +647,9 @@ class AIAssistant:
     on_metrics:
         Receives the running token count, rate and cost after every round,
         so a long request can be watched rather than waited out.
+    on_event:
+        Receives the same news as ``on_progress`` in structured form, for an
+        interface that wants to lay it out rather than print it.
     max_rounds:
         Cap on tool-calling rounds for one request.
     """
@@ -542,6 +661,7 @@ class AIAssistant:
         approve: ApprovalCallback | None = None,
         on_progress: ProgressCallback | None = None,
         on_metrics: MetricsCallback | None = None,
+        on_event: EventCallback | None = None,
         max_rounds: int = MAX_TOOL_ROUNDS,
         system_prompt: str = SYSTEM_PROMPT,
     ) -> None:
@@ -550,6 +670,7 @@ class AIAssistant:
         self.approve = approve
         self.on_progress = on_progress
         self.on_metrics = on_metrics
+        self.on_event = on_event
         self.max_rounds = max(1, max_rounds)
         self.messages: list[dict[str, Any]] = [
             {"role": "system", "content": system_prompt}
@@ -566,9 +687,24 @@ class AIAssistant:
         return self.messages[1:]
 
     def _report(self, message: str) -> None:
-        """Emit a progress line, if anyone is listening."""
+        """Emit a plain progress line, if anyone is listening."""
         if self.on_progress is not None:
             self.on_progress(message)
+
+    def report_retry(self, message: str) -> None:
+        """Announce a transport retry. Called by the HTTP client."""
+        self._emit(ProgressEvent(kind=EVENT_RETRY, message=message))
+
+    def _emit(self, event: ProgressEvent) -> None:
+        """Announce one step on both channels.
+
+        The plain-text channel is kept because it is what a status bar and
+        the existing callers want; the structured one carries the same news
+        with its parts still separate.
+        """
+        self._report(event.message)
+        if self.on_event is not None:
+            self.on_event(event)
 
     def _report_metrics(self, metrics: UsageMetrics) -> None:
         """Emit a snapshot of the running cost and rate.
@@ -613,7 +749,13 @@ class AIAssistant:
         rounds = 0
 
         for rounds in range(1, self.max_rounds + 1):
-            self._report(f"Thinking (round {rounds}) …")
+            self._emit(
+                ProgressEvent(
+                    kind=EVENT_ROUND,
+                    message=f"Thinking (round {rounds}) …",
+                    round=rounds,
+                )
+            )
             message = self.client.complete(
                 self.messages, tools=tools, model=self.model
             )
@@ -625,6 +767,17 @@ class AIAssistant:
             # Keep the assistant turn verbatim: the API requires each
             # tool result to follow the message that requested it.
             self.messages.append(_assistant_message(message))
+
+            # A model that is about to call tools usually says why first.
+            # That sentence is the best account of what is happening that
+            # anyone gets, and it used to be stored and never shown.
+            commentary = (message.get("content") or "").strip()
+            if commentary and tool_calls:
+                self._emit(
+                    ProgressEvent(
+                        kind=EVENT_TEXT, message=commentary, round=rounds
+                    )
+                )
 
             if not tool_calls:
                 metrics.elapsed_seconds = time.perf_counter() - started
@@ -653,7 +806,9 @@ class AIAssistant:
             metrics.elapsed_seconds = time.perf_counter() - started
             self._report_metrics(metrics)
 
-        self._report("Reached the tool-call limit.")
+        self._emit(
+            ProgressEvent(kind=EVENT_LIMIT, message="Reached the tool-call limit.")
+        )
         return AgentReply(
             text=(
                 "I stopped after "
@@ -682,11 +837,20 @@ class AIAssistant:
             if not isinstance(arguments, dict):
                 raise ValueError("arguments must be a JSON object")
         except (json.JSONDecodeError, ValueError) as error:
-            return ToolInvocation(
+            invocation = ToolInvocation(
                 name=name,
                 arguments={},
                 error=f"the model sent malformed arguments: {error}",
             )
+            self._emit(
+                ProgressEvent(
+                    kind=EVENT_TOOL_FINISHED,
+                    message=invocation.summary(),
+                    tool=name,
+                    failed=True,
+                )
+            )
+            return invocation
 
         invocation = ToolInvocation(name=name, arguments=arguments)
 
@@ -697,14 +861,41 @@ class AIAssistant:
         ):
             invocation.declined = True
             invocation.error = "the operator declined this call"
-            self._report(f"Declined: {name}")
+            self._emit(
+                ProgressEvent(
+                    kind=EVENT_TOOL_FINISHED,
+                    message=f"Declined: {name}",
+                    tool=name,
+                    arguments=arguments,
+                    failed=True,
+                )
+            )
             return invocation
 
-        self._report(f"Running {name} …")
+        # Announce the arguments *before* the call. A four-minute mesh
+        # should not keep the operator guessing which file and which
+        # settings it is chewing on.
+        self._emit(
+            ProgressEvent(
+                kind=EVENT_TOOL_STARTED,
+                message=f"Running {name} …",
+                tool=name,
+                arguments=arguments,
+            )
+        )
         started = time.perf_counter()
         invocation.result = mcp_server.call_tool(name, arguments)
         invocation.duration_s = time.perf_counter() - started
-        self._report(invocation.summary())
+        self._emit(
+            ProgressEvent(
+                kind=EVENT_TOOL_FINISHED,
+                message=invocation.summary(),
+                tool=name,
+                arguments=arguments,
+                duration_s=invocation.duration_s,
+                failed=not invocation.succeeded,
+            )
+        )
         return invocation
 
 
@@ -776,6 +967,8 @@ def create_assistant(
     approve: ApprovalCallback | None = None,
     on_progress: ProgressCallback | None = None,
     on_metrics: MetricsCallback | None = None,
+    on_event: EventCallback | None = None,
+    retry_attempts: int = DEFAULT_RETRY_ATTEMPTS,
 ) -> AIAssistant:
     """Build an assistant using the stored API key.
 
@@ -794,10 +987,16 @@ def create_assistant(
             "Settings > AI assistant, or set the OPENROUTER_API_KEY "
             "environment variable."
         )
-    return AIAssistant(
-        OpenRouterClient(key),
+    assistant = AIAssistant(
+        OpenRouterClient(key, max_attempts=retry_attempts),
         model=model,
         approve=approve,
         on_progress=on_progress,
         on_metrics=on_metrics,
+        on_event=on_event,
     )
+    # The transport cannot reach the assistant's emitter on its own, so a
+    # retry is handed to it here and lands in the transcript like everything
+    # else the request does.
+    assistant.client.on_retry = assistant.report_retry
+    return assistant

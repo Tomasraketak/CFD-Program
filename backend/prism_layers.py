@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+from typing import Callable
 
 import numpy as np
 from scipy.spatial import cKDTree
@@ -531,6 +532,7 @@ def extrude_prism_layers(
     smoothing_passes: int = DEFAULT_SMOOTHING_PASSES,
     max_thickness: float | None = None,
     tolerate_defects: bool = False,
+    notify: Callable[[str], None] | None = None,
 ) -> PrismLayerResult:
     """March a prism boundary layer outward from a closed wall surface.
 
@@ -558,6 +560,10 @@ def extrude_prism_layers(
         When True, a surface that is not a closed manifold is accepted and the
         vertices touching the offending edges are frozen, producing a locally
         thinner but valid stack instead of raising.
+    notify:
+        Called with one line per layer as the march proceeds. Each layer on
+        a rocket-sized wall takes seconds and the whole stack takes minutes,
+        which is long enough for silence to look like a hang.
 
     Returns
     -------
@@ -638,6 +644,8 @@ def extrude_prism_layers(
     layers_built = 0
 
     for layer_index in range(layers):
+        if notify is not None:
+            notify(f"  prism layer {layer_index + 1} of {layers}")
         nominal = nominal_heights[layer_index]
         proximity = _proximity_limits(front, adjacency)
 

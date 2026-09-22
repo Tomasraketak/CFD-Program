@@ -110,6 +110,18 @@ class AppSettings(StrictModel):
             "is on by default."
         ),
     )
+    ai_retry_attempts: int = Field(
+        default=3,
+        ge=1,
+        le=6,
+        description=(
+            "How many times one request to OpenRouter is attempted before "
+            "giving up. A dropped connection otherwise throws away whatever "
+            "the conversation has already paid for. Set to 1 to never retry: "
+            "a completion is not idempotent for billing, so a connection that "
+            "drops after the model has generated is paid for twice."
+        ),
+    )
     ai_max_tool_rounds: int = Field(
         default=12,
         ge=1,

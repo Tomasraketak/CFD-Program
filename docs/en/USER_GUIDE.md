@@ -128,6 +128,22 @@ A wrong value here scales the Reynolds number by the same factor and
 invalidates everything. Check the reference length in the mesh report against
 what you expect.
 
+### Seeing what you imported
+
+The model appears in the 3D viewport as soon as it is read, seen from the
+side, nose to the left. It is tessellated coarsely — a few seconds, no
+boundary layers, no farfield — purely so you can look at it.
+
+**Look at it.** This is not decoration: the model is shown in the frame the
+solver will use, so the nose belongs on the left, pointing into the oncoming
+flow. If it is pointing the other way, the nose direction is wrong and every
+result that follows would be a perfectly plausible set of forces for a rocket
+flying tail-first.
+
+If the preview cannot be built, the log says so and the import carries on: a
+body that will not tessellate coarsely may still mesh properly with the real
+settings.
+
 ### Handing the file to the assistant
 
 Importing a STEP file also tells the built-in assistant about it. You can
@@ -573,6 +589,43 @@ so far:
 The figures update after each round of the conversation, so a request that is
 going to be expensive becomes visible while there is still time to stop it.
 **New conversation** resets the meter.
+
+### Following along while it works
+
+The assistant writes what it is doing into the transcript **as it happens**,
+not when it finishes:
+
+```
+— round 1 —
+I will check the toolchain before meshing anything.
+▸ get_active_geometry()
+  ok — 0.0 s
+▸ set_geometry_and_mesh(mesh_resolution=coarse, sizing_mach=1.3)
+  ok — 101.6 s
+— round 2 —
+```
+
+Four things are on that page that were not before. The **round markers** show
+how many times the model has been round the loop. The *italic line* is the
+model's own account of what it is about to do — it was always being sent and
+always being thrown away. Each **tool call** appears with its arguments before
+it runs, so a four-minute mesh tells you which file and which settings it is
+working on. And each **outcome** carries the time it took.
+
+The one-line status under the transcript still shows the current step, and the
+meter beside it the running cost.
+
+**A dropped connection no longer ends the session.** If the network fails, or
+OpenRouter is briefly overloaded or rate-limiting, the request is tried again
+— up to three times, with a widening gap — and each retry is written into the
+transcript so it does not look like a hang. A rejected key or an empty balance
+is *not* retried: those will not improve by asking again.
+
+There is an honest cost to this. A completion is not idempotent for billing:
+if the connection drops after the model has already generated its answer,
+retrying pays for that answer twice. Losing a seventeen-minute session costs
+more, so retrying is on by default — set `ai_retry_attempts` to `1` in
+`settings.json` if you would rather not.
 
 ### Talking to it
 

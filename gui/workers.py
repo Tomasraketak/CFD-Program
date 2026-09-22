@@ -17,6 +17,7 @@ from PySide6 import QtCore
 from backend.runner import SolverRunner
 from core.models import (
     AeroRunRequest,
+    GeometryParams,
     MeshRequest,
     SolverParams,
     ThermalParams,
@@ -61,6 +62,34 @@ class _BaseWorker(QtCore.QRunnable):
         message = f"{type(error).__name__}: {error}"
         detail = traceback.format_exc(limit=3)
         self.signals.failed.emit(f"{message}\n\n{detail}")
+
+
+class GeometryPreviewWorker(_BaseWorker):
+    """Tessellates a CAD file so the interface can show it.
+
+    Coarse and quick, but still seconds of OpenCASCADE and Gmsh work, which
+    is long enough to freeze the window if it ran where the import handler
+    runs. ``token`` is handed back untouched so a preview that arrives after
+    the operator has opened a different file can be recognised and dropped.
+    """
+
+    def __init__(self, geometry: GeometryParams, token: int = 0) -> None:
+        super().__init__()
+        self.geometry = geometry
+        self.token = token
+
+    @QtCore.Slot()
+    def run(self) -> None:
+        """Tessellate, and report the result with its token."""
+        try:
+            from backend.mesh_pipeline import tessellate_geometry
+
+            preview = tessellate_geometry(
+                self.geometry, notify=self.signals.progress.emit
+            )
+            self.signals.finished.emit((self.token, preview))
+        except BaseException as error:  # noqa: BLE001 - reported to the UI
+            self._fail(error)
 
 
 class MeshWorker(_BaseWorker):

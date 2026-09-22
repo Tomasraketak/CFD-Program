@@ -127,6 +127,20 @@ nic, poznámka vyzve ke kontrole.
 Chybná hodnota škáluje Reynoldsovo číslo stejným poměrem a znehodnotí
 všechno. Zkontrolujte referenční délku ve zprávě o síti proti očekávání.
 
+### Jak se podívat na to, co jste naimportoval
+
+Model se objeví ve 3D náhledu hned po načtení, z boku, špičkou doleva.
+Vysíťuje se hrubě — pár vteřin, žádné mezní vrstvy, žádné okolí — jen abyste
+se na něj mohl podívat.
+
+**Podívejte se na něj.** Není to ozdoba: model se zobrazuje v soustavě, kterou
+použije řešič, takže špička patří doleva, proti nabíhajícímu proudu. Když míří
+opačně, je špatně směr špičky a všechno, co bude následovat, budou naprosto
+věrohodné síly pro raketu letící zádí napřed.
+
+Když náhled vytvořit nejde, log to napíše a import pokračuje: těleso, které se
+nedá hrubě vysíťovat, může s ostrým nastavením projít bez problémů.
+
 ### Předání souboru asistentovi
 
 Import STEP souboru zároveň řekne vestavěnému asistentovi, o který soubor
@@ -567,6 +581,41 @@ Během běhu požadavku ukazuje řádek pod přepisem, co zatím spotřeboval:
 Údaje se aktualizují po každém kole konverzace, takže drahý požadavek je
 vidět ještě ve chvíli, kdy jde zastavit. **New conversation** měřič
 vynuluje.
+
+### Jak sledovat, co dělá
+
+Asistent píše do přepisu, co právě dělá, **průběžně** — ne až když skončí:
+
+```
+— round 1 —
+Než začnu síťovat, zkontroluju nástroje.
+▸ get_active_geometry()
+  ok — 0.0 s
+▸ set_geometry_and_mesh(mesh_resolution=coarse, sizing_mach=1.3)
+  ok — 101.6 s
+— round 2 —
+```
+
+Jsou tam čtyři věci, které dřív nebyly. **Značky kol** ukazují, kolikrát už
+model prošel smyčkou. *Kurzívou* je vlastní komentář modelu k tomu, co se
+chystá udělat — vždycky se posílal a vždycky se zahazoval. Každé **volání
+nástroje** se objeví i s argumenty ještě než proběhne, takže u čtyřminutového
+síťování víte, se kterým souborem a jakým nastavením pracuje. A u každého
+**výsledku** je čas, který zabral.
+
+Jednořádkový stav pod přepisem dál ukazuje aktuální krok a měřič vedle něj
+průběžnou cenu.
+
+**Přerušené spojení už relaci neukončí.** Když vypadne síť nebo je OpenRouter
+chvíli přetížený či omezuje rychlost, požadavek se zopakuje — až třikrát, s
+rostoucí pauzou — a každé opakování se zapíše do přepisu, aby to nevypadalo
+jako zaseknutí. Odmítnutý klíč nebo prázdný kredit se **neopakuje**: ty se
+druhým dotazem nezlepší.
+
+Má to poctivou cenu. Dokončení není z hlediska účtování idempotentní: když
+spojení spadne až poté, co model odpověď vygeneroval, zaplatíte ji dvakrát.
+Ztráta sedmnáctiminutové relace stojí víc, takže opakování je zapnuté — kdo
+by radši neriskoval, nastaví `ai_retry_attempts` na `1` v `settings.json`.
 
 ### Jak s ním mluvit
 

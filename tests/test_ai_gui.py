@@ -465,3 +465,105 @@ def test_a_new_conversation_clears_the_meter(ai_tab):
     ai_tab._on_metrics(UsageMetrics(prompt_tokens=10, completion_tokens=5))
     ai_tab.new_conversation()
     assert ai_tab.meter.text() == ""
+
+
+# -- the running account ----------------------------------------------------
+
+
+def test_the_transcript_fills_in_while_the_request_runs(ai_tab, qt_app):
+    """Seventeen minutes of a blank panel is what this prevents.
+
+    Nothing used to reach the transcript until the whole request finished.
+    Everything the assistant does now lands there as it happens.
+    """
+    thinking = tool_reply("check_environment", {})
+    thinking["content"] = "Checking the toolchain before I mesh anything."
+    make_assistant(ai_tab, [thinking, text_reply("SU2 is ready.")])
+
+    ai_tab.input.setPlainText("can I run a solve?")
+    ai_tab.send()
+    ai_tab.pool.waitForDone(20_000)
+    qt_app.processEvents()
+
+    text = ai_tab.transcript.toPlainText()
+    assert "round 1" in text
+    assert "Checking the toolchain before I mesh anything." in text
+    assert "check_environment()" in text
+    assert "SU2 is ready." in text
+
+
+def test_the_tool_list_is_not_repeated_at_the_end(ai_tab, qt_app):
+    """Calls are shown as they happen; listing them again shows the run twice."""
+    make_assistant(
+        ai_tab,
+        [tool_reply("check_environment", {}), text_reply("done")],
+    )
+    ai_tab.input.setPlainText("check the environment")
+    ai_tab.send()
+    ai_tab.pool.waitForDone(20_000)
+    qt_app.processEvents()
+
+    assert ai_tab.transcript.toPlainText().count("check_environment") == 1
+
+
+def test_a_tools_arguments_are_visible_in_the_transcript(ai_tab, qt_app):
+    """Which file, which resolution — not just which tool."""
+    make_assistant(
+        ai_tab,
+        [
+            tool_reply("run_sensor_thermal_simulation", {"analytic_only": True}),
+            text_reply("about 2 K high"),
+        ],
+    )
+    ai_tab.input.setPlainText("how far off is the sensor?")
+    ai_tab.send()
+    ai_tab.pool.waitForDone(20_000)
+    qt_app.processEvents()
+
+    assert "analytic_only=True" in ai_tab.transcript.toPlainText()
+
+
+def test_a_retry_is_written_into_the_transcript(ai_tab):
+    """A silent retry looks exactly like a hang."""
+    from backend.ai_agent import EVENT_RETRY, ProgressEvent
+
+    ai_tab._on_event(
+        ProgressEvent(
+            kind=EVENT_RETRY,
+            message="OpenRouter did not answer (reset); retrying in 2 s",
+        )
+    )
+    assert "retrying in 2 s" in ai_tab.transcript.toPlainText()
+
+
+def test_a_failed_tool_is_marked_as_failed(ai_tab):
+    """A failure that reads like a success is worse than no message."""
+    from backend.ai_agent import EVENT_TOOL_FINISHED, ProgressEvent
+
+    ai_tab._on_event(
+        ProgressEvent(
+            kind=EVENT_TOOL_FINISHED,
+            message="set_geometry_and_mesh(...) — failed: no such file",
+            tool="set_geometry_and_mesh",
+            failed=True,
+        )
+    )
+    text = ai_tab.transcript.toPlainText()
+    assert "failed" in text and "no such file" in text
+
+
+def test_a_long_argument_is_clipped_not_dumped(ai_tab):
+    """A full Windows path per line would push the conversation off screen."""
+    from backend.ai_agent import EVENT_TOOL_STARTED, ProgressEvent
+
+    ai_tab._on_event(
+        ProgressEvent(
+            kind=EVENT_TOOL_STARTED,
+            message="Running set_geometry_and_mesh …",
+            tool="set_geometry_and_mesh",
+            arguments={"step_file_path": "C:\\" + "very-long-folder\\" * 12 + "r.step"},
+        )
+    )
+    line = ai_tab.transcript.toPlainText().strip().splitlines()[-1]
+    assert len(line) < 120
+    assert line.endswith("…)")
