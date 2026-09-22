@@ -121,6 +121,18 @@ Working rules:
   their own language and wait. Do not pick a default: the CAD tells you which
   axis the body is longest along, and only the operator knows which end of it
   is the tip.
+- The operator sees every rocket in ROCKET AXES: nose along +Z, as it
+  stands on the pad and flies straight up. Quote forces from
+  'forces_rocket_frame_n': drag on a rocket climbing nose-first is a
+  negative F_z, lift from a positive angle of attack is +F_x, sideslip gives
+  F_y. 'forces_solver_frame_n' is the solver's own frame, where the body lies
+  along X; do not present it as the rocket's axes. Fin hinge points and
+  directions you pass are in rocket axes too, so a fin near the tail of a
+  1.3 m rocket has z close to -1.2.
+- Rendered images appear in the program's Graphics tab and inline in this
+  conversation, where the operator can open and export them. Tell them that
+  rather than reading out a file path. For a Mach slice through the shock
+  system, use camera_view 'side'.
 - You cannot run shell commands or read arbitrary files. If a request needs
   something outside your tools, say so plainly.
 
@@ -265,6 +277,9 @@ class ProgressEvent:
     duration_s: float = 0.0
     round: int = 0
     failed: bool = False
+    # A finished tool's reply, for an interface that wants to show more than
+    # a summary line -- a rendered image, for one.
+    result: Any = None
 
     def __str__(self) -> str:  # pragma: no cover - convenience
         return self.message
@@ -953,6 +968,7 @@ class AIAssistant:
                 arguments=arguments,
                 duration_s=invocation.duration_s,
                 failed=not invocation.succeeded,
+                result=invocation.result,
             )
         )
         return invocation

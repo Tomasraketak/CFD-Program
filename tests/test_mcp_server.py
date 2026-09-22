@@ -465,8 +465,17 @@ def test_aerodynamic_simulation_returns_forces_and_torques(prepared_mesh):
     assert response["coefficients"]["cd"] == pytest.approx(0.42)
     assert response["coefficients"]["cl"] == pytest.approx(0.25)
     assert response["mach"] == pytest.approx(2.0)
-    assert set(response["forces_n"]) == {"fx", "fy", "fz"}
-    assert len(response["center_of_pressure"]) == 3
+    assert set(response["forces_rocket_frame_n"]) == {"fx", "fy", "fz"}
+    assert set(response["forces_solver_frame_n"]) == {"fx", "fy", "fz"}
+    assert len(response["center_of_pressure_rocket_frame"]) == 3
+    assert "+Z" in response["axis_convention"]
+    # One force, two frames: the solver's downstream X is the rocket's -Z.
+    assert response["forces_rocket_frame_n"]["fz"] == pytest.approx(
+        -response["forces_solver_frame_n"]["fx"]
+    )
+    assert response["forces_rocket_frame_n"]["fx"] == pytest.approx(
+        response["forces_solver_frame_n"]["fz"]
+    )
     assert response["hinge_torques"][0]["name"] == "fin_1"
     assert math.isfinite(response["hinge_torques"][0]["torque_nm"])
     assert response["sim_id"]
@@ -733,6 +742,54 @@ def test_visualization_renders_from_a_stored_solution(store):
     )
     assert response["ok"], response.get("error")
     assert Path(response["image_path"]).is_file()
+    # A rocket is drawn standing up, and the reply says which way is which.
+    assert response["frame"] == "rocket"
+    assert "+Z" in response["axis_convention"]
+    # In the run's renders folder, which is where the Graphics tab looks.
+    assert Path(response["image_path"]).parent == record.path("renders")
+
+
+def test_visualization_frame_can_be_chosen(store, monkeypatch):
+    """The solver frame stays available, and thermal runs default to it."""
+    import backend.visualizer as visualizer
+
+    seen = []
+
+    def fake_render(solution, kind, output_path, **kwargs):
+        seen.append((kwargs["frame"], kwargs["title"]))
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(output_path).write_bytes(b"png")
+        return Path(output_path)
+
+    monkeypatch.setattr(visualizer, "render_visualization", fake_render)
+    aero = store.create("aero", {"mach": 1.3, "aoa_deg": 4.0})
+    thermal = store.create("thermal", {})
+
+    call(server_module.generate_cfd_visualization, sim_id=aero.record_id)
+    call(server_module.generate_cfd_visualization, sim_id=aero.record_id, frame="solver")
+    call(server_module.generate_cfd_visualization, sim_id=thermal.record_id,
+         visualization_type="thermal")
+
+    assert [frame for frame, _ in seen] == ["rocket", "solver", "solver"]
+    # The caption names the case, so an exported image stands on its own.
+    assert "M 1.30" in seen[0][1] and "alpha 4" in seen[0][1]
+    assert aero.record_id in seen[0][1]
+
+
+def test_hinges_from_the_assistant_are_in_rocket_axes():
+    """What the operator is shown is what the assistant is asked in."""
+    from core.frames import Frame
+
+    default, explicit = server_module._hinge_axes(
+        [
+            {"point": [0.0, 0.05, -0.9], "direction": [0, 1, 0]},
+            {"point": [0.9, 0.05, 0.0], "direction": [0, 1, 0], "frame": "solver"},
+        ]
+    )
+    assert default.frame is Frame.ROCKET
+    assert explicit.frame is Frame.SOLVER
+    # The same physical hinge either way.
+    assert default.solver_point() == pytest.approx(explicit.solver_point())
 
 
 # ---------------------------------------------------------------------------

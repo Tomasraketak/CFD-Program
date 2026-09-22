@@ -36,6 +36,7 @@ from core.models import (
     ThermalParams,
     VelocityType,
 )
+from core.frames import AXIS_CONVENTION, Frame
 from core.platform_env import probe_environment, recommended_mpi_ranks
 from core.project import (
     PROJECT_FILTER,
@@ -49,6 +50,7 @@ from core.settings import AppSettings, load_settings, save_settings
 from core.workspace import clear_active_geometry, set_active_geometry
 from core.store import RunStore, default_store
 from gui.ai_panel import AITab
+from gui.gallery import GraphicsTab
 from gui.form_builder import LabelledSlider
 from gui.theme import (
     ACCENT,
@@ -299,7 +301,14 @@ class Viewport(QtWidgets.QWidget):
         self.colormap.addItems(["turbo", "coolwarm", "viridis", "plasma", "inferno"])
         self.view = QtWidgets.QComboBox()
         self.view.addItems(
-            ["isometric", "front", "back", "side", "top", "bottom", "nose_quarter"]
+            [
+                "isometric", "front", "back", "side", "top", "bottom",
+                "nose_quarter", "tail_quarter",
+            ]
+        )
+        self.view.setToolTip(
+            "Views of the rocket standing nose-up along +Z: 'front' looks at "
+            "the nose from ahead, 'side' at the pitch plane."
         )
         self.slice_slider = LabelledSlider(0.0, 1.0, 0.5, decimals=2)
         self.slice_enabled = QtWidgets.QCheckBox("Slice")
@@ -329,6 +338,11 @@ class Viewport(QtWidgets.QWidget):
             return
         self.interactor.clear()
         self.interactor.add_mesh(mesh, **kwargs)
+        # The triad is what makes "nose along +Z" checkable at a glance.
+        try:
+            self.interactor.add_axes()
+        except Exception:  # pragma: no cover - rendering failure
+            pass
         self.interactor.reset_camera()
 
     def add_line(self, start, end, colour: str = ACCENT, width: int = 4) -> None:
@@ -349,9 +363,11 @@ class Viewport(QtWidgets.QWidget):
         if self.interactor is None:
             return
         try:
-            from backend.visualizer import CAMERA_VIEWS
+            # The viewport only ever shows the rocket frame: the imported
+            # model and the hinge axes are both drawn nose-up.
+            from backend.visualizer import ROCKET_CAMERA_VIEWS as views
 
-            direction, up = CAMERA_VIEWS.get(name, CAMERA_VIEWS["isometric"])
+            direction, up = views.get(name, views["isometric"])
             self.interactor.view_vector(direction, up)
         except Exception:  # pragma: no cover
             pass
@@ -366,6 +382,8 @@ class AerodynamicsTab(QtWidgets.QWidget):
     """Rocket aerodynamics: geometry, domain, flight condition, fins."""
 
     statusMessage = QtCore.Signal(str)
+    # A solve finished; carries its sim_id so its pictures can be drawn.
+    simulationFinished = QtCore.Signal(str)
 
     def __init__(
         self, store: RunStore, parent: QtWidgets.QWidget | None = None
@@ -447,6 +465,11 @@ class AerodynamicsTab(QtWidgets.QWidget):
         self.geometry_note.setWordWrap(True)
         layout.addRow("", self.geometry_note)
 
+        # Which way the nose points in the CAD file, which is what anyone
+        # looking at the model would say. The meshing parameter is the
+        # opposite -- the nose-to-tail direction -- and the buttons used to
+        # show that, so a rocket with its nose at +Y lit up "-Y". The
+        # conversion now happens here, once, out of the operator's sight.
         self.axis_buttons = QtWidgets.QButtonGroup(self)
         axis_row = QtWidgets.QHBoxLayout()
         axis_row.setSpacing(3)
@@ -454,18 +477,34 @@ class AerodynamicsTab(QtWidgets.QWidget):
             button = QtWidgets.QPushButton(direction.value)
             button.setObjectName("axis")
             button.setCheckable(True)
-            button.setChecked(direction is AxisDirection.PLUS_X)
-            button.setToolTip(f"Nose points along {direction.value} in the CAD frame")
+            button.setChecked(direction is AxisDirection.MINUS_X)
+            button.setToolTip(
+                f"The nose points to {direction.value} in the CAD file. "
+                "Whatever this is, the model is shown and reported nose-up "
+                "along +Z."
+            )
             self.axis_buttons.addButton(button, index)
             axis_row.addWidget(button)
-        layout.addRow("Nose axis", _wrap(axis_row))
+        layout.addRow("Nose points to", _wrap(axis_row))
 
         self.custom_nose = QtWidgets.QCheckBox("Use custom vector")
-        self.nose_vector = VectorInput((1.0, 0.0, 0.0))
+        self.nose_vector = VectorInput((-1.0, 0.0, 0.0))
+        self.nose_vector.setToolTip(
+            "Direction the nose points in the CAD file, for a model drawn "
+            "along no principal axis"
+        )
         self.nose_vector.setEnabled(False)
         self.custom_nose.toggled.connect(self.nose_vector.setEnabled)
         layout.addRow("", self.custom_nose)
         layout.addRow("Nose vector", self.nose_vector)
+
+        frame_note = QtWidgets.QLabel(
+            "Shown and reported in rocket axes: nose along +Z, origin at "
+            "the reference origin."
+        )
+        frame_note.setObjectName("hint")
+        frame_note.setWordWrap(True)
+        layout.addRow("", frame_note)
 
         self.reference_origin = VectorInput((0.0, 0.0, 0.0))
         self.reference_origin.setToolTip(
@@ -552,8 +591,11 @@ class AerodynamicsTab(QtWidgets.QWidget):
         self.hinge_name = QtWidgets.QLineEdit("fin_1")
         layout.addRow("Name", self.hinge_name)
 
-        self.hinge_point = VectorInput((0.9, 0.05, 0.0))
-        self.hinge_point.setToolTip("A point on the hinge line, in metres")
+        self.hinge_point = VectorInput((0.0, 0.05, -0.9))
+        self.hinge_point.setToolTip(
+            "A point on the hinge line, in metres, in rocket axes: nose along "
+            "+Z, so a fin near the tail has a negative Z"
+        )
         self.hinge_point.valueChanged.connect(self._draw_hinge)
         layout.addRow("Point", self.hinge_point)
 
@@ -664,13 +706,29 @@ class AerodynamicsTab(QtWidgets.QWidget):
         self.card_drag = ResultCard("Drag force", "N")
         self.card_lift = ResultCard("Lift force", "N")
         self.card_torque = ResultCard("Hinge torque", "N m")
-        self.card_cop = ResultCard("Centre of pressure", "m")
+        self.card_cop = ResultCard("Centre of pressure, Z", "m")
+        self.card_cop.setToolTip(
+            "Distance along the rocket axis from the reference origin; "
+            "negative is behind the nose. Undefined at zero incidence."
+        )
         for card in (
             self.card_cd, self.card_cl, self.card_drag,
             self.card_lift, self.card_torque, self.card_cop,
         ):
             cards.addWidget(card)
         layout.addLayout(cards)
+
+        # The force along each of the rocket's own axes, which is what
+        # "how much force in each axis" means to someone holding the rocket
+        # nose-up -- not the solver's frame, where the body lies along X.
+        axis_cards = QtWidgets.QHBoxLayout()
+        self.card_fx = ResultCard("Force along rocket X", "N")
+        self.card_fy = ResultCard("Force along rocket Y", "N")
+        self.card_fz = ResultCard("Force along rocket Z (nose)", "N")
+        for card in (self.card_fx, self.card_fy, self.card_fz):
+            card.setToolTip(AXIS_CONVENTION)
+            axis_cards.addWidget(card)
+        layout.addLayout(axis_cards)
 
         self.log = QtWidgets.QPlainTextEdit()
         self.log.setObjectName("log")
@@ -726,7 +784,8 @@ class AerodynamicsTab(QtWidgets.QWidget):
 
         axes = list(AxisDirection)
         checked = self.axis_buttons.checkedId()
-        direction = axes[checked].value if 0 <= checked < len(axes) else "+X"
+        nose_points_to = axes[checked].value if 0 <= checked < len(axes) else "-X"
+        direction = _opposite_axis(nose_points_to)
         # On a fresh import the axis buttons still hold the last file's
         # answer, so they are not passed in: the shape of this model decides,
         # and the buttons follow. A project supplies its own.
@@ -743,8 +802,7 @@ class AerodynamicsTab(QtWidgets.QWidget):
         if not keep_scale:
             self.scale.setValue(record.scale_to_meters)
             if record.nose_is_confident and not self.custom_nose.isChecked():
-                for button in self.axis_buttons.buttons():
-                    button.setChecked(button.text() == record.nose_direction)
+                self._check_nose_button(_opposite_axis(record.nose_direction))
 
         note = record.summary()
         # Anything the geometry could not settle is put to the operator here
@@ -760,14 +818,21 @@ class AerodynamicsTab(QtWidgets.QWidget):
         self.statusMessage.emit(note)
         self._start_preview()
 
+    def _check_nose_button(self, nose_points_to: str) -> None:
+        """Light the button for the direction the nose points in the CAD."""
+        for button in self.axis_buttons.buttons():
+            button.setChecked(button.text() == nose_points_to)
+
     # -- geometry preview --------------------------------------------------
 
     def _start_preview(self) -> None:
-        """Tessellate the loaded CAD and show it, from the side.
+        """Tessellate the loaded CAD and show it standing up, from the side.
 
-        The picture is a check, not decoration: the model appears in the
-        frame the solver will use, so a rocket whose nose ends up pointing
-        downstream is visible before anyone pays for a mesh.
+        The picture is a check, not decoration: the model goes through the
+        same alignment the mesh will, and is then stood on its tail with the
+        nose along +Z. A rocket that appears upside down has its nose axis
+        set the wrong way round, and that is visible before anyone pays for
+        a mesh.
         """
         if not self.viewport.available:
             return
@@ -806,13 +871,17 @@ class AerodynamicsTab(QtWidgets.QWidget):
             import numpy as np
             import pyvista as pv
 
+            from core.frames import points_to_rocket
+
             faces = np.hstack(
                 [
                     np.full((len(preview.triangles), 1), 3, dtype=np.int64),
                     preview.triangles,
                 ]
             ).ravel()
-            surface = pv.PolyData(preview.points, faces)
+            # Tessellated in the solver frame, shown in the rocket frame:
+            # nose up along +Z, however the CAD was drawn.
+            surface = pv.PolyData(points_to_rocket(preview.points), faces)
         except Exception as error:  # noqa: BLE001 - preview is optional
             self._preview_failed(str(error))
             return
@@ -831,7 +900,8 @@ class AerodynamicsTab(QtWidgets.QWidget):
         self.viewport.view.blockSignals(was_blocked)
         self.append_log(
             f"Preview: {len(preview.triangles)} triangles, "
-            f"{preview.metrics.reference_length_m:.3f} m long, nose upstream."
+            f"{preview.metrics.reference_length_m:.3f} m long, shown nose-up "
+            "along +Z."
         )
 
     def _preview_failed(self, message: str) -> None:
@@ -906,11 +976,17 @@ class AerodynamicsTab(QtWidgets.QWidget):
     def geometry_params(self) -> GeometryParams:
         """Build GeometryParams from the form."""
         button = self.axis_buttons.checkedButton()
-        direction = AxisDirection(button.text()) if button else AxisDirection.PLUS_X
+        # The buttons say where the nose points; meshing wants nose-to-tail.
+        direction = (
+            AxisDirection(_opposite_axis(button.text()))
+            if button
+            else AxisDirection.PLUS_X
+        )
+        custom = self.custom_nose.isChecked()
         return GeometryParams(
             step_file_path=self.step_path.text().strip(),
-            nose_direction=None if self.custom_nose.isChecked() else direction,
-            nose_vector=self.nose_vector.value() if self.custom_nose.isChecked() else None,
+            nose_direction=None if custom else direction,
+            nose_vector=[-v for v in self.nose_vector.value()] if custom else None,
             reference_origin=self.reference_origin.value(),
             scale_to_meters=self.scale.value(),
         )
@@ -944,6 +1020,7 @@ class AerodynamicsTab(QtWidgets.QWidget):
                 name=self.hinge_name.text().strip() or "fin_1",
                 point=self.hinge_point.value(),
                 direction=direction,
+                frame=Frame.ROCKET,
             )
         ]
 
@@ -1019,10 +1096,9 @@ class AerodynamicsTab(QtWidgets.QWidget):
             self.custom_nose.setChecked(geometry.nose_vector is not None)
             self.nose_vector.setEnabled(geometry.nose_vector is not None)
             if geometry.nose_vector is not None:
-                self.nose_vector.set_value(tuple(geometry.nose_vector))
+                self.nose_vector.set_value(tuple(-v for v in geometry.nose_vector))
             elif geometry.nose_direction is not None:
-                for button in self.axis_buttons.buttons():
-                    button.setChecked(button.text() == geometry.nose_direction.value)
+                self._check_nose_button(_opposite_axis(geometry.nose_direction.value))
             # After the scale and the nose axis, so the project's own values
             # are what reach the assistant.
             self._on_step_path_changed(keep_scale=True)
@@ -1048,7 +1124,8 @@ class AerodynamicsTab(QtWidgets.QWidget):
             self.altitude.setValue(flow.altitude_m)
 
         if project.hinge_axes:
-            hinge = project.hinge_axes[0]
+            # Older projects hold their hinges in the solver frame.
+            hinge = project.hinge_axes[0].in_frame(Frame.ROCKET)
             self.hinge_name.setText(hinge.name)
             self.hinge_point.set_value(tuple(hinge.point))
             self.hinge_direction.set_value(tuple(hinge.direction))
@@ -1184,8 +1261,11 @@ class AerodynamicsTab(QtWidgets.QWidget):
         self.card_lift.set_value(result.lift_n, "{:.2f}")
         if result.hinge_torques:
             self.card_torque.set_value(result.hinge_torques[0].torque_nm, "{:.4f}")
-        cop_x = result.center_of_pressure[0]
-        self.card_cop.set_value(cop_x, "{:.4f}")
+        self.card_cop.set_value(result.center_of_pressure_rocket[2], "{:.4f}")
+        for card, value in zip(
+            (self.card_fx, self.card_fy, self.card_fz), result.force_rocket_n
+        ):
+            card.set_value(value, "{:.2f}")
         # A rescued run converged in the end, but it needed help getting
         # there -- which the operator should see on the card, not only in the
         # log they may have scrolled past.
@@ -1198,8 +1278,30 @@ class AerodynamicsTab(QtWidgets.QWidget):
             f"Converged={result.converged} after {result.iterations} iterations "
             f"({result.wall_time_s:.1f}s)"
         )
+        fx, fy, fz = result.force_rocket_n
+        self.append_log(
+            f"Force in rocket axes: X {fx:.2f} N, Y {fy:.2f} N, Z {fz:.2f} N "
+            "(Z along the nose)"
+        )
         for note in getattr(result, "notes", []):
             self.append_log(note)
+
+        # Recorded the way the MCP tool records it, so the assistant, the
+        # Graphics tab and a later session all see the same run.
+        try:
+            self.store.write_json(result.sim_id, "result.json", result)
+            self.store.update_metadata(
+                result.sim_id,
+                {
+                    "cd": result.cd,
+                    "cl": result.cl,
+                    "mach": result.mach,
+                    "aoa_deg": result.aoa_deg,
+                },
+            )
+        except Exception as error:  # noqa: BLE001 - the result is on screen
+            self.append_log(f"Could not record the result: {error}")
+        self.simulationFinished.emit(result.sim_id)
 
     def run_sweep(self) -> None:
         """Start a parametric sweep."""
@@ -1763,8 +1865,12 @@ class MainWindow(QtWidgets.QMainWindow):
         # Same root the window itself saves settings to, so the assistant's
         # preferences and credentials land beside the run registry.
         self.ai_tab = AITab(self.settings, self.store.root)
+        self.graphics_tab = GraphicsTab(self.store, self.settings, self.store.root)
         self.tabs.addTab(self.sensor_tab, "Sensor Microclimate (BMP580)")
         self.tabs.addTab(self.ai_tab, "AI Assistant")
+        # Last, so the tab index remembered from an earlier version still
+        # opens the tab it meant.
+        self.tabs.addTab(self.graphics_tab, "Graphics")
         self.tabs.setCurrentIndex(
             min(self.settings.active_tab, self.tabs.count() - 1)
         )
@@ -1774,6 +1880,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.aero_tab.statusMessage.connect(self.status.showMessage)
         self.sensor_tab.statusMessage.connect(self.status.showMessage)
         self.ai_tab.statusMessage.connect(self.status.showMessage)
+        self.graphics_tab.statusMessage.connect(self.status.showMessage)
+
+        # Every picture, whoever asked for it, ends up in the Graphics tab.
+        self.aero_tab.simulationFinished.connect(self.graphics_tab.render_standard)
+        self.ai_tab.imageProduced.connect(self.graphics_tab.select_image)
+        self.ai_tab.showGraphics.connect(self.show_graphics)
 
         self.aero_tab.ranks.setValue(self.settings.default_mpi_ranks)
 
@@ -1781,6 +1893,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self._apply_project_to_tabs()
         self._update_title()
         self._report_environment()
+
+    def show_graphics(self, path: str = "") -> None:
+        """Switch to the Graphics tab, with an image selected if given."""
+        if path:
+            self.graphics_tab.select_image(path)
+        self.tabs.setCurrentWidget(self.graphics_tab)
 
     # -- project management ------------------------------------------------
 
@@ -2123,8 +2241,27 @@ def build_application(argv: list[str] | None = None) -> QtWidgets.QApplication:
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(argv or [])
     app.setApplicationName(APP_NAME)
     app.setStyle("Fusion")
-    app.setStyleSheet(STYLESHEET)
+    app.setStyleSheet(STYLESHEET + _arrow_rules())
     return app
+
+
+def _arrow_rules() -> str:
+    """The combo-box arrow rules, or nothing if the images cannot be written.
+
+    A read-only data folder must not stop the program starting; the arrows
+    fall back to a temporary folder, and failing that are simply absent.
+    """
+    import tempfile
+
+    from core.platform_env import data_root
+    from gui.theme import arrow_stylesheet
+
+    for directory in (data_root() / "ui", Path(tempfile.gettempdir()) / f"{APP_NAME}-ui"):
+        try:
+            return arrow_stylesheet(directory)
+        except OSError:
+            continue
+    return ""
 
 
 def run_gui(argv: list[str] | None = None) -> int:
@@ -2133,6 +2270,12 @@ def run_gui(argv: list[str] | None = None) -> int:
     window = MainWindow()
     window.show()
     return app.exec()
+
+
+def _opposite_axis(direction: str) -> str:
+    """'+Y' for '-Y' and the reverse."""
+    sign, axis = direction[0], direction[1:]
+    return ("-" if sign == "+" else "+") + axis
 
 
 def _wrap(layout: QtWidgets.QLayout) -> QtWidgets.QWidget:

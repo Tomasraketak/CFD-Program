@@ -182,7 +182,7 @@ Run one RANS simulation point.
 | `aoa_deg` | float | 0.0 | ±20 |
 | `sideslip_deg` | float | 0.0 | ±20 |
 | `altitude_m` | float | 0.0 | −610 to 32 000 |
-| `hinge_axes` | list[object] | `[]` | `{"name", "point": [x,y,z], "direction": [u,v,w]}` |
+| `hinge_axes` | list[object] | `[]` | `{"name", "point": [x,y,z], "direction": [u,v,w], "frame": "rocket"}` — rocket axes unless `frame` is `"solver"` |
 | `reference_area_m2` | float | null | Overrides the measured value |
 | `reference_length_m` | float | null | Overrides the measured value |
 | `moment_origin` | list[3] | null | Overrides the default |
@@ -192,10 +192,20 @@ Run one RANS simulation point.
 | `turbulence_model` | string | `"SST"` | `SST` or `SA` |
 | `cfl_number` | float | null | Chosen from the regime when null: 5.0 subsonic, 2.0 transonic, 1.0 from Mach 1.2 |
 
-Returns `sim_id`, `mach`, `forces_n` (`fx`/`fy`/`fz`), `drag_n`, `lift_n`,
+Returns `sim_id`, `mach`, `axis_convention`, `forces_rocket_frame_n`
+(`fx`/`fy`/`fz`), `forces_solver_frame_n`, `drag_n`, `lift_n`,
 `sideforce_n`, `coefficients` (`cd`/`cl`/`cs`/`cm_pitch`),
-`center_of_pressure`, `hinge_torques`, `iterations`, `converged`, and
-`rescued` with `notes`.
+`center_of_pressure_rocket_frame`, `center_of_pressure_solver_frame`,
+`hinge_torques`, `iterations`, `converged`, and `rescued` with `notes`.
+
+**Two frames.** The *rocket frame* is the one the operator sees: nose along
++Z, origin at the reference origin. Drag on a rocket flying nose-first is a
+negative `fz`; the lift from a positive angle of attack is `+fx`; sideslip
+produces `fy`. The *solver frame* is the mesh's own — body along +X, flow
+along +X — and is included for reference. They differ by a fixed rotation:
+x_rocket = z_solver, y_rocket = y_solver, z_rocket = −x_solver. Quote the
+rocket frame to people. Hinge points and directions passed in are read in the
+rocket frame too, unless an axis says `"frame": "solver"`.
 
 A supersonic cold start can blow up in a few iterations. That is now caught
 at once and retried automatically at first order, then restarted at second
@@ -252,9 +262,17 @@ Render an image from a completed simulation.
 | `slice_normal` | list[3] | `[0,1,0]` | Cutting-plane normal |
 | `colormap` | string | `"turbo"` | `turbo`, `coolwarm`, `viridis`, `jet`, `plasma`, `inferno` |
 | `resolution` | string | `"4k"` | `preview`, `hd`, `2k`, `4k` |
-| `output_path` | string | null | Defaults into the run folder |
+| `output_path` | string | null | Defaults into the run folder; give a path to export elsewhere |
+| `frame` | string | null | `rocket` (nose along +Z) or `solver`; null means `rocket` for aerodynamic runs, `solver` for thermal |
 
-Returns `image_path`.
+Returns `image_path`, `frame` and, in the rocket frame, `axis_convention`.
+
+Images written into the run folder appear in the program's **Graphics** tab,
+where the operator can view and export them; one the in-app assistant renders
+also appears inline in its conversation. Each carries a caption naming the
+mode, Mach number, angle of attack and run. A Mach slice is cropped to the
+rocket plus three quarters of a body length around it; use
+`camera_view: "side"` to look straight at it.
 
 ### 3.5 `run_parametric_sweep`
 

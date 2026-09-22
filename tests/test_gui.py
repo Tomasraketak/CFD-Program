@@ -17,6 +17,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 # pydantic must finish importing before Qt: PySide6's import hook runs
 # inspect.getsource on each new module and trips pydantic's migration shim if
 # it fires mid-import. See gui/__init__.py.
+from core.frames import Frame  # noqa: E402
 from core.models import (  # noqa: E402
     AxisDirection,
     DomainShape,
@@ -231,10 +232,15 @@ def test_importing_a_rocket_sets_the_nose_axis_from_its_shape(aero_tab, tmp_path
     aero_tab.step_path.setText(path)
     aero_tab._on_step_path_changed()
 
+    # The button says where the nose is -- the same thing the note says.
+    # It used to light the nose-to-tail direction, so a rocket reported as
+    # "nose at +X" had "-X" selected beside it.
     checked = [b.text() for b in aero_tab.axis_buttons.buttons() if b.isChecked()]
-    assert checked == ["-X"]
-    assert active_geometry().nose_direction == "-X"
+    assert checked == ["+X"]
     assert "nose at +X" in aero_tab.geometry_note.text()
+    # Meshing still receives nose-to-tail.
+    assert active_geometry().nose_direction == "-X"
+    assert aero_tab.geometry_params().nose_direction == AxisDirection.MINUS_X
 
 
 def test_a_body_with_no_obvious_nose_asks_the_operator(aero_tab, tmp_path):
@@ -263,7 +269,8 @@ def test_a_project_keeps_its_own_nose_axis(aero_tab, tmp_path):
     aero_tab.step_path.setText(path)
     aero_tab._on_step_path_changed(keep_scale=True)
 
-    assert active_geometry().nose_direction == "+Y"
+    # Nose pointing to +Y is a body running nose-to-tail along -Y.
+    assert active_geometry().nose_direction == "-Y"
 
 
 def test_clearing_the_path_box_empties_the_bench(aero_tab, tmp_path):
@@ -321,10 +328,12 @@ def test_custom_nose_vector_overrides_the_axis_buttons(aero_tab):
     """An arbitrary direction is available alongside the named axes."""
     aero_tab.step_path.setText("/models/rocket.step")
     aero_tab.custom_nose.setChecked(True)
+    # Like the buttons, the vector is where the nose points ...
     aero_tab.nose_vector.set_value((0.0, 0.0, 4.0))
     geometry = aero_tab.geometry_params()
-    assert geometry.nose_vector == pytest.approx([0.0, 0.0, 1.0])
-    assert geometry.resolved_nose_vector() == pytest.approx((0.0, 0.0, 1.0))
+    # ... and meshing gets nose-to-tail.
+    assert geometry.nose_vector == pytest.approx([0.0, 0.0, -1.0])
+    assert geometry.resolved_nose_vector() == pytest.approx((0.0, 0.0, -1.0))
 
 
 def test_domain_sliders_default_to_the_specified_envelope(aero_tab):
@@ -382,6 +391,24 @@ def test_hinge_axis_is_built_from_the_form(aero_tab):
     assert len(axes) == 1
     assert axes[0].name == "fin_pitch"
     assert axes[0].unit_direction() == pytest.approx((0.0, 1.0, 0.0))
+    # Entered in the axes the viewport shows.
+    assert axes[0].frame is Frame.ROCKET
+
+
+def test_a_solver_frame_hinge_from_an_old_project_is_shown_in_rocket_axes(aero_tab):
+    """A project saved before the rocket frame keeps meaning the same hinge."""
+    from core.models import HingeAxis
+    from core.project import default_project
+
+    project = default_project()
+    project.hinge_axes = [
+        HingeAxis(name="old", point=[0.9, 0.05, 0.0], direction=[0.0, 1.0, 0.0])
+    ]
+    aero_tab.apply_project(project)
+    # 0.9 m behind the nose in the solver frame is z = -0.9 on the rocket.
+    assert aero_tab.hinge_point.value() == pytest.approx([0.0, 0.05, -0.9])
+    rebuilt = aero_tab.hinge_axes()[0]
+    assert rebuilt.solver_point() == pytest.approx([0.9, 0.05, 0.0])
 
 
 def test_degenerate_hinge_direction_is_dropped(aero_tab):
@@ -480,13 +507,14 @@ def test_sensor_position_is_configurable(sensor_tab):
 
 
 def test_main_window_has_both_tracks(qt_app, store):
-    """One tab per simulation track, then the assistant."""
+    """One tab per simulation track, the assistant, then the graphics."""
     window = MainWindow(store)
     try:
-        assert window.tabs.count() == 3
+        assert window.tabs.count() == 4
         assert "Aerodynamics" in window.tabs.tabText(0)
         assert "BMP580" in window.tabs.tabText(1)
         assert "AI" in window.tabs.tabText(2)
+        assert "Graphics" in window.tabs.tabText(3)
     finally:
         window.deleteLater()
 
@@ -573,8 +601,9 @@ def test_aero_tab_restores_itself_from_a_project(aero_tab):
     assert aero_tab.ranks.value() == 7
     assert aero_tab.sweep_parameter.currentText() == "aoa"
     assert aero_tab.sweep_values.text() == "-5, 5"
+    # The project stores nose-to-tail -Y: a nose pointing to +Y.
     checked = aero_tab.axis_buttons.checkedButton()
-    assert checked is not None and checked.text() == "-Y"
+    assert checked is not None and checked.text() == "+Y"
 
 
 def test_sensor_tab_round_trips_through_a_project(sensor_tab):

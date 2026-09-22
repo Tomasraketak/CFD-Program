@@ -9,6 +9,7 @@ it runs, and a failure lands in the transcript rather than an exception.
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import pytest
 
@@ -20,7 +21,7 @@ from core.settings import AppSettings  # noqa: E402
 
 pytest.importorskip("PySide6")
 
-from PySide6 import QtCore, QtWidgets  # noqa: E402
+from PySide6 import QtCore, QtGui, QtWidgets  # noqa: E402
 
 from backend.ai_agent import FakeChatClient  # noqa: E402
 from core.credentials import save_api_key  # noqa: E402
@@ -81,7 +82,10 @@ def test_the_settings_are_loaded_into_the_widgets(qt_app, isolated_data_root):
         ai_max_tool_rounds=5,
     )
     tab = AITab(settings, isolated_data_root)
-    assert tab.model_combo.currentText() == "google/gemini-2.0-flash-001"
+    # Not on the shortlist, so it arrives in the Custom box.
+    assert tab.selected_model() == "google/gemini-2.0-flash-001"
+    assert tab.model_combo.currentText() == ai_panel.CUSTOM_MODEL_LABEL
+    assert tab.custom_model.text() == "google/gemini-2.0-flash-001"
     assert tab.confirm_long.isChecked() is False
     assert tab.max_rounds.value() == 5
     tab.deleteLater()
@@ -173,10 +177,33 @@ def test_fetching_models_fills_the_combo(ai_tab, isolated_data_root, monkeypatch
     ai_tab.fetch_models()
 
     items = [ai_tab.model_combo.itemText(i) for i in range(ai_tab.model_combo.count())]
-    # The Custom entry and its separator stay at the top; the ids are sorted.
+    # Custom first, then the shortlist, then the fetched ids, sorted -- the
+    # shortlist must not be buried under the whole catalogue.
     assert items[0] == ai_panel.CUSTOM_MODEL_LABEL
-    assert [item for item in items[1:] if item] == ["a/first", "z/last"]
+    listed = [item for item in items[1:] if item]
+    shortlist = list(ai_panel.SUGGESTED_MODELS)
+    assert listed[: len(shortlist)] == shortlist
+    assert listed[len(shortlist):] == [
+        ai_panel.FETCHED_MODELS_LABEL, "a/first", "z/last"
+    ]
     assert "2 models" in ai_tab.model_status.text()
+
+
+def test_fetching_keeps_the_chosen_model(ai_tab, isolated_data_root, monkeypatch):
+    """Refreshing the catalogue must not silently switch models."""
+    save_api_key(KEY, root=isolated_data_root)
+
+    class StubClient:
+        def __init__(self, key, *args, **kwargs):
+            pass
+
+        def list_models(self):
+            return [{"id": "qwen/qwen3.7-flash"}, {"id": "a/first"}]
+
+    monkeypatch.setattr(ai_panel, "OpenRouterClient", StubClient)
+    ai_tab.set_model("qwen/qwen3.7-flash")
+    ai_tab.fetch_models()
+    assert ai_tab.selected_model() == "qwen/qwen3.7-flash"
 
 
 # -- conversation -----------------------------------------------------------
@@ -283,7 +310,7 @@ def test_approval_is_bypassed_when_the_operator_turns_it_off(ai_tab):
 
 def test_interface_choices_are_pushed_onto_the_assistant(ai_tab):
     make_assistant(ai_tab, [text_reply("ok")])
-    ai_tab.model_combo.setCurrentText("openai/gpt-4o-mini")
+    ai_tab.set_model("openai/gpt-4o-mini")
     ai_tab.max_rounds.setValue(4)
     ai_tab._apply_settings_to_assistant()
 
@@ -292,7 +319,7 @@ def test_interface_choices_are_pushed_onto_the_assistant(ai_tab):
 
 
 def test_choices_are_remembered_between_sessions(ai_tab, isolated_data_root):
-    ai_tab.model_combo.setCurrentText("deepseek/deepseek-r1")
+    ai_tab.set_model("deepseek/deepseek-r1")
     ai_tab.confirm_long.setChecked(False)
     ai_tab.max_rounds.setValue(7)
     ai_tab._persist_settings()
@@ -354,33 +381,76 @@ def test_the_confirmation_dialog_works_from_the_worker_thread(ai_tab, qt_app, mo
 # -- model choice and the running meter -------------------------------------
 
 
-def test_the_model_list_offers_a_custom_entry(ai_tab):
-    """A shortlist is a convenience; any id must remain typeable."""
+def test_the_model_list_is_the_requested_drop_down(ai_tab):
+    """Custom plus the requested models, in a list that is not a text box."""
     items = [ai_tab.model_combo.itemText(i) for i in range(ai_tab.model_combo.count())]
     assert items[0] == ai_panel.CUSTOM_MODEL_LABEL
-    assert ai_tab.model_combo.isEditable()
-    for suggested in ai_panel.SUGGESTED_MODELS:
-        assert suggested in items
+    # An editable combo looks like a line edit once styled, which is how the
+    # operator came to report the list missing.
+    assert not ai_tab.model_combo.isEditable()
+    for requested in (
+        "deepseek/deepseek-v4.1-flash",
+        "meta/muse-spark-1.3-contributor",
+        "qwen/qwen3.7-flash",
+        "openai/gpt-5.6-luna",
+    ):
+        assert requested in items
 
 
-def test_choosing_custom_clears_the_box_for_typing(ai_tab, qt_app):
-    """Picking Custom should not send 'Custom' to OpenRouter as a model id."""
-    ai_tab.model_combo.activated.emit(0)
+def test_the_drop_down_draws_its_arrow(qt_app):
+    """Styling the drop-down button hides Qt's own arrow; ours must be there."""
+    from gui.main_window import _arrow_rules
+
+    rules = _arrow_rules()
+    assert "QComboBox::down-arrow" in rules
+    path = rules.split('url("', 1)[1].split('")', 1)[0]
+    assert Path(path).is_file()
+
+    combo = QtWidgets.QComboBox()
+    combo.addItems(["one", "two"])
+    combo.resize(200, 32)
+    combo.show()
     qt_app.processEvents()
-    assert ai_tab.model_combo.currentText() == ""
-    # And the placeholder never leaks into a request.
+    image = combo.grab().toImage()
+    bright = sum(
+        1
+        for x in range(image.width() - 24, image.width() - 2)
+        for y in range(4, image.height() - 4)
+        if QtGui.QColor(image.pixel(x, y)).lightness() > 90
+    )
+    combo.deleteLater()
+    assert bright > 0, "no arrow in the drop-down button"
+
+
+def test_choosing_custom_reveals_a_box_for_any_id(ai_tab):
+    """Picking Custom should not send 'Custom' to OpenRouter as a model id."""
+    ai_tab.set_model("qwen/qwen3.7-flash")
+    assert ai_tab.custom_model.isHidden()
+
+    ai_tab.model_combo.setCurrentIndex(0)
+    assert not ai_tab.custom_model.isHidden()
+    # An empty box never leaks the label into a request.
+    ai_tab.custom_model.clear()
     assert ai_tab.selected_model() == ai_panel.DEFAULT_MODEL
 
 
 def test_a_typed_model_id_is_used(ai_tab):
-    """The whole point of an editable box."""
-    ai_tab.model_combo.setCurrentText("someone/some-new-model")
+    """Any id OpenRouter knows remains usable."""
+    ai_tab.model_combo.setCurrentIndex(0)
+    ai_tab.custom_model.setText("someone/some-new-model")
     assert ai_tab.selected_model() == "someone/some-new-model"
+
+
+def test_a_listed_model_is_used(ai_tab):
+    ai_tab.set_model("openai/gpt-5.6-luna")
+    assert ai_tab.model_combo.currentText() == "openai/gpt-5.6-luna"
+    assert ai_tab.selected_model() == "openai/gpt-5.6-luna"
 
 
 def test_the_custom_placeholder_is_never_persisted(ai_tab, isolated_data_root):
     """Restarting must not restore a model id that is not one."""
-    ai_tab.model_combo.setCurrentText(ai_panel.CUSTOM_MODEL_LABEL)
+    ai_tab.model_combo.setCurrentIndex(0)
+    ai_tab.custom_model.clear()
     ai_tab._persist_settings()
     assert ai_tab.settings.ai_model == ai_panel.DEFAULT_MODEL
 

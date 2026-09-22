@@ -23,6 +23,7 @@ from backend.su2_parser import (
     SU2OutputParser,
     parse_forces_breakdown,
 )
+from core.frames import Frame, to_rocket
 from core.models import (
     AeroResult,
     AeroRunRequest,
@@ -126,15 +127,24 @@ def hinge_torque(
     HingeTorqueResult
         The scalar torque and the full moment vector about the hinge point.
     """
-    point = np.asarray(hinge.point, dtype=float)
-    direction = np.asarray(hinge.unit_direction(), dtype=float)
+    # The forces and moments are in the solver frame; the hinge may have
+    # been given in the rocket frame. The scalar torque is the same in both,
+    # but only if point and direction are brought across first.
+    point = np.asarray(hinge.solver_point(), dtype=float)
+    direction = np.asarray(hinge.solver_direction(), dtype=float)
     moment_at_hinge = transfer_moment(
         moment_about_origin, force, moment_origin, point
+    )
+    moment_vector = (
+        to_rocket(moment_at_hinge)
+        if hinge.frame is Frame.ROCKET
+        else [float(v) for v in moment_at_hinge]
     )
     return HingeTorqueResult(
         name=hinge.name,
         torque_nm=float(np.dot(moment_at_hinge, direction)),
-        moment_vector_nm=[float(v) for v in moment_at_hinge],
+        moment_vector_nm=moment_vector,
+        frame=hinge.frame,
     )
 
 
@@ -688,6 +698,8 @@ def _build_result(
         cs=coefficients.get("cs", 0.0),
         cm_pitch=coefficients.get("cmy", 0.0),
         center_of_pressure=[float(v) for v in cop],
+        force_rocket_n=to_rocket(forces.force),
+        center_of_pressure_rocket=to_rocket(cop),
         hinge_torques=torques,
         iterations=parser.records[-1].iteration if parser.records else 0,
         final_residual_rho=residual,
@@ -704,7 +716,7 @@ def _resolve_moment_origin(request: AeroRunRequest) -> np.ndarray:
     if request.reference.moment_origin is not None:
         return np.array(request.reference.moment_origin, dtype=float)
     if request.hinge_axes:
-        return np.array(request.hinge_axes[0].point, dtype=float)
+        return np.array(request.hinge_axes[0].solver_point(), dtype=float)
     return np.zeros(3)
 
 

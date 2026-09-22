@@ -30,10 +30,27 @@ where a field name says otherwise (`_deg` for degrees, `_c` for Celsius,
 `_ms` for metres per second). Every field carries its unit in its name or its
 tooltip.
 
-**Coordinate system.** After alignment the body axis lies along **+X**, with
-the flow arriving from −X. Your chosen reference origin sits at (0, 0, 0). All
-results — forces, moments, centre of pressure, hinge positions — are in this
-frame, not your CAD frame.
+**Coordinate system — rocket axes.** Whichever way the CAD was drawn, the
+rocket is shown and reported **standing up, nose along +Z**, the way it sits
+on the pad and flies. Your chosen reference origin (normally the nose tip)
+sits at (0, 0, 0), so the body occupies negative Z: a fin near the tail of a
+1.3 m rocket is at about z = −1.2. The viewport, rendered images, force
+components, centre of pressure and fin hinge positions all use these axes.
+
+| Rocket axis | Points | Force along it |
+|---|---|---|
+| +Z | Along the nose (up, in vertical flight) | Drag of a rocket flying nose-first is **negative** F_z |
+| +X | The pitch direction | Lift from a positive angle of attack is **+F_x** |
+| +Y | Completes a right-handed set | Side force from sideslip |
+
+A model drawn with its nose already on +Z keeps its own axes unchanged.
+
+**The solver frame.** Internally the mesh lies with the body along **+X** and
+the flow arriving along +X, because that is what SU2's angle-of-attack
+convention assumes. The two frames differ by a fixed rotation
+(x_rocket = z_solver, y_rocket = y_solver, z_rocket = −x_solver), so nothing
+is re-meshed to show you the rocket upright. Solver-frame numbers are still in
+`result.json` and the MCP replies, labelled as such.
 
 **Angles.** Angle of attack and sideslip are applied by the *solver*, by
 tilting the incoming flow. The mesh is always built in the body frame. This is
@@ -60,23 +77,27 @@ removed, tiny faces repaired. If healing destroys the solid — which happens
 with some simple shapes — the unhealed import is used instead and the report
 says so.
 
-### Nose direction
+### Nose points to
 
-The axis the body runs along **from the nose towards the tail**, in your CAD
-file's coordinate system.
-
-Read that sentence twice, because the sign catches everyone: a rocket drawn
-standing up, tip at the top, needs **`-Y`**, not `+Y`. The program rotates
-this direction onto +X, which is what places the nose at the upstream end of
-the wind tunnel.
+The direction the **nose points** in your CAD file. A rocket drawn standing
+up, tip at the top of a Y-up model, is **`+Y`**.
 
 | Option | When |
 |---|---|
 | `+X` … `-Z` | The body is aligned with a CAD axis |
-| Custom vector | Anything else |
+| Custom vector | Anything else — the direction the nose points |
 
 The custom vector is normalised automatically; only its direction matters.
 A vector of zero length is rejected.
+
+Whatever you choose here, the model is then shown nose-up along +Z.
+
+> The meshing parameter underneath, `nose_direction`, is the opposite: the
+> nose-to-*tail* direction, so a nose at +Y is `nose_direction = -Y`. The
+> buttons used to show that value directly, which lit up "−Y" beside a note
+> saying "nose at +Y". They now show where the nose is, and the conversion
+> happens out of sight. Over MCP and in project files the parameter keeps its
+> original meaning.
 
 **This is filled in for you too.** On import the program finds the longest
 axis of the model and compares how thick each end is: a nose tapers, a tail
@@ -130,15 +151,16 @@ what you expect.
 
 ### Seeing what you imported
 
-The model appears in the 3D viewport as soon as it is read, seen from the
-side, nose to the left. It is tessellated coarsely — a few seconds, no
-boundary layers, no farfield — purely so you can look at it.
+The model appears in the 3D viewport as soon as it is read, **standing up
+with the nose along +Z**, seen from the side, with an axis triad in the
+corner. It is tessellated coarsely — a few seconds, no boundary layers, no
+farfield — purely so you can look at it.
 
-**Look at it.** This is not decoration: the model is shown in the frame the
-solver will use, so the nose belongs on the left, pointing into the oncoming
-flow. If it is pointing the other way, the nose direction is wrong and every
-result that follows would be a perfectly plausible set of forces for a rocket
-flying tail-first.
+**Look at it.** This is not decoration: the model goes through exactly the
+alignment the mesh will, and is then stood on its tail. The nose belongs at
+the top. If it is at the bottom, the nose direction is wrong and every result
+that follows would be a perfectly plausible set of forces for a rocket flying
+tail-first.
 
 If the preview cannot be built, the log says so and the import carries on: a
 body that will not tessellate coarsely may still mesh properly with the real
@@ -218,8 +240,13 @@ M 2.000  |  V 680.6 m/s  |  p 101.3 kPa  |  T 288.2 K
 | Setting | Meaning |
 |---|---|
 | Name | Label used in results and curves |
-| Point | Any point on the hinge line, metres, in the aligned frame |
-| Direction | The rotation axis |
+| Point | Any point on the hinge line, metres, in rocket axes (nose along +Z) |
+| Direction | The rotation axis, in rocket axes |
+
+The hinge line is drawn into the viewport over the upright model, so you can
+see it sits where the fin does. Projects saved before rocket axes existed hold
+their hinges in the solver frame; they are converted when the project is
+opened and mean exactly the same hinge.
 
 **How torque is computed.** The solver reports the aerodynamic moment about a
 reference point. That is not what a servo feels. The program:
@@ -388,14 +415,20 @@ memory, and too many on a large mesh will exhaust 16 GB.
 | Lift coefficient | C_l | Lift / (q·S) |
 | Side-force coefficient | C_s | Side force / (q·S) |
 | Pitching moment | C_m | Moment / (q·S·L) |
-| Forces | F_x, F_y, F_z | Body-axis components, newtons |
+| Forces | F_x, F_y, F_z | Components along the **rocket axes**, newtons: F_z along the nose |
 | Drag / lift / side force | | Wind-axis, newtons |
-| Centre of pressure | | Axial station, metres |
+| Centre of pressure | | Z station in rocket axes, metres (negative: behind the origin) |
 | Hinge torque | τ | Newton-metres about each hinge |
 
 Here `q = ½ρV²` is dynamic pressure, `S` the reference area (body
 cross-section unless overridden) and `L` the reference length (body diameter
 unless overridden).
+
+**The force along each axis of the rocket** is the second row of cards —
+*Force along rocket X / Y / Z*. For a rocket flying straight up at zero angle
+of attack, F_z is the drag with a minus sign (it pushes the rocket back
+towards its tail) and F_x, F_y are what is left of numerical noise. At an
+angle of attack F_x grows: that is the normal force that turns the rocket.
 
 **Body axes versus wind axes.** Body axes are fixed to the rocket. Wind axes
 are aligned with the airflow. At zero angle of attack they coincide; at angle
@@ -491,6 +524,38 @@ greyscale or viewed by a colour-blind reader; it is perceptually uniform.
 
 `isometric`, `front`, `back`, `side`, `top`, `bottom`, `nose_quarter`,
 `tail_quarter`.
+
+Rocket results are drawn **nose-up along +Z**. `front` looks at the nose
+from ahead of it, `side` looks straight at the pitch plane — the plane the
+default Mach slice lies in, so it is the view to use for a shock picture.
+
+A Mach slice is cropped to the rocket plus three quarters of a body length
+around it. The farfield is five to ten lengths away, and a slice through all
+of it would show the rocket as a speck.
+
+### Graphics tab
+
+Every image lands in the **Graphics** tab, whoever drew it: the tab itself,
+the assistant, or an external MCP client using the same data folder. It lists
+them newest first with thumbnails and shows the selected one large.
+
+| Button | Does |
+|---|---|
+| **Export …** | Save a copy anywhere, as PNG (unchanged) or JPEG |
+| **Export all from this run …** | Copy every image of that run into a folder |
+| **Copy** | Put the image on the clipboard, to paste into a report |
+| **Open** | Open it in the system image viewer (also: double-click) |
+| **Show folder** | Open the folder the image is stored in |
+
+The row at the top draws a new image: pick a finished run, the image type,
+view, colours and size, then **Render**. When a solve finishes in the
+Aerodynamics tab, a Mach slice from the side and the surface pressure are
+drawn automatically.
+
+Images the assistant renders also appear inline in its conversation, with a
+link straight to the Graphics tab.
+
+The files themselves are in `runs/<sim_id>/renders/` under the data folder.
 
 ### Resolutions
 
@@ -590,11 +655,14 @@ repository. **Remove** deletes the key from every backend at once.
 
 ### Choosing a model
 
-The dropdown holds a shortlist; the first entry, **Custom**, clears the box so
-you can type any id at all. **Fetch available models** replaces the list with
-the live catalogue your account can actually reach — worth doing, because
-OpenRouter's catalogue changes weekly and an id that is not on it is rejected
-at the first request.
+The **Model** drop-down holds a shortlist: `deepseek/deepseek-v4.1-flash`,
+`meta/muse-spark-1.3-contributor`, `qwen/qwen3.7-flash`,
+`openai/gpt-5.6-luna` and `deepseek/deepseek-chat`. Its first entry,
+**Custom…**, opens a box underneath where you can type any id at all.
+**Fetch available models** adds the live catalogue your account can actually
+reach below the shortlist, and offers it as suggestions while you type a
+custom id — worth doing, because OpenRouter's catalogue changes weekly and an
+id that is not on it is rejected at the first request.
 
 A model must support tool calling, or the assistant can only talk. The choice
 is remembered between sessions.

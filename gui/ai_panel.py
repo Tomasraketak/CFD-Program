@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import html
 import time
+from pathlib import Path
 from typing import Any
 
 from PySide6 import QtCore, QtGui, QtWidgets
@@ -45,14 +46,24 @@ from gui.theme import ACCENT, DANGER, SUCCESS, TEXT_MUTED, WARNING
 
 OPENROUTER_KEYS_URL = "https://openrouter.ai/keys"
 
+# Link scheme for "show this image in the Graphics tab" in the transcript.
+GRAPHICS_SCHEME = "ats-graphics"
+
+# Width of a rendered image shown inline in the transcript, in pixels.
+TRANSCRIPT_IMAGE_WIDTH = 420
+
 # How long a worker thread waits for the operator to answer a confirmation
 # dialog before giving up and declining. Long enough to fetch a coffee, short
 # enough that a lost dialog cannot strand the thread forever.
 APPROVAL_TIMEOUT_MS = 10 * 60 * 1000
 
-# First entry in the model list. Choosing it clears the box so an id can be
-# typed; it is never itself a model id.
-CUSTOM_MODEL_LABEL = "Custom — type an id below"
+# First entry in the model list. Choosing it reveals a box to type any id
+# into; it is never itself a model id.
+CUSTOM_MODEL_LABEL = "Custom…"
+
+# Heading above the ids fetched from the operator's own OpenRouter account,
+# so the shortlist and the full catalogue are visibly two different things.
+FETCHED_MODELS_LABEL = "— all models on your account —"
 
 # How often the live cost meter refreshes while a request runs. The figures
 # themselves only change when a round completes; this is what keeps the
@@ -132,6 +143,10 @@ class AITab(QtWidgets.QWidget):
     """Chat with the assistant, plus its credentials and model settings."""
 
     statusMessage = QtCore.Signal(str)
+    # The assistant rendered an image; carries its path.
+    imageProduced = QtCore.Signal(str)
+    # The operator clicked through to the Graphics tab from the transcript.
+    showGraphics = QtCore.Signal(str)
 
     def __init__(
         self,
@@ -210,25 +225,38 @@ class AITab(QtWidgets.QWidget):
         model_box = QtWidgets.QGroupBox("Model")
         model_form = QtWidgets.QFormLayout(model_box)
 
+        # A real drop-down, not an editable box. The editable version looked
+        # exactly like a text field once the theme hid its arrow, and an
+        # operator reasonably concluded the list did not exist. Any other id
+        # goes in the Custom box, which only appears when Custom is chosen.
         self.model_combo = QtWidgets.QComboBox()
-        # Editable so any id can be typed: the shortlist is a convenience,
-        # not a restriction, and OpenRouter's catalogue outruns any list
-        # compiled here.
-        self.model_combo.setEditable(True)
-        self.model_combo.addItem(CUSTOM_MODEL_LABEL)
-        self.model_combo.insertSeparator(1)
-        self.model_combo.addItems(SUGGESTED_MODELS)
-        self.model_combo.setCurrentText(self.settings.ai_model or DEFAULT_MODEL)
-        # 'activated' rather than 'currentIndexChanged': the Custom entry is
-        # index 0 and an editable box can already be sitting on it, in which
-        # case choosing it again changes no index and emits nothing.
-        self.model_combo.activated.connect(self._on_model_chosen)
-        self.model_combo.setToolTip(
-            "Any OpenRouter model id. Pick one, or choose Custom and type "
-            "your own. Use Fetch to replace the list with what your account "
-            "can actually reach."
+        self.model_combo.setMaxVisibleItems(20)
+        self.model_combo.setSizeAdjustPolicy(
+            QtWidgets.QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
         )
-        model_form.addRow("Model id", self.model_combo)
+        self._fill_model_combo(())
+        self.model_combo.currentIndexChanged.connect(self._on_model_chosen)
+        self.model_combo.setToolTip(
+            "Pick a model, or choose Custom… and type any OpenRouter id. "
+            "Fetch adds every model your account can reach."
+        )
+        model_form.addRow("Model", self.model_combo)
+
+        self.custom_model = QtWidgets.QLineEdit()
+        self.custom_model.setPlaceholderText(
+            "provider/model-id, e.g. deepseek/deepseek-chat"
+        )
+        self.custom_model.setClearButtonEnabled(True)
+        self._model_completer = QtWidgets.QCompleter([], self.custom_model)
+        self._model_completer.setCaseSensitivity(
+            QtCore.Qt.CaseSensitivity.CaseInsensitive
+        )
+        self._model_completer.setFilterMode(QtCore.Qt.MatchFlag.MatchContains)
+        self.custom_model.setCompleter(self._model_completer)
+        self.custom_model_label = QtWidgets.QLabel("Custom id")
+        model_form.addRow(self.custom_model_label, self.custom_model)
+
+        self.set_model(self.settings.ai_model or DEFAULT_MODEL)
 
         fetch = QtWidgets.QPushButton("Fetch available models")
         fetch.clicked.connect(self.fetch_models)
@@ -289,7 +317,10 @@ class AITab(QtWidgets.QWidget):
         layout.setSpacing(6)
 
         self.transcript = QtWidgets.QTextBrowser()
-        self.transcript.setOpenExternalLinks(True)
+        # Links are handled here rather than by the browser, which would
+        # try to navigate to them: an image link opens the Graphics tab.
+        self.transcript.setOpenLinks(False)
+        self.transcript.anchorClicked.connect(self._on_link)
         layout.addWidget(self.transcript, 1)
 
         status_row = QtWidgets.QHBoxLayout()
@@ -412,13 +443,41 @@ class AITab(QtWidgets.QWidget):
             return
 
         current = self.selected_model()
-        self.model_combo.clear()
-        self.model_combo.addItem(CUSTOM_MODEL_LABEL)
-        self.model_combo.insertSeparator(1)
-        self.model_combo.addItems(sorted(entry["id"] for entry in models))
-        self.model_combo.setCurrentText(current)
-        self.model_status.setText(f"{len(models)} models available.")
+        fetched = sorted(
+            {str(entry["id"]) for entry in models if entry.get("id")}
+        )
+        self._fill_model_combo(fetched)
+        self._model_completer.setModel(
+            QtCore.QStringListModel(fetched, self._model_completer)
+        )
+        self.set_model(current)
+        self.model_status.setText(f"{len(fetched)} models available.")
         self.model_status.setStyleSheet(f"color: {TEXT_MUTED};")
+
+    def _fill_model_combo(self, fetched: Any) -> None:
+        """Rebuild the list: Custom, the shortlist, then anything fetched.
+
+        The shortlist stays on top after a fetch. Sorting three hundred ids
+        alphabetically would bury the handful the operator actually chose.
+        """
+        blocked = self.model_combo.blockSignals(True)
+        try:
+            self.model_combo.clear()
+            self.model_combo.addItem(CUSTOM_MODEL_LABEL, None)
+            self.model_combo.insertSeparator(self.model_combo.count())
+            for model in SUGGESTED_MODELS:
+                self.model_combo.addItem(model, model)
+            extra = [model for model in fetched if model not in SUGGESTED_MODELS]
+            if extra:
+                self.model_combo.insertSeparator(self.model_combo.count())
+                self.model_combo.addItem(FETCHED_MODELS_LABEL, None)
+                heading = self.model_combo.model().item(self.model_combo.count() - 1)
+                if heading is not None:
+                    heading.setEnabled(False)
+                for model in extra:
+                    self.model_combo.addItem(model, model)
+        finally:
+            self.model_combo.blockSignals(blocked)
 
     # -- conversation ------------------------------------------------------
 
@@ -440,6 +499,8 @@ class AITab(QtWidgets.QWidget):
               <p>A STEP file opened in the Rocket Aerodynamics tab is
                  already known to me, so you can say "mesh the model I just
                  imported" without typing its path.</p>
+              <p>Images I draw appear right here and in the Graphics tab,
+                 where you can view them full size and export them.</p>
               <p>I cannot run shell commands or read files outside the
                  program's own tools.</p>
             </div>
@@ -482,29 +543,35 @@ class AITab(QtWidgets.QWidget):
         return True
 
     def selected_model(self) -> str:
-        """The model id in the box, with the Custom placeholder filtered out."""
-        text = self.model_combo.currentText().strip()
-        if not text or text == CUSTOM_MODEL_LABEL:
-            return DEFAULT_MODEL
-        return text
+        """The chosen model id; the Custom box when Custom is selected."""
+        chosen = self.model_combo.currentData()
+        if chosen:
+            return str(chosen)
+        typed = self.custom_model.text().strip()
+        return typed or DEFAULT_MODEL
 
-    def _on_model_chosen(self, index: int) -> None:
-        """Clear the box when Custom is picked, so an id can be typed.
+    def set_model(self, model_id: str) -> None:
+        """Select a model by id, falling back to Custom for an unlisted one."""
+        model_id = (model_id or "").strip()
+        index = self.model_combo.findData(model_id) if model_id else -1
+        if index >= 0:
+            self.model_combo.setCurrentIndex(index)
+        else:
+            self.model_combo.setCurrentIndex(0)
+            self.custom_model.setText(model_id)
+        self._show_custom_box()
 
-        Deferred by one event-loop turn because Qt writes the chosen item's
-        text into the line edit *after* this signal, which would otherwise
-        put the placeholder straight back.
-        """
-        if self.model_combo.itemText(index) == CUSTOM_MODEL_LABEL:
-            QtCore.QTimer.singleShot(0, self, self._clear_model_box)
+    def _on_model_chosen(self, _index: int) -> None:
+        """Show the Custom box only when Custom is the choice."""
+        self._show_custom_box()
+        if self.model_combo.currentData() is None and self.isVisible():
+            self.custom_model.setFocus()
 
-    def _clear_model_box(self) -> None:
-        """Empty the model box and invite an id."""
-        self.model_combo.setCurrentText("")
-        self.model_combo.lineEdit().setPlaceholderText(
-            "provider/model-id, e.g. deepseek/deepseek-chat"
-        )
-        self.model_combo.setFocus()
+    def _show_custom_box(self) -> None:
+        """Hide or reveal the Custom id box to match the selection."""
+        custom = self.model_combo.currentData() is None
+        self.custom_model.setVisible(custom)
+        self.custom_model_label.setVisible(custom)
 
     def _apply_settings_to_assistant(self) -> None:
         """Push the current interface settings onto the assistant."""
@@ -670,6 +737,9 @@ class AITab(QtWidgets.QWidget):
                 f'<p style="margin:0 0 0 14px;color:{colour};">'
                 f"{html.escape(detail)}</p>"
             )
+            image = _image_path(getattr(event, "result", None))
+            if image is not None and not event.failed:
+                self._append_image(image)
         elif kind == EVENT_RETRY:
             self._append_note(event.message)
         elif kind == EVENT_LIMIT:
@@ -737,6 +807,33 @@ class AITab(QtWidgets.QWidget):
             f"Tools used</span><ul>{rows}</ul></p>"
         )
 
+    def _append_image(self, path: Path) -> None:
+        """Show a rendered image in the transcript, and send it to Graphics.
+
+        The picture itself, not only its path: a path at the end of a long
+        reply is how an operator came to have "no idea where the graphics
+        are".
+        """
+        url = QtCore.QUrl.fromLocalFile(str(path)).toString()
+        target = QtCore.QUrl(GRAPHICS_SCHEME + ":" + str(path)).toString()
+        self._append(
+            f'<p style="margin:4px 0 0 14px;">'
+            f'<a href="{html.escape(target)}"><img src="{html.escape(url)}" '
+            f'width="{TRANSCRIPT_IMAGE_WIDTH}"></a><br>'
+            f'<a href="{html.escape(target)}" style="color:{ACCENT};">'
+            f"Open in the Graphics tab</a>"
+            f'<span style="color:{TEXT_MUTED};"> — view full size and export</span>'
+            f"</p>"
+        )
+        self.imageProduced.emit(str(path))
+
+    def _on_link(self, url: QtCore.QUrl) -> None:
+        """Follow a link clicked in the transcript."""
+        if url.scheme() == GRAPHICS_SCHEME:
+            self.showGraphics.emit(url.path())
+            return
+        QtGui.QDesktopServices.openUrl(url)
+
     def _append_note(self, text: str) -> None:
         """Add an italic note."""
         self._append(
@@ -754,6 +851,17 @@ class AITab(QtWidgets.QWidget):
     def _warn(self, message: str) -> None:
         """Show a modal warning."""
         QtWidgets.QMessageBox.warning(self, "AI assistant", message)
+
+
+def _image_path(result: Any) -> Path | None:
+    """The image a tool reply points at, if it is one that exists."""
+    if not isinstance(result, dict) or not result.get("ok"):
+        return None
+    path = result.get("image_path")
+    if not path:
+        return None
+    candidate = Path(str(path))
+    return candidate if candidate.is_file() else None
 
 
 def _ask_on_gui_thread(parent: QtWidgets.QWidget, title: str, text: str) -> bool:

@@ -390,6 +390,14 @@ Mach 0.8, Roe upwind with MUSCL reconstruction and the Venkatakrishnan
 limiter above it (plus an entropy fix so Roe cannot admit expansion shocks),
 with SST k-ω throughout and wall functions matching the y⁺ 30–60 mesh.
 
+**Rocket axes.** Whichever way the CAD was drawn, the rocket is shown and
+reported standing up, nose along +Z: the viewport, rendered images, the
+force along each axis, the centre of pressure and the fin hinges. The mesh
+itself stays in the solver's frame, body along +X, because SU2's angle of
+attack assumes it; the two differ by one fixed rotation (`core/frames.py`),
+so nothing is re-meshed to stand the rocket up. Drag on a rocket climbing
+nose-first comes out as a negative F_z.
+
 **Hinge torque** is computed here rather than taken from SU2, because a fin
 hinge is an arbitrary line the solver knows nothing about. The aerodynamic
 moment is transferred to the hinge point with the r × F parallel-axis
@@ -470,7 +478,7 @@ regime it is in.
 | `set_geometry_and_mesh` | CAD → aligned, cell-count-targeted mesh |
 | `run_aerodynamic_simulation` | Forces, coefficients, CoP, hinge torques |
 | `run_sensor_thermal_simulation` | BMP580 reading and bias (`analytic_only` for an instant answer) |
-| `generate_cfd_visualization` | Surface pressure, Mach slice, streamlines, thermal contours |
+| `generate_cfd_visualization` | Surface pressure, Mach slice, streamlines, thermal contours — shown in the Graphics tab |
 | `run_parametric_sweep` | Batch runs with summary curves and peak values |
 | `list_runs` | Rediscover ids from an earlier session |
 | `check_environment` | Report the detected toolchain |

@@ -252,3 +252,48 @@ def test_models_expose_descriptions_for_agent_schemas():
         for name, spec in schema["properties"].items():
             # anyOf-typed optional fields carry the description at the top level.
             assert spec.get("description"), f"{model.__name__}.{name} lacks a description"
+
+
+# ---------------------------------------------------------------------------
+# Frames
+# ---------------------------------------------------------------------------
+
+
+def test_the_rocket_frame_puts_the_nose_on_plus_z():
+    """Solver -X (towards the nose, upstream) is rocket +Z."""
+    import numpy as np
+
+    from core.frames import ROCKET_TO_SOLVER, SOLVER_TO_ROCKET, to_rocket, to_solver
+
+    assert to_rocket([-1.0, 0.0, 0.0]) == pytest.approx([0.0, 0.0, 1.0])
+    # Lift from a positive angle of attack is solver +Z: rocket +X.
+    assert to_rocket([0.0, 0.0, 1.0]) == pytest.approx([1.0, 0.0, 0.0])
+    assert to_rocket([0.0, 1.0, 0.0]) == pytest.approx([0.0, 1.0, 0.0])
+    # A proper rotation: cross products and moments survive it.
+    assert np.linalg.det(SOLVER_TO_ROCKET) == pytest.approx(1.0)
+    assert SOLVER_TO_ROCKET @ ROCKET_TO_SOLVER == pytest.approx(np.eye(3))
+    vector = [0.3, -1.2, 2.5]
+    assert to_solver(to_rocket(vector)) == pytest.approx(vector)
+
+
+def test_a_hinge_converts_between_frames():
+    from core.frames import Frame
+
+    hinge = HingeAxis(name="fin", point=[0.0, 0.05, -0.9], direction=[0, 2, 0],
+                      frame=Frame.ROCKET)
+    assert hinge.solver_point() == pytest.approx([0.9, 0.05, 0.0])
+    assert hinge.solver_direction() == pytest.approx([0.0, 1.0, 0.0])
+    solver = hinge.in_frame(Frame.SOLVER)
+    assert solver.frame is Frame.SOLVER
+    assert solver.in_frame(Frame.ROCKET).point == pytest.approx(hinge.point)
+
+
+def test_an_old_hinge_without_a_frame_is_in_the_solver_frame():
+    """Projects saved before the rocket frame keep their meaning."""
+    from core.frames import Frame
+
+    hinge = HingeAxis.model_validate(
+        {"name": "fin", "point": [0.9, 0.05, 0.0], "direction": [0, 1, 0]}
+    )
+    assert hinge.frame is Frame.SOLVER
+    assert hinge.solver_point() == pytest.approx([0.9, 0.05, 0.0])

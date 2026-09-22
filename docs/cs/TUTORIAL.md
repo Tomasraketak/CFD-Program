@@ -147,8 +147,13 @@ Jinak přetáhněte svůj soubor `.step` nebo `.stp` do okna, případně použi
 Tento krok se nejčastěji plete a závisí na něm všechno ostatní.
 
 Program potřebuje vědět, kterým směrem míří **špička** *v souřadném systému
-vašeho CAD souboru*. Klikněte na odpovídající tlačítko: `+X`, `-X`, `+Y`,
-`-Y`, `+Z` nebo `-Z`.
+vašeho CAD souboru*. Klikněte na odpovídající tlačítko v řádku **Nose points
+to**: `+X`, `-X`, `+Y`, `-Y`, `+Z` nebo `-Z`. Obvykle už svítí: program ho
+vyčte z tvaru, protože špička se zužuje a záď ne.
+
+Ať byl CAD nakreslen jakkoli, model se pak objeví **nastojato, špičkou podél
++Z**, a všechny souřadnice a síly, které uvidíte, jsou v těchto osách rakety.
+Je-li špička v náhledu dole, je tlačítko špatně.
 
 Není-li model zarovnán s osou, zaškrtněte **Use custom vector** a zadejte
 směr, například `0.0, 0.3, 0.95`. Vektor se normalizuje sám, takže na
@@ -279,9 +284,10 @@ vzduch na mé křidélko kolem osy, na které se otáčí?*
 V panelu **Fin hinge axis**:
 
 - **Name** — označení, např. `fin_pitch`.
-- **Point** — libovolný bod na ose závěsu, v metrech, v zarovnané soustavě
-  (špička v počátku, osa tělesa podél +X). Pro křidélko 0,9 m od špičky,
-  uchycené na poloměru trupu 40 mm: `0.9, 0.04, 0.0`.
+- **Point** — libovolný bod na ose závěsu, v metrech, v osách rakety
+  (špička v počátku, špička podél +Z, takže těleso leží v záporném Z). Pro
+  křidélko 0,9 m za špičkou, uchycené na poloměru trupu 40 mm:
+  `0.0, 0.04, -0.9`.
 - **Direction** — osa, kolem které se křidélko otáčí. Křidélko ve vodorovné
   rovině, které se natáčí kvůli klopení, má směr `0, 1, 0`.
 
@@ -380,8 +386,16 @@ K dispozici jsou čtyři druhy obrázků:
 | `streamlines` | Proudnice | Odtržení a nasávání do senzoru |
 | `thermal` | Teplotní pole | Případ senzoru |
 
-Ve výřezu použijte voliče **Colormap** a **View**. Pro publikační obrázky
-vykreslujte ve 4K přes MCP nástroj nebo ze skriptu.
+Otevřete záložku **Graphics**. Vyberte dokončený výpočet, typ obrázku
+(`mach_slice` pro rázové vlny), pohled (`side` se dívá přímo na řez)
+a velikost a klikněte na **Render**. Obrázek se objeví v seznamu a zvětšený
+vedle něj; **Export …** uloží kopii, kam chcete, jako PNG nebo JPEG, a
+**Copy** ho vloží do schránky pro zprávu. Výpočet spuštěný ze záložky
+Aerodynamics dostane Machův řez a obrázek tlaku na povrchu automaticky a vše,
+co vykreslí asistent, se tu objeví také.
+
+Rakety se kreslí nastojato, špičkou podél +Z, a Machův řez se ořízne na
+raketu a její nejbližší okolí, aby byly rázy dost velké na čtení.
 
 **Jak číst Machův řez nadzvukové rakety:**
 

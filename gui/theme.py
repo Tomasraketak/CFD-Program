@@ -7,6 +7,8 @@ by Qt stylesheets.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 # Core palette.
 BACKGROUND = "#12151c"
 SURFACE = "#1a1f29"
@@ -109,7 +111,14 @@ QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox, QPlainTextEdit {{
 QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus {{
     border-color: {ACCENT};
 }}
-QComboBox::drop-down {{ border: none; width: 18px; }}
+QComboBox::drop-down {{
+    subcontrol-origin: padding;
+    subcontrol-position: center right;
+    width: 22px;
+    border: none;
+    border-left: 1px solid {BORDER};
+}}
+QComboBox::drop-down:hover {{ background-color: {SURFACE_RAISED}; }}
 QComboBox QAbstractItemView {{
     background-color: {SURFACE_RAISED};
     border: 1px solid {BORDER};
@@ -168,4 +177,68 @@ QScrollBar::handle:vertical {{
 }}
 QScrollBar::handle:vertical:hover {{ background: {ACCENT_DIM}; }}
 QScrollBar::add-line, QScrollBar::sub-line {{ height: 0; }}
+"""
+
+
+# The drop-down arrow is an image, drawn here rather than shipped as a file.
+# Styling ``QComboBox::drop-down`` at all -- which the rule above has to, or
+# the button keeps the platform's light chrome on a dark panel -- makes Qt
+# stop drawing the native arrow, and nothing puts one back. Every combo box
+# in the program then looked like a plain text field, including the model
+# picker, which is how an operator came to report that the drop-down they
+# had asked for was not there.
+ARROW_FILENAME = "combo-arrow.png"
+ARROW_DISABLED_FILENAME = "combo-arrow-disabled.png"
+
+
+def _draw_arrow(path: Path, colour: str, scale: int) -> None:
+    """Paint a small downward triangle and save it as a PNG."""
+    from PySide6 import QtCore, QtGui
+
+    pixmap = QtGui.QPixmap(12 * scale, 8 * scale)
+    pixmap.fill(QtCore.Qt.GlobalColor.transparent)
+    painter = QtGui.QPainter(pixmap)
+    try:
+        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+        painter.setPen(QtCore.Qt.PenStyle.NoPen)
+        painter.setBrush(QtGui.QColor(colour))
+        painter.drawPolygon(
+            QtGui.QPolygonF(
+                [
+                    QtCore.QPointF(1.0 * scale, 1.5 * scale),
+                    QtCore.QPointF(11.0 * scale, 1.5 * scale),
+                    QtCore.QPointF(6.0 * scale, 7.0 * scale),
+                ]
+            )
+        )
+    finally:
+        painter.end()
+    pixmap.save(str(path), "PNG")
+
+
+def arrow_stylesheet(directory: Path | str) -> str:
+    """Write the drop-down arrow images and return the rules that use them.
+
+    Needs a ``QGuiApplication`` to exist, since painting a pixmap does. The
+    ``@2x`` files are what Qt picks up on a high-DPI display, where a 12-pixel
+    arrow would otherwise be scaled up and blurred.
+    """
+    directory = Path(directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    images = {
+        ARROW_FILENAME: TEXT_MUTED,
+        ARROW_DISABLED_FILENAME: BORDER,
+    }
+    for filename, colour in images.items():
+        _draw_arrow(directory / filename, colour, 1)
+        stem, suffix = filename.rsplit(".", 1)
+        _draw_arrow(directory / f"{stem}@2x.{suffix}", colour, 2)
+
+    # Forward slashes and quotes: Qt reads both on Windows, and a data folder
+    # under a user name with a space in it must still resolve.
+    arrow = (directory / ARROW_FILENAME).as_posix()
+    disabled = (directory / ARROW_DISABLED_FILENAME).as_posix()
+    return f"""
+QComboBox::down-arrow {{ image: url("{arrow}"); width: 12px; height: 8px; }}
+QComboBox::down-arrow:disabled {{ image: url("{disabled}"); }}
 """

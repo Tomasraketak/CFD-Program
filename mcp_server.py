@@ -31,6 +31,7 @@ from backend.thermal_solver import (
     estimate_sensor_bias,
     run_thermal_case,
 )
+from core.frames import AXIS_CONVENTION, Frame
 from core.models import (
     AeroRunRequest,
     AxisDirection,
@@ -350,6 +351,25 @@ def set_geometry_and_mesh(
 # Tool 2: aerodynamic simulation
 # ---------------------------------------------------------------------------
 
+def _hinge_axes(hinge_axes: list[dict[str, Any]] | None) -> list[HingeAxis]:
+    """Build hinge axes from tool arguments, in the rocket frame by default.
+
+    The model default is the solver frame, because projects saved before the
+    rocket frame existed are in it. Anything arriving through a tool now is
+    in the frame the operator is shown, unless it says otherwise.
+    """
+    return [
+        HingeAxis(
+            name=axis.get("name", f"hinge_{index + 1}"),
+            point=axis["point"],
+            direction=axis["direction"],
+            marker=axis.get("marker"),
+            frame=Frame(axis.get("frame", Frame.ROCKET.value)),
+        )
+        for index, axis in enumerate(hinge_axes or [])
+    ]
+
+
 
 @server.tool(
     name="run_aerodynamic_simulation",
@@ -359,7 +379,12 @@ def set_geometry_and_mesh(
         "below 0.8, Roe upwind with MUSCL and the Venkatakrishnan limiter "
         "above), with the SST k-omega turbulence model. Returns dimensional "
         "force components, drag/lift/side coefficients, the centre of "
-        "pressure, and the scalar servo torque about each fin hinge axis."
+        "pressure, and the scalar servo torque about each fin hinge axis. "
+        "Force components come in the ROCKET frame (nose along +Z, so drag on "
+        "a rocket flying nose-first is a negative F_z and lift from a "
+        "positive angle of attack is +F_x) and, for reference, in the solver "
+        "frame (body along +X, flow along +X). Quote the rocket frame to the "
+        "operator."
     ),
 )
 def run_aerodynamic_simulation(
@@ -394,10 +419,11 @@ def run_aerodynamic_simulation(
     altitude_m:
         Geopotential altitude for the standard atmosphere.
     hinge_axes:
-        Fin hinge definitions, each
-        {"name": str, "point": [x,y,z], "direction": [u,v,w]}. The reported
-        torque is the aerodynamic moment about the point, projected onto the
-        direction.
+        Fin hinge definitions, each {"name": str, "point": [x,y,z],
+        "direction": [u,v,w], "frame": "rocket"}, in the rocket frame (nose
+        along +Z, origin at the nose tip) unless "frame" is "solver". The
+        reported torque is the aerodynamic moment about the point, projected
+        onto the direction.
     reference_area_m2, reference_length_m, moment_origin:
         Override the values measured from the CAD.
     mpi_ranks:
@@ -419,14 +445,7 @@ def run_aerodynamic_simulation(
         return _error(str(error), mesh_id=mesh_id)
 
     try:
-        axes = [
-            HingeAxis(
-                name=axis.get("name", f"hinge_{index + 1}"),
-                point=axis["point"],
-                direction=axis["direction"],
-            )
-            for index, axis in enumerate(hinge_axes or [])
-        ]
+        axes = _hinge_axes(hinge_axes)
         request = AeroRunRequest(
             mesh_id=mesh_id,
             flow=FlowParams(
@@ -474,7 +493,13 @@ def run_aerodynamic_simulation(
 
     store.write_json(record.record_id, "result.json", result)
     store.update_metadata(
-        record.record_id, {"cd": result.cd, "cl": result.cl, "mach": result.mach}
+        record.record_id,
+        {
+            "cd": result.cd,
+            "cl": result.cl,
+            "mach": result.mach,
+            "aoa_deg": result.aoa_deg,
+        },
     )
 
     return _ok(
@@ -485,7 +510,17 @@ def run_aerodynamic_simulation(
         aoa_deg=result.aoa_deg,
         sideslip_deg=result.sideslip_deg,
         dynamic_pressure_pa=result.dynamic_pressure_pa,
-        forces_n={
+        # The rocket frame first, because it is the one the operator sees:
+        # asked for "the force along each axis" of a rocket flying straight
+        # up, the assistant used to quote the solver frame, where the body
+        # lies along X, and call X the axial direction.
+        axis_convention=AXIS_CONVENTION,
+        forces_rocket_frame_n={
+            "fx": result.force_rocket_n[0],
+            "fy": result.force_rocket_n[1],
+            "fz": result.force_rocket_n[2],
+        },
+        forces_solver_frame_n={
             "fx": result.force_x_n,
             "fy": result.force_y_n,
             "fz": result.force_z_n,
@@ -499,12 +534,14 @@ def run_aerodynamic_simulation(
             "cs": result.cs,
             "cm_pitch": result.cm_pitch,
         },
-        center_of_pressure=result.center_of_pressure,
+        center_of_pressure_rocket_frame=result.center_of_pressure_rocket,
+        center_of_pressure_solver_frame=result.center_of_pressure,
         hinge_torques=[
             {
                 "name": torque.name,
                 "torque_nm": torque.torque_nm,
                 "moment_vector_nm": torque.moment_vector_nm,
+                "frame": torque.frame.value,
             }
             for torque in result.hinge_torques
         ],
@@ -671,7 +708,11 @@ def run_sensor_thermal_simulation(
         "'mach_slice' (cutting plane showing oblique shocks and "
         "Prandtl-Meyer expansion), 'streamlines' (seeded flow paths coloured "
         "by velocity or temperature) and 'thermal' (temperature contours with "
-        "the sensor marked). Saves a PNG and returns its path."
+        "the sensor marked). Saves a PNG and returns its path; the image "
+        "also appears in the program's Graphics tab, where the operator can "
+        "view and export it. Rocket results are drawn standing up, nose "
+        "along +Z; for a Mach slice use camera_view 'side', which looks "
+        "straight at the cutting plane."
     ),
 )
 def generate_cfd_visualization(
@@ -682,6 +723,7 @@ def generate_cfd_visualization(
     colormap: str = "turbo",
     resolution: str = "4k",
     output_path: str | None = None,
+    frame: str | None = None,
 ) -> dict[str, Any]:
     """Render a result image.
 
@@ -695,19 +737,57 @@ def generate_cfd_visualization(
         'isometric', 'front', 'back', 'side', 'top', 'bottom',
         'nose_quarter' or 'tail_quarter'.
     slice_normal:
-        Cutting-plane normal for slice modes; defaults to the symmetry plane.
+        Cutting-plane normal for slice modes, in the frame drawn; defaults
+        to [0, 1, 0], the pitch plane an angle of attack tilts the rocket in.
     colormap:
         'turbo', 'coolwarm', 'viridis', 'jet', 'plasma' or 'inferno'.
     resolution:
         'preview', 'hd', '2k' or '4k'.
     output_path:
-        Destination PNG; defaults to a file inside the run directory.
+        Destination PNG; defaults to a file inside the run directory, which
+        is where the Graphics tab looks. Give a path to export elsewhere.
+    frame:
+        'rocket' (nose along +Z, as the program shows it) or 'solver' (body
+        along +X). Null picks 'rocket' for aerodynamic runs and 'solver'
+        for thermal ones.
     """
-    store = _store()
+    return render_run_image(
+        _store(),
+        sim_id,
+        visualization_type=visualization_type,
+        camera_view=camera_view,
+        slice_normal=slice_normal,
+        colormap=colormap,
+        resolution=resolution,
+        output_path=output_path,
+        frame=frame,
+    )
+
+
+def render_run_image(
+    store: RunStore,
+    sim_id: str,
+    visualization_type: str = "surface_pressure",
+    camera_view: str = "isometric",
+    slice_normal: list[float] | None = None,
+    colormap: str = "turbo",
+    resolution: str = "4k",
+    output_path: str | None = None,
+    frame: str | None = None,
+) -> dict[str, Any]:
+    """Render one image of a stored run, as the tool does.
+
+    Shared with the Graphics tab, so a picture drawn from the interface and
+    one the assistant asks for come out identical: same frame, same caption,
+    same place in the registry.
+    """
     try:
         record = store.get(sim_id)
     except RecordNotFoundError as error:
         return _error(str(error), sim_id=sim_id)
+
+    frame = frame or ("rocket" if record.kind in ("aero", "sweep") else "solver")
+    title = _render_title(record, visualization_type)
 
     try:
         from backend.visualizer import render_visualization
@@ -728,6 +808,8 @@ def generate_cfd_visualization(
             slice_normal=tuple(slice_normal or (0.0, 1.0, 0.0)),
             colormap=colormap,
             resolution=resolution,
+            frame=frame,
+            title=title,
         )
     except Exception as error:
         return _error(str(error), sim_id=sim_id)
@@ -739,7 +821,23 @@ def generate_cfd_visualization(
         camera_view=camera_view,
         colormap=colormap,
         resolution=resolution,
+        frame=frame,
+        axis_convention=AXIS_CONVENTION if frame == "rocket" else None,
     )
+
+
+def _render_title(record: Any, visualization_type: str) -> str:
+    """A caption naming the case, so an exported image stands on its own."""
+    label = visualization_type.replace("_", " ")
+    parts = [label]
+    mach = record.metadata.get("mach")
+    if isinstance(mach, (int, float)):
+        parts.append(f"M {mach:.2f}")
+    aoa = record.metadata.get("aoa_deg")
+    if isinstance(aoa, (int, float)):
+        parts.append(f"alpha {aoa:g} deg")
+    parts.append(record.record_id)
+    return "  |  ".join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -800,14 +898,7 @@ def run_parametric_sweep_tool(
 
     fixed = dict(fixed_params or {})
     try:
-        axes = [
-            HingeAxis(
-                name=axis.get("name", f"hinge_{index + 1}"),
-                point=axis["point"],
-                direction=axis["direction"],
-            )
-            for index, axis in enumerate(hinge_axes or [])
-        ]
+        axes = _hinge_axes(hinge_axes)
         base = AeroRunRequest(
             mesh_id=mesh_id,
             flow=FlowParams(
@@ -1082,14 +1173,7 @@ def save_project(
             altitude_m=altitude_m,
         )
         project.solver = SolverParams(mpi_ranks=mpi_ranks)
-        project.hinge_axes = [
-            HingeAxis(
-                name=axis.get("name", f"hinge_{index + 1}"),
-                point=axis["point"],
-                direction=axis["direction"],
-            )
-            for index, axis in enumerate(hinge_axes or [])
-        ]
+        project.hinge_axes = _hinge_axes(hinge_axes)
         project.sweep = SweepSettings(
             parameter=sweep_parameter,
             values=sweep_values or [0.5, 1.0, 1.5, 2.0, 2.5],

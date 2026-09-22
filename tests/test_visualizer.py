@@ -437,3 +437,133 @@ def test_rendered_image_has_the_requested_resolution(flow_solution, tmp_path):
     )
     with Image.open(path) as handle:
         assert handle.size == RESOLUTIONS["hd"]
+
+
+# ---------------------------------------------------------------------------
+# A body inside a farfield, and the rocket frame
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def rocket_solution() -> pv.DataSet:
+    """A flow volume with a body-shaped hole, laid out as the solver has it.
+
+    The body runs from the origin along +X, the domain extends far beyond it
+    in every direction, and the outer boundary is therefore two separate
+    pieces -- the body and the farfield -- as in a real SU2 solution.
+    """
+    grid = pv.ImageData(dimensions=(41, 21, 21), spacing=(0.1, 0.1, 0.1))
+    grid.origin = (-1.0, -1.0, -1.0)
+    centres = grid.cell_centers().points
+    radius = np.linalg.norm(centres[:, 1:], axis=1)
+    inside = (centres[:, 0] > 0.0) & (centres[:, 0] < 1.0) & (radius < 0.15)
+    volume = grid.extract_cells(np.flatnonzero(~inside))
+
+    points = volume.points
+    x = points[:, 0]
+    volume.point_data["Mach"] = 1.3 - 0.4 * np.exp(-8.0 * (x**2)) + 0.05 * x
+    volume.point_data["Pressure"] = 101325.0 * (1.0 + 0.3 * np.exp(-5.0 * x**2))
+    velocity = np.zeros_like(points)
+    velocity[:, 0] = 440.0
+    volume.point_data["Velocity"] = velocity
+    return volume
+
+
+def test_the_body_is_separated_from_the_farfield(rocket_solution):
+    """A surface render of the farfield would hide the rocket inside it."""
+    from backend.visualizer import _extract_walls
+
+    walls = _extract_walls(rocket_solution)
+    assert walls is not None and walls.n_points
+    low, high = np.array(walls.bounds[::2]), np.array(walls.bounds[1::2])
+    # The hole, not the four-metre domain around it.
+    assert high[0] - low[0] == pytest.approx(1.0, abs=0.11)
+    assert high[1] - low[1] < 0.5
+
+
+def test_a_domain_with_no_body_has_no_walls(flow_solution):
+    """The outer skin of an empty box is not a body to draw over a slice."""
+    from backend.visualizer import _extract_walls
+
+    assert _extract_walls(flow_solution) is None
+
+
+def test_the_rocket_frame_stands_the_body_nose_up(rocket_solution):
+    """Solver +X (nose to tail) becomes rocket -Z; velocity turns with it."""
+    from backend.visualizer import _extract_walls, to_rocket_frame
+
+    rocket = to_rocket_frame(rocket_solution)
+    walls = _extract_walls(rocket)
+    low, high = np.array(walls.bounds[::2]), np.array(walls.bounds[1::2])
+    # Nose at the origin, body below it along -Z.
+    assert high[2] == pytest.approx(0.0, abs=0.11)
+    assert low[2] == pytest.approx(-1.0, abs=0.11)
+    # The air now moves downwards, past a rocket climbing nose-first.
+    velocity = np.asarray(rocket.point_data["Velocity"])
+    assert np.allclose(velocity[:, 2], -440.0)
+    assert np.allclose(velocity[:, 0], 0.0, atol=1e-9)
+    # The source is untouched.
+    assert rocket_solution.bounds[1] == pytest.approx(3.0)
+
+
+def test_a_mach_slice_is_cropped_to_the_body(rocket_solution, tmp_path, monkeypatch):
+    """The shock system must fill the picture, not a speck in the farfield."""
+    import backend.visualizer as visualizer
+
+    captured = {}
+    original = visualizer.apply_camera
+
+    def spy(plotter, dataset, settings):
+        captured["bounds"] = dataset.bounds
+        return original(plotter, dataset, settings)
+
+    monkeypatch.setattr(visualizer, "apply_camera", spy)
+    render_mach_slice(
+        rocket_solution,
+        tmp_path / "cropped.png",
+        RenderSettings(resolution="preview"),
+    )
+    low, high = np.array(captured["bounds"][::2]), np.array(captured["bounds"][1::2])
+    # One body length plus three quarters of one either side, not four metres.
+    assert high[0] - low[0] <= 2.6
+    assert high[0] - low[0] < rocket_solution.bounds[1] - rocket_solution.bounds[0]
+
+    render_mach_slice(
+        rocket_solution,
+        tmp_path / "whole.png",
+        RenderSettings(resolution="preview"),
+        crop_margin=None,
+    )
+    assert captured["bounds"][1] - captured["bounds"][0] == pytest.approx(4.0)
+
+
+@pytest.mark.parametrize("view", sorted(CAMERA_VIEWS))
+def test_every_view_renders_in_the_rocket_frame(rocket_solution, tmp_path, view):
+    """The same view names work with the rocket standing up."""
+    path = render_visualization(
+        rocket_solution,
+        "mach_slice",
+        tmp_path / f"{view}.png",
+        camera_view=view,
+        resolution="preview",
+        frame="rocket",
+    )
+    assert image_is_not_blank(path)
+
+
+def test_the_surface_render_shows_the_body(rocket_solution, tmp_path):
+    path = render_visualization(
+        rocket_solution,
+        "surface_pressure",
+        tmp_path / "surface.png",
+        resolution="preview",
+        frame="rocket",
+    )
+    assert image_is_not_blank(path, minimum_colours=20)
+
+
+def test_an_unknown_frame_is_rejected(rocket_solution, tmp_path):
+    with pytest.raises(VisualizationError, match="frame"):
+        render_visualization(
+            rocket_solution, "mach_slice", tmp_path / "x.png", frame="body"
+        )

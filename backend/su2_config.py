@@ -357,7 +357,7 @@ def build_config_for_request(
     if reference.moment_origin is not None:
         origin = tuple(float(v) for v in reference.moment_origin)
     elif request.hinge_axes:
-        origin = tuple(float(v) for v in request.hinge_axes[0].point)
+        origin = tuple(float(v) for v in request.hinge_axes[0].solver_point())
     else:
         origin = (0.0, 0.0, 0.0)
 

@@ -1062,3 +1062,89 @@ def test_a_restart_needs_both_the_flag_and_the_filename():
     )
     assert settings["RESTART_SOL"] == "YES"
     assert settings["SOLUTION_FILENAME"] == "solution_flow.dat"
+
+
+# ---------------------------------------------------------------------------
+# The rocket frame: nose along +Z
+# ---------------------------------------------------------------------------
+
+
+def test_a_hinge_in_rocket_axes_gives_the_solver_frame_torque():
+    """The same physical hinge, described in either frame, feels one torque."""
+    from core.frames import Frame, to_rocket
+
+    force = np.array([120.0, -8.0, 35.0])
+    moment = np.array([0.4, -2.1, 0.7])
+    origin = np.zeros(3)
+    solver_hinge = HingeAxis(
+        name="fin", point=[0.9, 0.05, 0.02], direction=[0.1, 1.0, 0.2]
+    )
+    rocket_hinge = HingeAxis(
+        name="fin",
+        point=to_rocket(solver_hinge.point),
+        direction=to_rocket(solver_hinge.unit_direction()),
+        frame=Frame.ROCKET,
+    )
+
+    from backend.aero_solver import hinge_torque
+
+    in_solver = hinge_torque(moment, force, origin, solver_hinge)
+    in_rocket = hinge_torque(moment, force, origin, rocket_hinge)
+    assert in_rocket.torque_nm == pytest.approx(in_solver.torque_nm)
+    # The moment vector comes back in the frame the hinge was given in.
+    assert in_rocket.frame is Frame.ROCKET
+    assert in_rocket.moment_vector_nm == pytest.approx(
+        to_rocket(in_solver.moment_vector_nm)
+    )
+
+
+def test_the_result_carries_the_force_along_the_rocket_axes(mesh_file, tmp_path):
+    """Drag on a rocket climbing nose-first is a negative Z force."""
+    runner = FakeRunner(
+        lines=screen_rows(120),
+        artifacts={"forces_breakdown.dat": FORCES_BREAKDOWN},
+    )
+    result = run_aero_case(
+        make_request(),
+        mesh_path=mesh_file,
+        working_directory=tmp_path / "run",
+        runner=runner,
+        reference_area_m2=0.005,
+        reference_length_m=0.08,
+    )
+    fx, fy, fz = result.force_rocket_n
+    assert fz == pytest.approx(-result.force_x_n)
+    assert fy == pytest.approx(result.force_y_n)
+    assert fx == pytest.approx(result.force_z_n)
+    # Solver X runs nose to tail; the drag the air exerts points that way.
+    assert result.force_x_n > 0.0 and fz < 0.0
+
+
+def test_the_moment_origin_follows_a_rocket_frame_hinge(mesh_file, tmp_path):
+    """SU2 is told the hinge point in its own frame, not the rocket's."""
+    from core.frames import Frame
+
+    runner = FakeRunner(
+        lines=screen_rows(60), artifacts={"forces_breakdown.dat": FORCES_BREAKDOWN}
+    )
+    work = tmp_path / "run"
+    run_aero_case(
+        make_request(
+            hinge_axes=[
+                HingeAxis(
+                    name="fin",
+                    point=[0.0, 0.05, -0.9],
+                    direction=[0, 1, 0],
+                    frame=Frame.ROCKET,
+                )
+            ]
+        ),
+        mesh_path=mesh_file,
+        working_directory=work,
+        runner=runner,
+        reference_area_m2=0.005,
+        reference_length_m=0.08,
+    )
+    config = (work / "solver.cfg").read_text()
+    line = next(row for row in config.splitlines() if row.startswith("REF_ORIGIN_MOMENT_X"))
+    assert float(line.split("=")[1]) == pytest.approx(0.9)

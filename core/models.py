@@ -23,6 +23,7 @@ from core.atmosphere import (
     isa_state,
     state_from_pressure_temperature,
 )
+from core.frames import Frame, to_rocket, to_solver
 from core.units import (
     MACH_SUPPORTED_MAX,
     YPLUS_WALL_FUNCTION_MAX,
@@ -460,13 +461,27 @@ class HingeAxis(StrictModel):
         description="Label used in results and plots, e.g. 'fin_pitch_upper'.",
     )
     point: Vector3 = Field(
-        description="A point [x, y, z] on the hinge axis, in metres.",
+        description=(
+            "A point [x, y, z] on the hinge axis, in metres, in the frame "
+            "named by 'frame'."
+        ),
     )
     direction: Vector3 = Field(
         description=(
             "Hinge rotation axis direction [u, v, w]. Normalised automatically. "
             "The reported torque is the aerodynamic moment about 'point' "
             "projected onto this axis."
+        ),
+    )
+    frame: Frame = Field(
+        default=Frame.SOLVER,
+        description=(
+            "'rocket': nose along +Z, origin at the reference origin (the "
+            "nose tip by default), so a fin near the tail of a 1.3 m rocket "
+            "sits near z = -1.2. This is the frame the program shows. "
+            "'solver': the wind-tunnel frame, nose at the origin and the body "
+            "along +X. Stored projects from before the rocket frame existed "
+            "are in 'solver', which is why that is the default here."
         ),
     )
     marker: str | None = Field(
@@ -483,8 +498,37 @@ class HingeAxis(StrictModel):
         return list(normalize_vector(value))
 
     def unit_direction(self) -> tuple[float, float, float]:
-        """The normalised hinge axis direction."""
+        """The normalised hinge axis direction, in the hinge's own frame."""
         return normalize_vector(self.direction)
+
+    def solver_point(self) -> list[float]:
+        """The hinge point in the solver frame, whatever frame it was given in."""
+        if self.frame is Frame.ROCKET:
+            return to_solver(self.point)
+        return [float(v) for v in self.point]
+
+    def solver_direction(self) -> list[float]:
+        """The unit hinge direction in the solver frame."""
+        if self.frame is Frame.ROCKET:
+            return to_solver(self.unit_direction())
+        return list(self.unit_direction())
+
+    def in_frame(self, frame: Frame) -> "HingeAxis":
+        """The same hinge expressed in another frame."""
+        if frame is self.frame:
+            return self
+        if frame is Frame.SOLVER:
+            point, direction = self.solver_point(), self.solver_direction()
+        else:
+            point = to_rocket(self.point)
+            direction = to_rocket(self.unit_direction())
+        return HingeAxis(
+            name=self.name,
+            point=point,
+            direction=direction,
+            marker=self.marker,
+            frame=frame,
+        )
 
 
 # --------------------------------------------------------------------------
@@ -822,7 +866,14 @@ class HingeTorqueResult(StrictModel):
         "the right-hand rule about the axis direction."
     )
     moment_vector_nm: Vector3 = Field(
-        description="Full moment vector about the hinge point, N*m."
+        description=(
+            "Full moment vector about the hinge point, N*m, in the frame the "
+            "hinge was given in."
+        )
+    )
+    frame: Frame = Field(
+        default=Frame.SOLVER,
+        description="Frame of 'moment_vector_nm': the hinge's own.",
     )
 
 
@@ -850,6 +901,22 @@ class AeroResult(StrictModel):
     cm_pitch: float = Field(description="Pitching-moment coefficient.")
     center_of_pressure: Vector3 = Field(
         description="Centre of pressure [x, y, z] in wind-tunnel coordinates, m."
+    )
+    force_rocket_n: Vector3 = Field(
+        description=(
+            "Total aerodynamic force [F_x, F_y, F_z] in the rocket frame, N: "
+            "nose along +Z, so drag appears as a negative F_z on a rocket "
+            "climbing nose-first, and the lift from a positive angle of "
+            "attack along +X. This is the answer to 'what force acts along "
+            "each axis of the rocket'."
+        )
+    )
+    center_of_pressure_rocket: Vector3 = Field(
+        description=(
+            "Centre of pressure in the rocket frame, m. Its Z is negative: "
+            "the distance behind the reference origin (the nose tip by "
+            "default). Undefined (NaN) at zero incidence on a symmetric body."
+        )
     )
     hinge_torques: list[HingeTorqueResult] = Field(default_factory=list)
     iterations: int = Field(description="Iterations completed.")

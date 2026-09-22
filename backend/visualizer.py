@@ -26,6 +26,8 @@ os.environ.setdefault("PYVISTA_OFF_SCREEN", "true")
 
 import pyvista as pv  # noqa: E402
 
+from core.frames import homogeneous_solver_to_rocket  # noqa: E402
+
 pv.OFF_SCREEN = True
 
 # Resolutions offered to callers. "4k" is the documented default for report
@@ -51,6 +53,33 @@ CAMERA_VIEWS: dict[str, tuple[tuple[float, float, float], tuple[float, float, fl
     "nose_quarter": ((-1.0, -0.6, 0.35), (0.0, 0.0, 1.0)),
     "tail_quarter": ((1.0, -0.6, 0.35), (0.0, 0.0, 1.0)),
 }
+
+# The same views for a rocket shown in its own frame: nose along +Z, standing
+# up the way it flies. "front" still looks at the nose from ahead of it and
+# "side" still looks at the pitch plane, the one an angle of attack tilts the
+# rocket in and the default Mach slice lies in.
+ROCKET_CAMERA_VIEWS: dict[
+    str, tuple[tuple[float, float, float], tuple[float, float, float]]
+] = {
+    "isometric": ((1.0, -1.0, 0.6), (0.0, 0.0, 1.0)),
+    "front": ((0.0, 0.0, 1.0), (1.0, 0.0, 0.0)),
+    "back": ((0.0, 0.0, -1.0), (1.0, 0.0, 0.0)),
+    "side": ((0.0, -1.0, 0.0), (0.0, 0.0, 1.0)),
+    "top": ((1.0, 0.0, 0.0), (0.0, 0.0, 1.0)),
+    "bottom": ((-1.0, 0.0, 0.0), (0.0, 0.0, 1.0)),
+    "nose_quarter": ((0.35, -0.6, 1.0), (0.0, 0.0, 1.0)),
+    "tail_quarter": ((0.35, -0.6, -1.0), (0.0, 0.0, 1.0)),
+}
+
+# Frames a scene can be drawn in; see core.frames.
+FRAMES = ("solver", "rocket")
+
+# Margin kept around the body when a slice is cropped to it, in body lengths.
+# The farfield sits five to ten lengths away, and a slice through all of it
+# shows the rocket as a speck with the shock system too small to read. A
+# Mach 1.3 bow shock leaves the nose at about fifty degrees, so three
+# quarters of a length on each side keeps it in view along most of the body.
+SLICE_BODY_MARGIN = 0.75
 
 # Candidate field names, most specific first, for each physical quantity.
 _FIELD_CANDIDATES: dict[str, tuple[str, ...]] = {
@@ -105,6 +134,7 @@ class RenderSettings:
     camera_view: str = "isometric"
     zoom: float = 1.0
     title: str | None = None
+    frame: str = "solver"
 
     def window_size(self) -> tuple[int, int]:
         """Pixel dimensions for the requested resolution."""
@@ -273,12 +303,13 @@ def apply_camera(
 ) -> None:
     """Point the camera at the data from a named viewpoint."""
     view = settings.camera_view
-    if view not in CAMERA_VIEWS:
+    views = ROCKET_CAMERA_VIEWS if settings.frame == "rocket" else CAMERA_VIEWS
+    if view not in views:
         raise VisualizationError(
             f"unknown camera view '{view}'; choose one of "
-            f"{', '.join(CAMERA_VIEWS)}"
+            f"{', '.join(views)}"
         )
-    direction, up = CAMERA_VIEWS[view]
+    direction, up = views[view]
     centre = np.array(dataset.center, dtype=float)
     diagonal = float(np.linalg.norm(np.array(dataset.bounds[1::2]) - np.array(dataset.bounds[::2])))
     distance = max(diagonal, 1.0e-6) * 1.5
@@ -322,7 +353,12 @@ def render_surface_pressure(
     pressure otherwise.
     """
     settings = settings or RenderSettings()
-    surface = dataset.extract_surface()
+    # The body, not the whole boundary: the volume's outer surface includes
+    # the farfield, which would otherwise fill the frame with a cylinder of
+    # freestream pressure and leave the rocket a speck inside it.
+    surface = _extract_walls(dataset)
+    if surface is None or surface.n_points == 0:
+        surface = dataset.extract_surface()
 
     quantity = "pressure"
     if use_coefficient:
@@ -357,12 +393,16 @@ def render_mach_slice(
     slice_origin: Sequence[float] | None = None,
     contour_levels: int = 0,
     show_body: bool = True,
+    crop_margin: float | None = SLICE_BODY_MARGIN,
 ) -> Path:
     """Mach-number field on a cutting plane through the shock system.
 
     A slice along the symmetry plane shows the bow shock, oblique shocks off
     the fins and the Prandtl-Meyer expansion around the shoulder. Optional
     iso-contour lines make individual shock angles measurable.
+
+    ``crop_margin`` trims the plane to the body plus that many body lengths
+    on every side; ``None`` shows the whole domain.
     """
     settings = settings or RenderSettings()
     name = resolve_field(dataset, "mach")
@@ -381,6 +421,10 @@ def render_mach_slice(
         raise VisualizationError(
             "the cutting plane does not intersect the solution domain"
         )
+
+    body = _extract_walls(dataset)
+    if crop_margin is not None and body is not None and body.n_points:
+        plane = _crop_to_body(plane, body, crop_margin)
 
     plotter = _new_plotter(settings)
     plotter.add_mesh(
@@ -401,10 +445,8 @@ def render_mach_slice(
         except Exception:  # pragma: no cover - degenerate slices
             pass
 
-    if show_body:
-        body = _extract_walls(dataset)
-        if body is not None and body.n_points:
-            plotter.add_mesh(body, color="#8a8f98", opacity=0.55, smooth_shading=True)
+    if show_body and body is not None and body.n_points:
+        plotter.add_mesh(body, color="#8a8f98", opacity=0.55, smooth_shading=True)
 
     apply_camera(plotter, plane, settings)
     return _save(plotter, Path(output_path))
@@ -576,11 +618,60 @@ def render_thermal(
 
 
 def _extract_walls(dataset: pv.DataSet) -> pv.PolyData | None:
-    """Best-effort extraction of the solid body surface for context."""
+    """The solid body's surface, without the farfield around it.
+
+    The boundary of a flow volume is two disconnected pieces: the body, and
+    the farfield enclosing everything. The farfield is the piece that spans
+    the whole domain, so it is recognised by its size and dropped. A
+    dataset whose boundary is a single piece has no body inside it, and
+    ``None`` is returned rather than the domain's own outer skin -- drawing
+    that translucent over a slice washes the whole picture out.
+    """
     try:
-        return dataset.extract_surface()
+        surface = dataset.extract_surface()
+        if surface.n_cells == 0:
+            return None
+        regions = surface.connectivity("all")
     except Exception:  # pragma: no cover - unusual datasets
         return None
+
+    labels = np.asarray(regions.cell_data.get("RegionId", []))
+    if labels.size == 0:
+        return None
+    region_ids = np.unique(labels)
+    if region_ids.size < 2:
+        return None
+
+    def diagonal(region: int) -> float:
+        cells = regions.extract_cells(np.flatnonzero(labels == region))
+        low, high = np.array(cells.bounds[::2]), np.array(cells.bounds[1::2])
+        return float(np.linalg.norm(high - low))
+
+    farfield = max(region_ids, key=diagonal)
+    walls = regions.extract_cells(np.flatnonzero(labels != farfield))
+    return walls.extract_surface()
+
+
+def _crop_to_body(
+    plane: pv.DataSet, body: pv.DataSet, margin_lengths: float
+) -> pv.DataSet:
+    """Trim a slice to the body plus a margin, in body lengths."""
+    low = np.array(body.bounds[::2], dtype=float)
+    high = np.array(body.bounds[1::2], dtype=float)
+    length = float(np.max(high - low))
+    if length <= 0.0:
+        return plane
+    pad = margin_lengths * length
+    box = [
+        value
+        for pair in zip(low - pad, high + pad)
+        for value in pair
+    ]
+    try:
+        cropped = plane.clip_box(box, invert=False)
+    except Exception:  # pragma: no cover - degenerate geometry
+        return plane
+    return cropped if cropped.n_points else plane
 
 
 # ---------------------------------------------------------------------------
@@ -670,6 +761,7 @@ def render_visualization(
     slice_normal: Sequence[float] = (0.0, 1.0, 0.0),
     colormap: str = "turbo",
     resolution: str = "4k",
+    frame: str = "solver",
     **kwargs,
 ) -> Path:
     """Render one of the four named visualisation modes.
@@ -689,6 +781,11 @@ def render_visualization(
         Cutting-plane normal for the slice modes.
     colormap, resolution:
         Presentation options.
+    frame:
+        ``"rocket"`` stands a rocket on its tail with the nose along +Z, as
+        the operator sees it everywhere else; ``"solver"`` draws the raw
+        solver frame, body along +X. ``slice_normal`` and the camera views
+        are read in whichever frame is chosen.
 
     Returns
     -------
@@ -701,13 +798,21 @@ def render_visualization(
             f"{', '.join(VISUALIZATION_TYPES)}"
         )
 
+    if frame not in FRAMES:
+        raise VisualizationError(
+            f"unknown frame '{frame}'; choose one of {', '.join(FRAMES)}"
+        )
+
     dataset = _coerce_dataset(solution)
+    if frame == "rocket":
+        dataset = to_rocket_frame(dataset)
     settings = RenderSettings(
         resolution=resolution,
         colormap=colormap,
         camera_view=camera_view,
         title=kwargs.pop("title", None),
         clim=kwargs.pop("clim", None),
+        frame=frame,
     )
 
     if visualization_type == "surface_pressure":
@@ -720,6 +825,19 @@ def render_visualization(
         return render_streamlines(dataset, output_path, settings, **kwargs)
     return render_thermal(
         dataset, output_path, settings, slice_normal=slice_normal, **kwargs
+    )
+
+
+def to_rocket_frame(dataset: pv.DataSet) -> pv.DataSet:
+    """A copy of a solver-frame dataset stood up with the nose along +Z.
+
+    Vector fields are rotated with the points, so velocity still points the
+    way the air moves -- downwards, past a rocket climbing nose-first.
+    """
+    return dataset.transform(
+        homogeneous_solver_to_rocket(),
+        transform_all_input_vectors=True,
+        inplace=False,
     )
 
 

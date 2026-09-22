@@ -32,10 +32,27 @@ případů, kdy název pole říká jinak (`_deg` pro stupně, `_c` pro stupně
 Celsia, `_ms` pro metry za sekundu). Každé pole nese jednotku v názvu nebo
 v nápovědě.
 
-**Souřadný systém.** Po zarovnání leží osa tělesa podél **+X** a proud
-přichází z −X. Vámi zvolený referenční bod je v (0, 0, 0). Všechny výsledky —
-síly, momenty, působiště, polohy závěsů — jsou v této soustavě, ne ve vaší
-CAD soustavě.
+**Souřadný systém — osy rakety.** Ať byl CAD nakreslen jakkoli, raketa se
+zobrazuje i vyhodnocuje **nastojato, špičkou podél +Z**, tak jak stojí na
+rampě a letí. Vámi zvolený referenční bod (obvykle špička) je v (0, 0, 0),
+takže těleso leží v záporném Z: křidélko u zádi 1,3 m dlouhé rakety je zhruba
+v z = −1,2. V těchto osách je 3D náhled, vykreslené obrázky, složky sil,
+působiště i závěsy křidélek.
+
+| Osa rakety | Míří | Síla podél ní |
+|---|---|---|
+| +Z | Ve směru špičky (nahoru při svislém letu) | Odpor rakety letící špičkou napřed je **záporné** F_z |
+| +X | Ve směru klopení | Vztlak od kladného úhlu náběhu je **+F_x** |
+| +Y | Doplňuje pravotočivou soustavu | Boční síla od vybočení |
+
+Model, který už má špičku na +Z, si své osy ponechá beze změny.
+
+**Soustava řešiče.** Uvnitř leží síť s tělesem podél **+X** a proudem
+přicházejícím podél +X, protože s tím počítá konvence úhlu náběhu v SU2. Obě
+soustavy se liší pevnou rotací (x_raketa = z_řešič, y_raketa = y_řešič,
+z_raketa = −x_řešič), takže kvůli zobrazení nastojato se nic nepřesíťovává.
+Čísla v soustavě řešiče jsou dál v `result.json` a v odpovědích MCP,
+označená jako taková.
 
 **Úhly.** Úhel náběhu a vybočení aplikuje *řešič* nakloněním přicházejícího
 proudu. Síť se vždy tvoří v soustavě tělesa. Proto změna úhlu nevyžaduje nové
@@ -62,19 +79,23 @@ hrany odstraní, drobné plošky opraví. Pokud ozdravení těleso zničí — c
 u některých jednoduchých tvarů stává — použije se neozdravený import a zpráva
 to uvede.
 
-### Nose direction
+### Nose points to
 
-Osa, po které těleso běží **od špičky směrem k zádi**, v souřadném systému
-vašeho CAD souboru.
-
-Tu větu si přečtěte dvakrát, protože na znaménku se chytne každý: raketa
-nakreslená nastojato, špičkou nahoru, potřebuje **`-Y`**, ne `+Y`. Program
-tenhle směr otočí na +X, čímž se špička dostane na návětrný konec tunelu.
+Směr, kterým **míří špička** ve vašem CAD souboru. Raketa nakreslená
+nastojato, špičkou nahoru v modelu s osou Y nahoru, je **`+Y`**.
 
 | Volba | Kdy |
 |---|---|
 | `+X` … `-Z` | Těleso je zarovnáno s osou CAD |
-| Vlastní vektor | Ve všech ostatních případech |
+| Vlastní vektor | Ve všech ostatních případech — směr, kam míří špička |
+
+Ať zvolíte cokoli, model se pak zobrazí špičkou nahoru podél +Z.
+
+> Parametr sítě pod tím, `nose_direction`, je opačný: směr od špičky *k
+> zádi*, takže špička na +Y znamená `nose_direction = -Y`. Tlačítka dřív
+> ukazovala přímo tuhle hodnotu, takže vedle poznámky „nose at +Y" svítilo
+> „−Y". Teď ukazují, kde špička je, a převod se děje skrytě. V MCP a
+> v projektových souborech má parametr pořád původní význam.
 
 Vlastní vektor se automaticky normalizuje; záleží jen na směru. Nulový vektor
 je odmítnut.
@@ -129,13 +150,13 @@ všechno. Zkontrolujte referenční délku ve zprávě o síti proti očekáván
 
 ### Jak se podívat na to, co jste naimportoval
 
-Model se objeví ve 3D náhledu hned po načtení, z boku, špičkou doleva.
-Vysíťuje se hrubě — pár vteřin, žádné mezní vrstvy, žádné okolí — jen abyste
-se na něj mohl podívat.
+Model se objeví ve 3D náhledu hned po načtení, **nastojato, špičkou podél
++Z**, z boku, s trojicí os v rohu. Vysíťuje se hrubě — pár vteřin, žádné
+mezní vrstvy, žádné okolí — jen abyste se na něj mohl podívat.
 
-**Podívejte se na něj.** Není to ozdoba: model se zobrazuje v soustavě, kterou
-použije řešič, takže špička patří doleva, proti nabíhajícímu proudu. Když míří
-opačně, je špatně směr špičky a všechno, co bude následovat, budou naprosto
+**Podívejte se na něj.** Není to ozdoba: model projde přesně tím zarovnáním,
+kterým projde síť, a pak se postaví na záď. Špička patří nahoru. Když je
+dole, je špatně směr špičky a všechno, co bude následovat, budou naprosto
 věrohodné síly pro raketu letící zádí napřed.
 
 Když náhled vytvořit nejde, log to napíše a import pokračuje: těleso, které se
@@ -215,8 +236,13 @@ M 2.000  |  V 680.6 m/s  |  p 101.3 kPa  |  T 288.2 K
 | Nastavení | Význam |
 |---|---|
 | Name | Označení ve výsledcích a křivkách |
-| Point | Libovolný bod na ose závěsu, metry, v zarovnané soustavě |
-| Direction | Osa otáčení |
+| Point | Libovolný bod na ose závěsu, metry, v osách rakety (špička podél +Z) |
+| Direction | Osa otáčení, v osách rakety |
+
+Osa závěsu se kreslí do náhledu přes stojící model, takže je vidět, jestli
+sedí na křidélku. Projekty uložené dřív, než osy rakety existovaly, mají
+závěsy v soustavě řešiče; při otevření se převedou a znamenají přesně tentýž
+závěs.
 
 **Jak se moment počítá.** Řešič hlásí aerodynamický moment kolem referenčního
 bodu. To není, co cítí servo. Program:
@@ -380,13 +406,19 @@ potřebuje paměť a příliš mnoho jich na velké síti vyčerpá 16 GB.
 | Součinitel vztlaku | C_l | Vztlak / (q·S) |
 | Součinitel boční síly | C_s | Boční síla / (q·S) |
 | Klopivý moment | C_m | Moment / (q·S·L) |
-| Síly | F_x, F_y, F_z | Složky v soustavě tělesa, newtony |
+| Síly | F_x, F_y, F_z | Složky podél **os rakety**, newtony: F_z ve směru špičky |
 | Odpor / vztlak / boční síla | | V soustavě proudu, newtony |
-| Působiště | | Osová poloha, metry |
+| Působiště | | Poloha na ose Z rakety, metry (záporná: za počátkem) |
 | Moment na závěsu | τ | Newtonmetry na každém závěsu |
 
 Zde `q = ½ρV²` je dynamický tlak, `S` referenční plocha (průřez tělesa, není-li
 přepsána) a `L` referenční délka (průměr tělesa, není-li přepsána).
+
+**Síla v každé ose rakety** je druhá řada karet — *Force along rocket
+X / Y / Z*. U rakety letící přímo vzhůru při nulovém úhlu náběhu je F_z
+odpor se znaménkem minus (tlačí raketu zpět k zádi) a F_x, F_y jsou jen
+numerický šum. S úhlem náběhu roste F_x: to je normálová síla, která raketu
+natáčí.
 
 **Soustava tělesa versus soustava proudu.** Soustava tělesa je pevně spojená
 s raketou. Soustava proudu je zarovnaná s prouděním. Při nulovém úhlu náběhu
@@ -485,6 +517,38 @@ rovnoměrná. **turbo** dává největší vizuální kontrast pro tlak a Machov
 `isometric`, `front`, `back`, `side`, `top`, `bottom`, `nose_quarter`,
 `tail_quarter`.
 
+Výsledky rakety se kreslí **špičkou nahoru podél +Z**. `front` se dívá na
+špičku zepředu, `side` přímo na rovinu klopení — tu, ve které leží výchozí
+Machův řez, takže to je pohled pro obrázek rázové vlny.
+
+Machův řez se ořízne na raketu a tři čtvrtiny délky tělesa kolem ní. Okolí
+domény je pět až deset délek daleko a řez přes celé by ukázal raketu jako
+tečku.
+
+### Záložka Graphics
+
+Každý obrázek skončí v záložce **Graphics**, ať ho nakreslil kdokoli: záložka
+sama, asistent, nebo externí MCP klient se stejnou datovou složkou. Obrázky
+jsou seřazené od nejnovějšího, s náhledy, a vybraný se ukáže zvětšený.
+
+| Tlačítko | Co dělá |
+|---|---|
+| **Export …** | Uloží kopii kamkoli, jako PNG (beze změny) nebo JPEG |
+| **Export all from this run …** | Zkopíruje všechny obrázky daného výpočtu do složky |
+| **Copy** | Vloží obrázek do schránky, např. do zprávy |
+| **Open** | Otevře ho v systémovém prohlížeči (také dvojklikem) |
+| **Show folder** | Otevře složku, kde je obrázek uložen |
+
+Řádek nahoře kreslí nový obrázek: vyberte dokončený výpočet, typ obrázku,
+pohled, barvy a velikost a klikněte na **Render**. Když výpočet doběhne
+v záložce Aerodynamics, Machův řez z boku a tlak na povrchu se nakreslí
+automaticky.
+
+Obrázky, které vykreslí asistent, se objeví i přímo v jeho konverzaci,
+s odkazem rovnou do záložky Graphics.
+
+Samotné soubory jsou v `runs/<sim_id>/renders/` v datové složce.
+
 ### Rozlišení
 
 `preview` (960×540), `hd` (1920×1080), `2k` (2560×1440), `4k` (3840×2160).
@@ -582,11 +646,14 @@ Tlačítko **Remove** klíč smaže ze všech úložišť naráz.
 
 ### Volba modelu
 
-V rozbalovacím seznamu je několik modelů; první položka **Custom** políčko
-vyprázdní, takže můžete napsat libovolné id. **Fetch available models**
-seznam nahradí živým katalogem, na který váš účet skutečně dosáhne — stojí
-to za to, protože katalog OpenRouteru se mění každý týden a id, které v něm
-není, se odmítne hned při prvním požadavku.
+Rozbalovací seznam **Model** obsahuje výběr: `deepseek/deepseek-v4.1-flash`,
+`meta/muse-spark-1.3-contributor`, `qwen/qwen3.7-flash`,
+`openai/gpt-5.6-luna` a `deepseek/deepseek-chat`. První položka,
+**Custom…**, otevře pod seznamem políčko, do kterého napíšete libovolné id.
+**Fetch available models** přidá pod výběr živý katalog, na který váš účet
+skutečně dosáhne, a nabízí ho i jako našeptávač při psaní vlastního id —
+stojí to za to, protože katalog OpenRouteru se mění každý týden a id, které
+v něm není, se odmítne hned při prvním požadavku.
 
 Model musí umět volání nástrojů (tool calling), jinak si s vámi umí jen
 povídat. Volba se pamatuje mezi spuštěními.

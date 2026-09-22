@@ -147,8 +147,13 @@ This is the step people most often get wrong, and everything downstream
 depends on it.
 
 The program needs to know which direction the **nose** points in *your CAD
-file's own coordinate system*. Click the matching button: `+X`, `-X`, `+Y`,
-`-Y`, `+Z` or `-Z`.
+file's own coordinate system*. Click the matching button in **Nose points
+to**: `+X`, `-X`, `+Y`, `-Y`, `+Z` or `-Z`. Usually it is already lit: the
+program reads it from the shape, because a nose tapers and a tail does not.
+
+Whichever way the CAD was drawn, the model then appears **standing up, nose
+along +Z**, and every coordinate and force you are shown uses those rocket
+axes. If the nose is at the bottom of the viewport, the button is wrong.
 
 If your model is not aligned to an axis, tick **Use custom vector** and type
 the direction, for example `0.0, 0.3, 0.95`. It is normalised for you, so
@@ -283,9 +288,9 @@ the air push back on my fin, about the axis it rotates on?*
 In the **Fin hinge axis** panel:
 
 - **Name** — a label, e.g. `fin_pitch`.
-- **Point** — any point on the hinge line, in metres, in the aligned frame
-  (nose tip at the origin, body axis along +X). For a fin at 0.9 m from the
-  nose, attached at the 40 mm body radius: `0.9, 0.04, 0.0`.
+- **Point** — any point on the hinge line, in metres, in rocket axes (nose
+  tip at the origin, nose along +Z, so the body is at negative Z). For a fin
+  0.9 m behind the nose, attached at the 40 mm body radius: `0.0, 0.04, -0.9`.
 - **Direction** — the axis the fin rotates about. A fin mounted in the
   horizontal plane rotating to change pitch has direction `0, 1, 0`.
 
@@ -381,8 +386,17 @@ Four kinds of image are available:
 | `streamlines` | Flow paths | Separation, and airflow into the sensor intake |
 | `thermal` | Temperature contours | The sensor case |
 
-In the viewport, use the **Colormap** and **View** selectors. For publication
-images, render at 4K through the MCP tool or from a script.
+Open the **Graphics** tab. Pick the finished run, the image type
+(`mach_slice` for the shock waves), the view (`side` looks straight at the
+slice) and the size, then click **Render**. The image appears in the list
+and large beside it; **Export …** saves a copy wherever you want it, as PNG
+or JPEG, and **Copy** puts it on the clipboard for a report. A solve run from
+the Aerodynamics tab gets a Mach slice and a surface-pressure picture drawn
+automatically, and anything the assistant renders shows up here too.
+
+Rockets are drawn standing up, nose along +Z, and a Mach slice is cropped to
+the rocket and its immediate surroundings so the shocks are big enough to
+read.
 
 **Reading a Mach slice of a supersonic rocket:**
 

@@ -71,6 +71,8 @@ class SweepPoint:
             "mach": self.result.mach,
             "aoa_deg": self.result.aoa_deg,
             "center_of_pressure": self.result.center_of_pressure,
+            "force_rocket_n": self.result.force_rocket_n,
+            "center_of_pressure_rocket": self.result.center_of_pressure_rocket,
             "hinge_torques": {
                 torque.name: torque.torque_nm
                 for torque in self.result.hinge_torques

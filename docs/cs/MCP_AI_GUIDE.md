@@ -180,7 +180,7 @@ Spustí jeden bod RANS simulace.
 | `aoa_deg` | float | 0.0 | ±20 |
 | `sideslip_deg` | float | 0.0 | ±20 |
 | `altitude_m` | float | 0.0 | −610 až 32 000 |
-| `hinge_axes` | list[object] | `[]` | `{"name", "point": [x,y,z], "direction": [u,v,w]}` |
+| `hinge_axes` | list[object] | `[]` | `{"name", "point": [x,y,z], "direction": [u,v,w], "frame": "rocket"}` — osy rakety, pokud `frame` není `"solver"` |
 | `reference_area_m2` | float | null | Přepíše naměřenou hodnotu |
 | `reference_length_m` | float | null | Přepíše naměřenou hodnotu |
 | `moment_origin` | list[3] | null | Přepíše výchozí |
@@ -190,10 +190,19 @@ Spustí jeden bod RANS simulace.
 | `turbulence_model` | string | `"SST"` | `SST` nebo `SA` |
 | `cfl_number` | float | null | Při null se vybere podle režimu: 5,0 podzvukově, 2,0 transonicky, 1,0 od Mach 1,2 |
 
-Vrací `sim_id`, `mach`, `forces_n` (`fx`/`fy`/`fz`), `drag_n`, `lift_n`,
+Vrací `sim_id`, `mach`, `axis_convention`, `forces_rocket_frame_n`
+(`fx`/`fy`/`fz`), `forces_solver_frame_n`, `drag_n`, `lift_n`,
 `sideforce_n`, `coefficients` (`cd`/`cl`/`cs`/`cm_pitch`),
-`center_of_pressure`, `hinge_torques`, `iterations`, `converged` a dále
-`rescued` s `notes`.
+`center_of_pressure_rocket_frame`, `center_of_pressure_solver_frame`,
+`hinge_torques`, `iterations`, `converged` a dále `rescued` s `notes`.
+
+**Dvě soustavy.** *Soustava rakety* je ta, kterou vidí operátor: špička podél
++Z, počátek v referenčním bodě. Odpor rakety letící špičkou napřed je záporné
+`fz`; vztlak od kladného úhlu náběhu je `+fx`; vybočení dává `fy`. *Soustava
+řešiče* je soustava sítě — těleso podél +X, proud podél +X — a je přiložena
+pro úplnost. Liší se pevnou rotací: x_raketa = z_řešič, y_raketa = y_řešič,
+z_raketa = −x_řešič. Lidem uvádějte soustavu rakety. Body a směry závěsů se
+na vstupu také čtou v soustavě rakety, pokud osa neříká `"frame": "solver"`.
 
 Studený nadzvukový start se může během několika iterací rozpadnout. To se
 nyní zachytí okamžitě a výpočet se automaticky zopakuje v prvním řádu a pak
@@ -251,9 +260,17 @@ Vykreslí obrázek z dokončené simulace.
 | `slice_normal` | list[3] | `[0,1,0]` | Normála roviny řezu |
 | `colormap` | string | `"turbo"` | `turbo`, `coolwarm`, `viridis`, `jet`, `plasma`, `inferno` |
 | `resolution` | string | `"4k"` | `preview`, `hd`, `2k`, `4k` |
-| `output_path` | string | null | Výchozí do složky výpočtu |
+| `output_path` | string | null | Výchozí do složky výpočtu; zadejte cestu pro export jinam |
+| `frame` | string | null | `rocket` (špička podél +Z) nebo `solver`; null znamená `rocket` pro aerodynamické výpočty a `solver` pro tepelné |
 
-Vrací `image_path`.
+Vrací `image_path`, `frame` a v soustavě rakety také `axis_convention`.
+
+Obrázky zapsané do složky výpočtu se objeví v záložce **Graphics** programu,
+kde si je operátor prohlédne a vyexportuje; obrázek vykreslený vestavěným
+asistentem se ukáže i přímo v jeho konverzaci. Každý nese titulek s režimem,
+Machovým číslem, úhlem náběhu a výpočtem. Machův řez se ořízne na raketu a tři
+čtvrtiny délky tělesa kolem ní; pro přímý pohled na něj použijte
+`camera_view: "side"`.
 
 ### 3.5 `run_parametric_sweep`
 
