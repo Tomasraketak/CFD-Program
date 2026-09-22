@@ -90,6 +90,41 @@ def _store() -> RunStore:
     return default_store()
 
 
+# Whoever wants to watch a solve the assistant started -- the in-app chat's
+# live convergence chart. Called on the solver's thread; listeners marshal
+# to their own. A listener that raises is dropped rather than allowed to
+# kill the solve it was only watching.
+_solver_listeners: list[Any] = []
+
+
+def add_solver_listener(listener: Any) -> None:
+    """Receive ``("iteration", record)`` and ``("line", text)`` events."""
+    if listener not in _solver_listeners:
+        _solver_listeners.append(listener)
+
+
+def remove_solver_listener(listener: Any) -> None:
+    """Stop receiving solver events."""
+    if listener in _solver_listeners:
+        _solver_listeners.remove(listener)
+
+
+def _broadcast(kind: str, payload: Any) -> None:
+    for listener in list(_solver_listeners):
+        try:
+            listener(kind, payload)
+        except Exception:  # noqa: BLE001 - a watcher must not stop a solve
+            remove_solver_listener(listener)
+
+
+def _broadcast_iteration(record: Any) -> None:
+    _broadcast("iteration", record)
+
+
+def _broadcast_line(line: str) -> None:
+    _broadcast("line", line)
+
+
 def _runner() -> SolverRunner:
     """Solver backend, overridable for testing via a module attribute."""
     return _RUNNER_OVERRIDE if _RUNNER_OVERRIDE is not None else SU2Runner()
@@ -506,6 +541,8 @@ def run_aerodynamic_simulation(
                 mesh_record.metadata.get("reference_length_m", 1.0)
             ),
             sim_id=record.record_id,
+            on_iteration=_broadcast_iteration,
+            on_line=_broadcast_line,
         )
     except Exception as error:
         store.update_metadata(record.record_id, {"failed": str(error)})
@@ -954,6 +991,8 @@ def run_parametric_sweep_tool(
                 mesh_record.metadata.get("reference_length_m", 1.0)
             ),
             stop_on_error=stop_on_error,
+            on_iteration=_broadcast_iteration,
+            on_line=_broadcast_line,
         )
     except Exception as error:
         store.update_metadata(record.record_id, {"failed": str(error)})

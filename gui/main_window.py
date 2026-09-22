@@ -51,7 +51,8 @@ from core.settings import AppSettings, load_settings, save_settings
 from core.workspace import clear_active_geometry, set_active_geometry
 from core.store import RunStore, default_store
 from gui.ai_panel import AITab
-from gui.gallery import GraphicsTab
+from gui.charts import ResidualChart, format_duration  # noqa: F401
+from gui.gallery import GraphicsTab, find_rendered_images
 from gui.form_builder import LabelledSlider
 from gui.theme import (
     ACCENT,
@@ -184,89 +185,6 @@ class VectorInput(QtWidgets.QWidget):
             box.setValue(float(component))
 
 
-class ResidualChart(QtWidgets.QWidget):
-    """Live convergence plot of residuals and force coefficients."""
-
-    def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
-        super().__init__(parent)
-        layout = QtWidgets.QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-
-        self._iterations: list[int] = []
-        self._series: dict[str, list[float]] = {}
-        # A rescued run is several solver invocations, each counting its own
-        # iterations from 1. Without an offset the trace folds back on itself
-        # and the chart looks broken.
-        self._stage_offset = 0
-        self._last_iteration = 0
-
-        if not HAVE_CHARTS:  # pragma: no cover - optional dependency
-            placeholder = QtWidgets.QLabel(
-                "Install pyqtgraph to see live convergence plots"
-            )
-            placeholder.setObjectName("hint")
-            placeholder.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-            layout.addWidget(placeholder)
-            self.plot = None
-            self.curves = {}
-            return
-
-        pg.setConfigOptions(antialias=True)
-        self.plot = pg.PlotWidget()
-        self.plot.setBackground("#12151c")
-        self.plot.showGrid(x=True, y=True, alpha=0.25)
-        self.plot.setLabel("bottom", "Iteration")
-        self.plot.setLabel("left", "log10 residual / coefficient")
-        self.plot.addLegend(offset=(-10, 10))
-        layout.addWidget(self.plot)
-
-        self.curves = {
-            name: self.plot.plot(
-                pen=pg.mkPen(CHART_COLOURS[index % len(CHART_COLOURS)], width=2),
-                name=label,
-            )
-            for index, (name, label) in enumerate(
-                (("rms_rho", "RMS[Rho]"), ("cd", "C_d"), ("cl", "C_l"))
-            )
-        }
-
-    def clear(self) -> None:
-        """Reset the chart for a new run."""
-        self._iterations.clear()
-        self._series.clear()
-        self._stage_offset = 0
-        self._last_iteration = 0
-        for curve in self.curves.values():
-            curve.setData([], [])
-
-    def begin_stage(self) -> None:
-        """Continue the x axis into a new solver stage.
-
-        Called when a diverged run is retried: the solver restarts its
-        iteration counter, but the operator is watching one continuous solve.
-        """
-        self._stage_offset = self._last_iteration
-
-    def add_record(self, record) -> None:
-        """Append one solver iteration."""
-        if not self.curves:
-            return
-        iteration = record.iteration + self._stage_offset
-        self._last_iteration = iteration
-        self._iterations.append(iteration)
-        for name, curve in self.curves.items():
-            value = record.get(name)
-            series = self._series.setdefault(name, [])
-            series.append(value if value is not None else math.nan)
-            finite = [
-                (i, v)
-                for i, v in zip(self._iterations, series)
-                if v is not None and math.isfinite(v)
-            ]
-            if finite:
-                curve.setData([i for i, _ in finite], [v for _, v in finite])
-
-
 class Viewport(QtWidgets.QWidget):
     """Embedded 3D scene with orbit, pan, zoom and a slice control."""
 
@@ -397,6 +315,7 @@ class AerodynamicsTab(QtWidgets.QWidget):
         self._worker: Any = None
         self._step_text = ""
         self._step_started: float | None = None
+        self._operation_started: float | None = None
         self._step_timer = QtCore.QTimer(self)
         self._step_timer.timeout.connect(self._refresh_step_clock)
         # Bumped on every import so a slow preview cannot paint the previous
@@ -1313,8 +1232,60 @@ class AerodynamicsTab(QtWidgets.QWidget):
             self.chart.begin_stage()
 
     def _run_finished(self, result: Any) -> None:
-        """Populate the result cards."""
+        """Populate the result cards and record the run."""
         self._finish()
+        self.show_result(result)
+
+        # Recorded the way the MCP tool records it, so the assistant, the
+        # Graphics tab and a later session all see the same run.
+        try:
+            self.store.write_json(result.sim_id, "result.json", result)
+            self.store.update_metadata(
+                result.sim_id,
+                {
+                    "cd": result.cd,
+                    "cl": result.cl,
+                    "mach": result.mach,
+                    "aoa_deg": result.aoa_deg,
+                },
+            )
+        except Exception as error:  # noqa: BLE001 - the result is on screen
+            self.append_log(f"Could not record the result: {error}")
+        self.simulationFinished.emit(result.sim_id)
+
+    def open_run(self, record_id: str) -> bool:
+        """Load a stored mesh or simulation back into the tab.
+
+        A simulation brings its result cards back and makes its mesh the
+        current one, so the next run or sweep continues on it; a mesh just
+        becomes the current mesh.
+        """
+        from core.models import AeroResult
+
+        try:
+            record = self.store.get(record_id)
+        except Exception:
+            self.append_log(f"{record_id} is no longer in the run registry.")
+            return False
+        mesh_id = record_id if record.kind == "mesh" else record.metadata.get("mesh_id")
+        if mesh_id and self._mesh_is_usable(mesh_id):
+            self.mesh_id = mesh_id
+            self.run_button.setEnabled(True)
+            self.sweep_button.setEnabled(True)
+            self.append_log(f"Current mesh: {mesh_id}")
+        if record.kind == "aero" and record.exists("result.json"):
+            try:
+                result = AeroResult.model_validate(self.store.read_json(record_id, "result.json"))
+            except Exception as error:  # noqa: BLE001 - reported
+                self.append_log(f"Could not read the result of {record_id}: {error}")
+                return False
+            self.show_result(result)
+            self.append_log(f"Loaded simulation {record_id}")
+        self.statusMessage.emit(f"Opened {record_id}")
+        return True
+
+    def show_result(self, result: Any) -> None:
+        """Fill the result cards and log from a finished simulation."""
         self.card_cd.set_value(result.cd)
         self.card_cl.set_value(result.cl)
         self.card_drag.set_value(result.drag_n, "{:.2f}")
@@ -1345,23 +1316,6 @@ class AerodynamicsTab(QtWidgets.QWidget):
         )
         for note in getattr(result, "notes", []):
             self.append_log(note)
-
-        # Recorded the way the MCP tool records it, so the assistant, the
-        # Graphics tab and a later session all see the same run.
-        try:
-            self.store.write_json(result.sim_id, "result.json", result)
-            self.store.update_metadata(
-                result.sim_id,
-                {
-                    "cd": result.cd,
-                    "cl": result.cl,
-                    "mach": result.mach,
-                    "aoa_deg": result.aoa_deg,
-                },
-            )
-        except Exception as error:  # noqa: BLE001 - the result is on screen
-            self.append_log(f"Could not record the result: {error}")
-        self.simulationFinished.emit(result.sim_id)
 
     def run_sweep(self) -> None:
         """Start a parametric sweep."""
@@ -1438,6 +1392,7 @@ class AerodynamicsTab(QtWidgets.QWidget):
         self.statusMessage.emit(message)
         self._step_text = message.rstrip(" .…")
         self._step_started = time.monotonic()
+        self._operation_started = self._step_started
         self.step_label.setVisible(True)
         self._refresh_step_clock()
         self._step_timer.start(STEP_CLOCK_INTERVAL_MS)
@@ -1480,8 +1435,10 @@ class AerodynamicsTab(QtWidgets.QWidget):
         if not self._step_text or self._step_started is None:
             self.step_label.clear()
             return
-        elapsed = time.monotonic() - self._step_started
-        self.step_label.setText(f"{self._step_text} — {elapsed:.0f} s")
+        now = time.monotonic()
+        step = format_duration(now - self._step_started)
+        total = format_duration(now - (self._operation_started or self._step_started))
+        self.step_label.setText(f"{self._step_text} — step {step} · total {total}")
 
     def _stop_step_clock(self) -> None:
         """Forget the current step once the worker has finished."""
@@ -1946,6 +1903,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.aero_tab.simulationFinished.connect(self.graphics_tab.render_standard)
         self.ai_tab.imageProduced.connect(self.graphics_tab.select_image)
         self.ai_tab.showGraphics.connect(self.show_graphics)
+        self.ai_tab.openRun.connect(self.open_run)
+        self.ai_tab.openProject.connect(lambda path: self.open_project(path))
 
         self.aero_tab.ranks.setValue(self.settings.default_mpi_ranks)
 
@@ -1953,6 +1912,17 @@ class MainWindow(QtWidgets.QMainWindow):
         self._apply_project_to_tabs()
         self._update_title()
         self._report_environment()
+
+    def open_run(self, record_id: str) -> None:
+        """Open a run a conversation refers to, where it belongs."""
+        if self.aero_tab.open_run(record_id):
+            self.tabs.setCurrentWidget(self.aero_tab)
+            images = [
+                image for image in find_rendered_images(self.store)
+                if image.sim_id == record_id
+            ]
+            if images:
+                self.graphics_tab.select_image(images[0].path)
 
     def show_graphics(self, path: str = "") -> None:
         """Switch to the Graphics tab, with an image selected if given."""
@@ -2106,6 +2076,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.settings.active_tab = self.tabs.currentIndex()
         self.settings.default_mpi_ranks = self.aero_tab.ranks.value()
         save_settings(self.settings, self.store.root)
+        self.ai_tab.save_conversation()
         event.accept()
 
     def _build_menu(self) -> None:

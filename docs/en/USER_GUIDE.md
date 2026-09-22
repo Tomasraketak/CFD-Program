@@ -708,6 +708,33 @@ is remembered between sessions.
 rate. A short question costs a fraction of a cent; a long session of tool
 calls costs more.
 
+### Picking a conversation up again
+
+Every conversation is saved on this computer when the assistant answers, and
+again when the program closes. The **Conversation** list above the chat holds
+them newest first. Pick one and the transcript comes back, the assistant
+remembers everything that was said and every tool result — so "run the same
+mesh at Mach 0.9" works — and a note lists the meshes, simulations and
+projects the conversation produced. Click one to open it: a simulation
+brings its results back into the Aerodynamics tab and makes its mesh the
+current one, a project opens as a project. **Delete** removes the selected
+saved conversation. Conversations are kept in `ai_chats` under the data
+folder; they never contain the API key.
+
+### Seeing the time and the solve
+
+The line under the chat says what is happening and for how long, twice: how
+long the current step has been running, and the whole request — *"Running
+run_aerodynamic_simulation — step 2:41 · total 4:05"*. The Aerodynamics tab
+does the same beside its progress bar.
+
+When a solve is running, whoever started it, a live convergence chart shows
+the density residual and the force coefficients, with a line saying the
+iteration, the speed in iterations per second, and whether the residual is
+falling (*converging*), flat (*stalled*) or rising (*diverging*).
+
+Results the assistant gives as a table are drawn as a table.
+
 ### Watching what it costs
 
 While a request runs, the line under the transcript shows what it has spent

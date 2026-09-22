@@ -247,6 +247,8 @@ def run_parametric_sweep(
     reference_length_m: float,
     on_point: Callable[[SweepPoint], None] | None = None,
     stop_on_error: bool = False,
+    on_iteration: Callable | None = None,
+    on_line: Callable[[str], None] | None = None,
 ) -> SweepResult:
     """Run one simulation per value of a swept parameter.
 
@@ -272,6 +274,8 @@ def run_parametric_sweep(
         Reference quantities for coefficient normalisation.
     on_point:
         Called after each point, for progress reporting.
+    on_iteration, on_line:
+        Passed to every point's solve, for a live convergence plot.
     stop_on_error:
         Abort the sweep at the first failure instead of continuing.
 
@@ -308,6 +312,8 @@ def run_parametric_sweep(
                 reference_area_m2=reference_area_m2,
                 reference_length_m=reference_length_m,
                 sim_id=f"{output_root.name}-{index:03d}",
+                on_iteration=on_iteration,
+                on_line=on_line,
             )
         except Exception as error:  # noqa: BLE001 - recorded, not swallowed
             point.error = f"{type(error).__name__}: {error}"

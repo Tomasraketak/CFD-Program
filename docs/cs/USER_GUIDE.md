@@ -698,6 +698,32 @@ povídat. Volba se pamatuje mezi spuštěními.
 daného modelu. Krátký dotaz stojí zlomek centu, delší série volání nástrojů
 víc.
 
+### Jak navázat na starší konverzaci
+
+Každá konverzace se uloží na tento počítač, když asistent odpoví, a znovu při
+zavření programu. Seznam **Conversation** nad chatem je obsahuje od
+nejnovější. Vyberte jednu a vrátí se přepis, asistent si pamatuje vše, co
+padlo, i všechny výsledky nástrojů — takže „spusť tutéž síť při Mach 0,9"
+funguje — a poznámka vypíše sítě, simulace a projekty, které konverzace
+vytvořila. Kliknutím je otevřete: simulace vrátí své výsledky do záložky
+Aerodynamics a její síť se stane aktuální, projekt se otevře jako projekt.
+**Delete** smaže vybranou uloženou konverzaci. Konverzace jsou ve složce
+`ai_chats` v datové složce; nikdy neobsahují API klíč.
+
+### Čas a průběh výpočtu
+
+Řádek pod chatem říká, co se děje a jak dlouho, dvakrát: jak dlouho běží
+aktuální krok a jak dlouho celý požadavek — *„Running
+run_aerodynamic_simulation — step 2:41 · total 4:05"*. Záložka Aerodynamics
+dělá totéž vedle ukazatele průběhu.
+
+Když běží výpočet, ať ho spustil kdokoli, živý graf konvergence ukazuje
+reziduum hustoty a součinitele sil a pod ním řádek s iterací, rychlostí
+v iteracích za sekundu a tím, jestli reziduum klesá (*converging*), stojí
+(*stalled*) nebo roste (*diverging*).
+
+Výsledky, které asistent podá jako tabulku, se vykreslí jako tabulka.
+
 ### Kolik to právě stojí
 
 Během běhu požadavku ukazuje řádek pod přepisem, co zatím spotřeboval:

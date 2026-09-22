@@ -271,6 +271,8 @@ def find_solution_file(directory: Path | str) -> Path:
 
 def _new_plotter(settings: RenderSettings) -> pv.Plotter:
     """Create an off-screen plotter styled for the application theme."""
+    global _CURRENT_WINDOW
+    _CURRENT_WINDOW = settings.window_size()
     plotter = pv.Plotter(off_screen=True, window_size=settings.window_size())
     if settings.background:
         plotter.set_background(BACKGROUND_TOP, top=BACKGROUND_BOTTOM)
@@ -280,22 +282,47 @@ def _new_plotter(settings: RenderSettings) -> pv.Plotter:
         plotter.add_axes(color=TEXT_COLOUR)
     if settings.title:
         plotter.add_text(
-            settings.title, position="upper_left", font_size=12, color=TEXT_COLOUR
+            settings.title,
+            position="upper_left",
+            font_size=int(round(CAPTION_SIZE * _font_scale() * 0.6)),
+            color=TEXT_COLOUR,
         )
     return plotter
 
 
+# Legend and caption sizes for a 1080-pixel-high image; larger images scale
+# them up. They used to be fixed, and on a 4K render the legend came out a
+# quarter of the height it should have been -- too small to read.
+LEGEND_TITLE_SIZE = 30
+LEGEND_LABEL_SIZE = 24
+CAPTION_SIZE = 22
+
+
+def _font_scale() -> float:
+    """How much larger than a 1080-pixel image the one being drawn is."""
+    height = _CURRENT_WINDOW[1] if _CURRENT_WINDOW else 1080
+    return max(0.6, height / 1080.0)
+
+
+# Set by _new_plotter so the legend helper knows the image size.
+_CURRENT_WINDOW: tuple[int, int] | None = None
+
+
 def _scalar_bar_arguments(title: str) -> dict:
-    """Scalar-bar styling, readable against the dark background."""
+    """Scalar-bar styling, readable against the dark background at any size."""
+    scale = _font_scale()
     return {
         "title": title,
         "color": TEXT_COLOUR,
-        "title_font_size": 20,
-        "label_font_size": 16,
+        "title_font_size": int(round(LEGEND_TITLE_SIZE * scale)),
+        "label_font_size": int(round(LEGEND_LABEL_SIZE * scale)),
         "n_labels": 6,
         "fmt": "%.4g",
         "vertical": True,
-        "position_x": 0.86,
+        # Without this VTK shrinks the text to fit the bar's width, whatever
+        # size was asked for -- the other half of why it was unreadable.
+        "unconstrained_font_size": True,
+        "position_x": 0.84,
         "position_y": 0.12,
         "height": 0.76,
         "width": 0.06,

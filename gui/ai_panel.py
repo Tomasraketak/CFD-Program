@@ -41,13 +41,20 @@ from core.credentials import (
     mask_api_key,
     save_api_key,
 )
+from core.chat_history import ChatHistory, Conversation
 from core.settings import AppSettings, save_settings
+from gui.charts import ResidualChart, format_duration
+from gui.markdown_render import markdown_to_html
 from gui.theme import ACCENT, DANGER, SUCCESS, TEXT_MUTED, WARNING
 
 OPENROUTER_KEYS_URL = "https://openrouter.ai/keys"
 
 # Link scheme for "show this image in the Graphics tab" in the transcript.
 GRAPHICS_SCHEME = "ats-graphics"
+# Link schemes for opening a stored run, or a saved project, from a
+# conversation picked up again.
+RUN_SCHEME = "ats-run"
+PROJECT_SCHEME = "ats-project"
 
 # Width of a rendered image shown inline in the transcript, in pixels.
 TRANSCRIPT_IMAGE_WIDTH = 420
@@ -147,6 +154,11 @@ class AITab(QtWidgets.QWidget):
     imageProduced = QtCore.Signal(str)
     # The operator clicked through to the Graphics tab from the transcript.
     showGraphics = QtCore.Signal(str)
+    # Open a stored mesh or simulation, or a saved project, in the program.
+    openRun = QtCore.Signal(str)
+    openProject = QtCore.Signal(str)
+    # Solver events from a tool call, crossing from the solver's thread.
+    _solverEvent = QtCore.Signal(str, object)
 
     def __init__(
         self,
@@ -164,6 +176,14 @@ class AITab(QtWidgets.QWidget):
         self._started_at: float | None = None
         self._meter_timer = QtCore.QTimer(self)
         self._meter_timer.timeout.connect(self._refresh_meter)
+        # What the assistant is doing right now, and since when -- a tool
+        # call can run for many minutes and the clock must keep moving.
+        self._step_text = ""
+        self._step_started: float | None = None
+        self.chat_history = ChatHistory(data_root)
+        self.conversation = Conversation()
+        self._pending_messages: list[dict[str, Any]] | None = None
+        self._chart_active = False
 
         splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
         splitter.addWidget(self._build_settings_panel())
@@ -178,6 +198,18 @@ class AITab(QtWidgets.QWidget):
 
         self.refresh_key_status()
         self._show_welcome()
+        self.refresh_history()
+
+        # Solves the assistant starts report their iterations here, for the
+        # live chart. The listener runs on the solver thread; the signal
+        # carries the event across to this one.
+        self._solverEvent.connect(self._on_solver_event)
+        try:
+            import mcp_server
+
+            mcp_server.add_solver_listener(self._solverEvent.emit)
+        except Exception:  # pragma: no cover - MCP stack unavailable
+            pass
 
     # -- construction ------------------------------------------------------
 
@@ -316,12 +348,39 @@ class AITab(QtWidgets.QWidget):
         layout = QtWidgets.QVBoxLayout(panel)
         layout.setSpacing(6)
 
+        history_row = QtWidgets.QHBoxLayout()
+        history_label = QtWidgets.QLabel("Conversation")
+        history_label.setObjectName("hint")
+        self.history_combo = QtWidgets.QComboBox()
+        self.history_combo.setToolTip(
+            "Earlier conversations, newest first. Picking one brings back the "
+            "transcript and what the assistant knew, so you can carry on -- "
+            "with the same meshes and simulations. Stored on this computer only."
+        )
+        self.history_combo.activated.connect(self._on_history_chosen)
+        self.delete_chat_button = QtWidgets.QPushButton("Delete")
+        self.delete_chat_button.setToolTip("Delete the selected saved conversation")
+        self.delete_chat_button.clicked.connect(self.delete_conversation)
+        history_row.addWidget(history_label)
+        history_row.addWidget(self.history_combo, 1)
+        history_row.addWidget(self.delete_chat_button)
+        layout.addLayout(history_row)
+
         self.transcript = QtWidgets.QTextBrowser()
         # Links are handled here rather than by the browser, which would
         # try to navigate to them: an image link opens the Graphics tab.
         self.transcript.setOpenLinks(False)
         self.transcript.anchorClicked.connect(self._on_link)
         layout.addWidget(self.transcript, 1)
+
+        # The live convergence chart, shown while a solve the assistant
+        # started is running.
+        self.solve_chart = ResidualChart()
+        self.solve_chart.setMinimumHeight(170)
+        self.solve_chart.setMaximumHeight(240)
+        self.solve_chart.setVisible(False)
+        self._chart_active = False
+        layout.addWidget(self.solve_chart)
 
         status_row = QtWidgets.QHBoxLayout()
         self.activity = QtWidgets.QLabel()
@@ -514,14 +573,25 @@ class AITab(QtWidgets.QWidget):
         self.meter.clear()
         if self.assistant is not None:
             self.assistant.reset()
+        self._pending_messages = None
+        self.conversation = Conversation()
+        self.solve_chart.clear()
+        self.solve_chart.setVisible(False)
+        self._chart_active = False
         self._show_welcome()
         self.activity.clear()
+        self.refresh_history()
         self.statusMessage.emit("Started a new conversation")
 
     def _ensure_assistant(self) -> bool:
         """Build the assistant if needed, reporting any problem."""
         if self.assistant is not None:
             self._apply_settings_to_assistant()
+            if self._pending_messages is not None:
+                self.assistant.messages = (
+                    self.assistant.messages[:1] + self._pending_messages
+                )
+                self._pending_messages = None
             return True
 
         from backend.ai_agent import create_assistant
@@ -540,6 +610,9 @@ class AITab(QtWidgets.QWidget):
             return False
 
         self._apply_settings_to_assistant()
+        if self._pending_messages is not None:
+            self.assistant.messages = self.assistant.messages[:1] + self._pending_messages
+            self._pending_messages = None
         return True
 
     def selected_model(self) -> str:
@@ -627,6 +700,8 @@ class AITab(QtWidgets.QWidget):
         self._persist_settings()
         self.input.clear()
         self._append_user(prompt)
+        self.solve_chart.setVisible(False)
+        self._chart_active = False
         self._set_busy(True)
 
         worker = AIWorker(self.assistant, prompt)
@@ -673,6 +748,24 @@ class AITab(QtWidgets.QWidget):
         self._metrics = metrics
         self._refresh_meter()
 
+    def _begin_step(self, text: str) -> None:
+        """Start timing one step of the request."""
+        self._step_text = text
+        self._step_started = time.monotonic()
+        self._refresh_activity()
+
+    def _refresh_activity(self) -> None:
+        """'Running X — step 42 s · total 3:05', kept ticking by the timer."""
+        if not self._busy or self._started_at is None:
+            return
+        now = time.monotonic()
+        total = format_duration(now - self._started_at)
+        if self._step_text and self._step_started is not None:
+            step = format_duration(now - self._step_started)
+            self.activity.setText(f"{self._step_text} — step {step} · total {total}")
+        else:
+            self.activity.setText(f"Working — total {total}")
+
     def _refresh_meter(self) -> None:
         """Redraw the meter, advancing the clock between rounds.
 
@@ -680,6 +773,7 @@ class AITab(QtWidgets.QWidget):
         without this the display would sit still through a four-minute mesh
         and look broken.
         """
+        self._refresh_activity()
         elapsed = (
             0.0 if self._started_at is None else time.monotonic() - self._started_at
         )
@@ -696,8 +790,7 @@ class AITab(QtWidgets.QWidget):
         self._started_at = None
 
     def _on_progress(self, message: str) -> None:
-        """Show what the assistant is doing right now."""
-        self.activity.setText(message)
+        """Pass progress on to the status bar; the activity line has its clock."""
         self.statusMessage.emit(message)
 
     def _on_event(self, event: Any) -> None:
@@ -711,6 +804,7 @@ class AITab(QtWidgets.QWidget):
         """
         kind = getattr(event, "kind", "")
         if kind == EVENT_ROUND:
+            self._begin_step(f"Waiting for {self.selected_model()}")
             self._append(
                 f'<p style="margin-top:10px;color:{TEXT_MUTED};font-size:11px;">'
                 f"— round {event.round} —</p>"
@@ -722,6 +816,7 @@ class AITab(QtWidgets.QWidget):
                 f'{html.escape(event.message).replace(chr(10), "<br>")}</i></p>'
             )
         elif kind == EVENT_TOOL_STARTED:
+            self._begin_step(f"Running {event.tool}")
             self._append(
                 f'<p style="margin-top:6px;color:{ACCENT};">▸ '
                 f"{html.escape(_render_call(event.tool, event.arguments))}</p>"
@@ -737,6 +832,7 @@ class AITab(QtWidgets.QWidget):
                 f'<p style="margin:0 0 0 14px;color:{colour};">'
                 f"{html.escape(detail)}</p>"
             )
+            self._begin_step(f"Waiting for {self.selected_model()}")
             image = _image_path(getattr(event, "result", None))
             if image is not None and not event.failed:
                 self._append_image(image)
@@ -756,6 +852,7 @@ class AITab(QtWidgets.QWidget):
         # The tool calls were written as they happened; listing them again
         # here would show the whole run twice.
         self._append_assistant(reply.text or "(no answer)")
+        self._step_text = ""
 
         if reply.stopped_early:
             self._append_note(
@@ -765,13 +862,151 @@ class AITab(QtWidgets.QWidget):
         tokens = reply.usage.get("total_tokens")
         if tokens:
             self.statusMessage.emit(f"Done — {int(tokens)} tokens used")
+        self.save_conversation()
 
     def _on_failed(self, message: str) -> None:
         """Report a failed request."""
         self._set_busy(False)
         self.activity.clear()
+        self._step_text = ""
         self._stop_meter()
         self._append_error(message)
+        self.save_conversation()
+
+    # -- saved conversations -------------------------------------------------
+
+    def refresh_history(self) -> None:
+        """Fill the conversation list: the current one, then saved ones."""
+        blocked = self.history_combo.blockSignals(True)
+        try:
+            self.history_combo.clear()
+            self.history_combo.addItem("Current conversation", None)
+            for saved in self.chat_history.list():
+                if saved.chat_id == self.conversation.chat_id:
+                    continue
+                stamp = saved.updated_at.replace("T", " ")[:16]
+                self.history_combo.addItem(f"{stamp}  {saved.title}", saved.chat_id)
+            self.history_combo.setCurrentIndex(0)
+        finally:
+            self.history_combo.blockSignals(blocked)
+
+    def save_conversation(self) -> None:
+        """Store the conversation so far; nothing is saved before a first reply."""
+        messages = (
+            self.assistant.history()
+            if self.assistant is not None
+            else list(self._pending_messages or [])
+        )
+        if not messages:
+            return
+        self.conversation.messages = [dict(message) for message in messages]
+        self.conversation.transcript_html = self.transcript.toHtml()
+        self.conversation.model = self.selected_model()
+        try:
+            self.chat_history.save(self.conversation)
+        except OSError as error:
+            self._append_note(f"Could not save this conversation: {error}")
+            return
+        self.refresh_history()
+
+    def _on_history_chosen(self, index: int) -> None:
+        chat_id = self.history_combo.itemData(index)
+        if chat_id:
+            self.open_conversation(chat_id)
+
+    def open_conversation(self, chat_id: str) -> None:
+        """Bring a saved conversation back, ready to continue."""
+        if self._busy:
+            self._warn("Wait for the current request to finish, or stop it.")
+            self.refresh_history()
+            return
+        self.save_conversation()
+        try:
+            conversation = self.chat_history.load(chat_id)
+        except (OSError, ValueError) as error:
+            self._warn(f"That conversation could not be read: {error}")
+            return
+        self.conversation = conversation
+        if self.assistant is not None:
+            self.assistant.messages = self.assistant.messages[:1] + list(
+                conversation.messages
+            )
+            self._pending_messages = None
+        else:
+            self._pending_messages = list(conversation.messages)
+        self._metrics = None
+        self.meter.clear()
+        self.solve_chart.setVisible(False)
+        self._chart_active = False
+        self.transcript.setHtml(conversation.transcript_html)
+        self._append_related_work(conversation)
+        self.refresh_history()
+        self.statusMessage.emit(f"Continuing: {conversation.title}")
+
+    def _append_related_work(self, conversation: Conversation) -> None:
+        """List what the conversation worked on, each one openable."""
+        runs = conversation.run_ids()
+        projects = conversation.project_paths()
+        if not runs and not projects:
+            self._append_note("Conversation restored. Carry on where you left off.")
+            return
+        items = []
+        for run in runs:
+            target = html.escape(QtCore.QUrl(f"{RUN_SCHEME}:{run}").toString())
+            items.append(f'<li><a href="{target}" style="color:{ACCENT};">{html.escape(run)}</a></li>')
+        for path in projects:
+            target = html.escape(QtCore.QUrl(f"{PROJECT_SCHEME}:{path}").toString())
+            items.append(
+                f'<li><a href="{target}" style="color:{ACCENT};">'
+                f"{html.escape(Path(path).name)}</a> (project)</li>"
+            )
+        self._append(
+            f'<p style="margin-top:12px;color:{WARNING};"><i>Conversation '
+            "restored. The assistant remembers it and these results -- click "
+            "one to open it in the program, or just carry on asking.</i></p>"
+            f"<ul>{''.join(items)}</ul>"
+        )
+
+    def delete_conversation(self) -> None:
+        """Delete the saved conversation picked in the list."""
+        chat_id = self.history_combo.currentData()
+        if not chat_id:
+            self._warn("Pick a saved conversation in the list first.")
+            return
+        self.chat_history.delete(chat_id)
+        self.refresh_history()
+        self.statusMessage.emit("Conversation deleted")
+
+    # -- live solver -------------------------------------------------------
+
+    def _on_solver_event(self, kind: str, payload: Any) -> None:
+        """Plot a solve the assistant is running, as it runs."""
+        if kind == "iteration":
+            if not self._chart_active:
+                self.solve_chart.clear()
+                self.solve_chart.setVisible(True)
+                self._chart_active = True
+            self.solve_chart.add_record(payload)
+            if self._busy:
+                self._step_text = (
+                    f"Solving — {self.solve_chart.status.text()}"
+                )
+        elif kind == "line":
+            from backend.aero_solver import STAGE_MARKER_PREFIX
+
+            if str(payload).startswith(STAGE_MARKER_PREFIX):
+                self.solve_chart.begin_stage()
+
+    def closeEvent(self, event: QtGui.QCloseEvent) -> None:  # noqa: N802
+        """Stop listening to the solver and keep the conversation."""
+        try:
+            import mcp_server
+
+            mcp_server.remove_solver_listener(self._solverEvent.emit)
+        except Exception:  # pragma: no cover
+            pass
+        self.save_conversation()
+        super().closeEvent(event)
 
     # -- transcript --------------------------------------------------------
 
@@ -790,9 +1025,10 @@ class AITab(QtWidgets.QWidget):
 
     def _append_assistant(self, text: str) -> None:
         """Add the assistant's reply."""
+        # Rendered from Markdown, so a table of results is a table.
         self._append(
-            f'<p style="margin-top:8px;"><b style="color:{SUCCESS};">Assistant</b>'
-            f'<br>{html.escape(text).replace(chr(10), "<br>")}</p>'
+            f'<p style="margin-top:8px;"><b style="color:{SUCCESS};">Assistant</b></p>'
+            f"{markdown_to_html(text)}"
         )
 
     def _append_tool_calls(self, calls: list[Any]) -> None:
@@ -831,6 +1067,12 @@ class AITab(QtWidgets.QWidget):
         """Follow a link clicked in the transcript."""
         if url.scheme() == GRAPHICS_SCHEME:
             self.showGraphics.emit(url.path())
+            return
+        if url.scheme() == RUN_SCHEME:
+            self.openRun.emit(url.path())
+            return
+        if url.scheme() == PROJECT_SCHEME:
+            self.openProject.emit(url.path())
             return
         QtGui.QDesktopServices.openUrl(url)
 

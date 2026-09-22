@@ -226,7 +226,20 @@ and needs no terminal at all.
 
 ### Update
 
-Activate as above, then:
+**The one-line shortcut**, once the program is installed in
+`%USERPROFILE%\CFD-Program`. Paste it into a *Command Prompt* (`cmd`, not
+PowerShell — `cd /d`, `&&` and `call` are cmd syntax): it pulls the latest
+version, activates the environment, brings the packages and SU2 up to date,
+and starts the program.
+
+```bat
+cd /d "%USERPROFILE%\CFD-Program" && git pull && call .venv\Scripts\activate.bat && python setup_env.py && python run_app.py --gui
+```
+
+Each step runs only if the one before it succeeded, so a failed `git pull`
+stops there rather than starting an old version.
+
+Or step by step — activate as above, then:
 
 ```powershell
 git pull
