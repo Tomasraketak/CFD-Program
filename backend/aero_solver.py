@@ -10,6 +10,7 @@ axis is an arbitrary line that SU2 knows nothing about.
 from __future__ import annotations
 
 import math
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -635,7 +636,16 @@ def _warning_notes(parser: SU2OutputParser) -> list[str]:
     SU2 telling the operator something about their mesh is not ours to
     swallow, which is what used to happen to every one of these.
     """
-    return [f"Solver warning: {text}" for text in parser.warnings[:5]]
+    # The last occurrence of each kind, not the first few lines. SU2 repeats
+    # its y+ warning every iteration, and the first one describes the
+    # freestream start: a Mach 1.3 run reported "y+ < 5 in 12252 points"
+    # from iteration one while its converged wall had a few hundred.
+    latest: dict[str, str] = {}
+    for text in parser.warnings:
+        kind = re.sub(r"\d+(\.\d+)?", "#", text)
+        latest.pop(kind, None)
+        latest[kind] = text
+    return [f"Solver warning: {text}" for text in list(latest.values())[-5:]]
 
 
 def _collect_coefficients(

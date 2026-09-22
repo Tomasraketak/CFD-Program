@@ -101,8 +101,10 @@ Vlastní vektor se automaticky normalizuje; záleží jen na směru. Nulový vek
 je odmítnut.
 
 **I tohle se vyplní samo.** Při importu program najde nejdelší osu modelu a
-porovná, jak tlustý je každý konec: špička se zužuje, záď nese křidélka a
-plochou základnu, takže tenčí konec je špička. Podle toho se nastaví
+hledá křidélka: konec, který je nese, je záď. Teprve když křidélka nejsou ani
+na jednom konci, porovná tloušťku konců, protože špička se zužuje a záď ne.
+Křidélka mají přednost, protože samotnou tloušťku může zmást tryska motoru,
+která je tenká a sedí úplně na konci zádě. Podle toho se nastaví
 přepínače a poznámka pod názvem souboru řekne, co našel — *„nose at +Y"*.
 
 Když jsou oba konce stejné — hladká trubka, těleso se zúženou zádí —
@@ -317,6 +319,17 @@ Hlásí se po vysíťování: nejhorší buňka jako podíl dokonale tvarované.
 | 0,1 – 0,3 | Přijatelné |
 | < 0,05 | Očekávejte potíže s konvergencí |
 
+Minimum určuje jediná nejhorší prizma a ta je skoro vždy v konkávním koutě —
+tryska navazující na plochou základnu, kořen křidélka — kde se vrstvy
+stlačí bez ohledu na zbytek sítě. Čtěte ho spolu s **počtem špatných prizem**
+(kvalita pod 0,3): hrstka z několika set tisíc je lokální kout, ne špatná
+síť, a není důvod síť zahodit.
+
+Dál od stěny rostou čtyřstěny úměrně vzdálenosti od tělesa, rychlostí danou
+rozlišením (coarse nejrychleji, fine nejpomaleji). Bez toho byly buňky
+kousek před špičkou 75mm rakety větší než raketa sama a žádná rázová vlna
+na nich nemohla přežít.
+
 ---
 
 ## 7. Řešič
@@ -512,7 +525,16 @@ spolu spolupracují, nejsou to alternativy.
 | Režim | Ukazuje |
 |---|---|
 | `surface_pressure` | C_p nebo absolutní tlak na tělese |
-| `mach_slice` | Machovo číslo v rovině řezu |
+| `mach_slice` | Machovo číslo v rovině řezu, s izočarami |
+| `schlieren` | Gradient hustoty v rovině řezu, jako schlieren snímek z aerodynamického tunelu |
+
+**Proč schlieren pro rázy.** Štíhlá ogivální špička při Mach 1,3 vytvoří
+slabý šikmý ráz: Machovo číslo přes něj klesne o pár setin, což barevná škála
+roztažená od stagnačního bodu po volný proud skoro neukáže. Gradient hustoty
+přes jakýkoli ráz vyskočí o řády, takže Machův kužel od špičky i od křidélek
+je jasně vidět. Rozsah barev Machova řezu se bere z obrázku samotného
+(2.–98. percentil podle plochy), ne z extrémů, a izočáry se zhušťují tam, kde
+je ráz.
 | `streamlines` | Proudnice barvené rychlostí nebo teplotou |
 | `thermal` | Teplotní pole s vyznačeným senzorem |
 

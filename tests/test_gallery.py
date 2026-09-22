@@ -203,6 +203,7 @@ def test_render_standard_draws_the_shock_and_the_surface(graphics_tab, monkeypat
     graphics_tab.render_standard("aero-1")
     jobs = started[0].jobs
     assert [(job["visualization_type"], job["camera_view"]) for job in jobs] == [
+        ("schlieren", "side"),
         ("mach_slice", "side"),
         ("surface_pressure", "isometric"),
     ]

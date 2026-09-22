@@ -144,7 +144,7 @@ Import CAD, align it, build the domain, generate the mesh.
 
 Returns `mesh_id`, `cell_count`, `within_target_band`, `reference_length_m`,
 `reference_diameter_m`, `reference_area_m2`, `estimated_yplus`,
-`boundary_markers`, `min_quality`, `wall_time_s`, plus `step_file_path`,
+`boundary_markers`, `min_quality`, `poor_prism_count`, `wall_time_s`, plus `step_file_path`,
 `scale_to_meters`, `nose_direction` and the notes saying how the last two
 were arrived at.
 
@@ -265,7 +265,7 @@ Render an image from a completed simulation.
 | Parameter | Type | Default | Notes |
 |---|---|---|---|
 | `sim_id` | string | — | **Required** |
-| `visualization_type` | string | `"surface_pressure"` | `surface_pressure`, `mach_slice`, `streamlines`, `thermal` |
+| `visualization_type` | string | `"surface_pressure"` | `surface_pressure`, `mach_slice`, `schlieren`, `streamlines`, `thermal` |
 | `camera_view` | string | `"isometric"` | `isometric`, `front`, `back`, `side`, `top`, `bottom`, `nose_quarter`, `tail_quarter` |
 | `slice_normal` | list[3] | `[0,1,0]` | Cutting-plane normal |
 | `colormap` | string | `"turbo"` | `turbo`, `coolwarm`, `viridis`, `jet`, `plasma`, `inferno` |

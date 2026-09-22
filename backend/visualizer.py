@@ -81,6 +81,10 @@ FRAMES = ("solver", "rocket")
 # quarters of a length on each side keeps it in view along most of the body.
 SLICE_BODY_MARGIN = 0.75
 
+# Iso-Mach lines drawn over a slice. Where they bunch up is a shock; a colour
+# gradient alone makes a weak one easy to miss.
+MACH_CONTOUR_LEVELS = 14
+
 # Candidate field names, most specific first, for each physical quantity.
 _FIELD_CANDIDATES: dict[str, tuple[str, ...]] = {
     "pressure": ("Pressure", "PRESSURE", "p", "Pressure_Pa"),
@@ -391,7 +395,7 @@ def render_mach_slice(
     settings: RenderSettings | None = None,
     slice_normal: Sequence[float] = (0.0, 1.0, 0.0),
     slice_origin: Sequence[float] | None = None,
-    contour_levels: int = 0,
+    contour_levels: int = MACH_CONTOUR_LEVELS,
     show_body: bool = True,
     crop_margin: float | None = SLICE_BODY_MARGIN,
 ) -> Path:
@@ -426,12 +430,14 @@ def render_mach_slice(
     if crop_margin is not None and body is not None and body.n_points:
         plane = _crop_to_body(plane, body, crop_margin)
 
+    clim = settings.clim or _area_weighted_range(plane, name)
+
     plotter = _new_plotter(settings)
     plotter.add_mesh(
         plane,
         scalars=name,
         cmap=settings.validated_colormap(),
-        clim=settings.clim,
+        clim=clim,
         scalar_bar_args=_scalar_bar_arguments(
             scalar_bar_title("mach", settings.scalar_bar_title)
         ),
@@ -439,9 +445,12 @@ def render_mach_slice(
 
     if contour_levels > 0:
         try:
-            contours = plane.contour(contour_levels, scalars=name)
+            levels = np.linspace(clim[0], clim[1], contour_levels + 2)[1:-1] if clim else contour_levels
+            contours = plane.contour(levels, scalars=name)
             if contours.n_points:
-                plotter.add_mesh(contours, color="white", line_width=1.5)
+                plotter.add_mesh(
+                    contours, color="white", line_width=1.0, opacity=0.45
+                )
         except Exception:  # pragma: no cover - degenerate slices
             pass
 
@@ -449,6 +458,67 @@ def render_mach_slice(
         plotter.add_mesh(body, color="#8a8f98", opacity=0.55, smooth_shading=True)
 
     apply_camera(plotter, plane, settings)
+    return _save(plotter, Path(output_path))
+
+
+def render_schlieren(
+    dataset: pv.DataSet,
+    output_path: Path | str,
+    settings: RenderSettings | None = None,
+    slice_normal: Sequence[float] = (0.0, 1.0, 0.0),
+    slice_origin: Sequence[float] | None = None,
+    show_body: bool = True,
+    crop_margin: float | None = SLICE_BODY_MARGIN,
+) -> Path:
+    """Numerical schlieren: the density gradient on a cutting plane.
+
+    What a wind-tunnel schlieren photograph shows, and the clearest picture
+    of a shock system there is. On a slender rocket at low supersonic speed
+    the shocks are weak -- Mach falls by a few hundredths across the nose
+    shock -- and a Mach-number colour map barely shows them; the density
+    gradient jumps by orders of magnitude across any shock, however weak.
+    Drawn on a logarithmic grey scale, dark where the gradient is strong.
+    """
+    settings = settings or RenderSettings()
+    name = resolve_field(dataset, "density")
+
+    origin = (
+        np.array(slice_origin, dtype=float)
+        if slice_origin is not None
+        else np.array(dataset.center, dtype=float)
+    )
+    plane = dataset.slice(normal=tuple(slice_normal), origin=tuple(origin))
+    if plane.n_points == 0:
+        raise VisualizationError(
+            "the cutting plane does not intersect the solution domain"
+        )
+    body = _extract_walls(dataset)
+    if crop_margin is not None and body is not None and body.n_points:
+        plane = _crop_to_body(plane, body, crop_margin)
+
+    derived = plane.compute_derivative(scalars=name, gradient="gradient")
+    gradient = np.linalg.norm(np.asarray(derived.point_data["gradient"]), axis=1)
+    floor = max(float(np.percentile(gradient, 5)), 1.0e-12)
+    derived.point_data["schlieren"] = np.log10(np.maximum(gradient, floor))
+    finite = derived.point_data["schlieren"]
+    clim = settings.clim or (
+        float(np.percentile(finite, 5)),
+        float(np.percentile(finite, 99.5)),
+    )
+
+    plotter = _new_plotter(settings)
+    plotter.add_mesh(
+        derived,
+        scalars="schlieren",
+        cmap="gray_r",
+        clim=clim,
+        scalar_bar_args=_scalar_bar_arguments(
+            settings.scalar_bar_title or "log10 |grad rho|"
+        ),
+    )
+    if show_body and body is not None and body.n_points:
+        plotter.add_mesh(body, color="#4da3ff", smooth_shading=True)
+    apply_camera(plotter, derived, settings)
     return _save(plotter, Path(output_path))
 
 
@@ -617,6 +687,42 @@ def render_thermal(
     return _save(plotter, Path(output_path))
 
 
+def _area_weighted_range(
+    plane: pv.DataSet, name: str, low: float = 2.0, high: float = 98.0
+) -> tuple[float, float] | None:
+    """The colour range that covers most of the picture, by area.
+
+    Min to max is dominated by the stagnation zero at the nose and in the
+    base wake, which squeezes the whole shock system -- Mach 1.3 against
+    1.15 behind a slender-body shock -- into two neighbouring shades of red.
+    Percentiles are taken by area rather than by point, because points crowd
+    into the boundary layer where the flow is slowest.
+    """
+    try:
+        cells = plane.point_data_to_cell_data()
+        values = np.asarray(cells.cell_data[name], dtype=float)
+        areas = np.asarray(
+            plane.compute_cell_sizes(length=False, volume=False).cell_data["Area"],
+            dtype=float,
+        )
+    except Exception:  # pragma: no cover - unusual datasets
+        return None
+    finite = np.isfinite(values) & (areas > 0.0)
+    if np.count_nonzero(finite) < 2:
+        return None
+    values, areas = values[finite], areas[finite]
+    order = np.argsort(values)
+    cumulative = np.cumsum(areas[order]) / areas.sum()
+    lower = float(values[order][np.searchsorted(cumulative, low / 100.0)])
+    upper = float(values[order][min(np.searchsorted(cumulative, high / 100.0), values.size - 1)])
+    if not upper > lower:
+        return None
+    # Freestream fills most of the area, so the low percentile sits close to
+    # it; keeping the range at least 40% of the top value deep leaves room
+    # for the flow behind a shock and around the body to read as colour.
+    return min(lower, 0.6 * upper), upper
+
+
 def _extract_walls(dataset: pv.DataSet) -> pv.PolyData | None:
     """The solid body's surface, without the farfield around it.
 
@@ -647,8 +753,17 @@ def _extract_walls(dataset: pv.DataSet) -> pv.PolyData | None:
         low, high = np.array(cells.bounds[::2]), np.array(cells.bounds[1::2])
         return float(np.linalg.norm(high - low))
 
-    farfield = max(region_ids, key=diagonal)
-    walls = regions.extract_cells(np.flatnonzero(labels != farfield))
+    # Every piece about as large as the domain is farfield. There can be
+    # more than one: SU2's multiblock output carries the farfield both as the
+    # volume's outer skin and as its own boundary block, and dropping only
+    # the largest piece left the other drawn translucent over every slice
+    # and stretched the crop box to the whole domain.
+    sizes = {region: diagonal(region) for region in region_ids}
+    largest = max(sizes.values())
+    bodies = [region for region, size in sizes.items() if size < 0.5 * largest]
+    if not bodies:
+        return None
+    walls = regions.extract_cells(np.flatnonzero(np.isin(labels, bodies)))
     return walls.extract_surface()
 
 
@@ -748,6 +863,7 @@ def export_scene(
 VISUALIZATION_TYPES = (
     "surface_pressure",
     "mach_slice",
+    "schlieren",
     "streamlines",
     "thermal",
 )
@@ -819,6 +935,10 @@ def render_visualization(
         return render_surface_pressure(dataset, output_path, settings, **kwargs)
     if visualization_type == "mach_slice":
         return render_mach_slice(
+            dataset, output_path, settings, slice_normal=slice_normal, **kwargs
+        )
+    if visualization_type == "schlieren":
+        return render_schlieren(
             dataset, output_path, settings, slice_normal=slice_normal, **kwargs
         )
     if visualization_type == "streamlines":

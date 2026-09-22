@@ -9,6 +9,7 @@ rocket to keep the suite usable, and are marked ``slow``.
 from __future__ import annotations
 
 import math
+from pathlib import Path
 
 import gmsh
 import numpy as np
@@ -666,3 +667,50 @@ def test_a_file_with_no_geometry_is_reported_not_crashed_on(tmp_path):
     path = write_step(tmp_path / "empty.step", MILLIMETRES, [(0, 0, 0), (10, 1, 1)])
     with pytest.raises(MeshPipelineError, match="no geometry"):
         tessellate_geometry(GeometryParams(step_file_path=path))
+
+
+def _marker_centroids(path, marker):
+    """Centroids of one marker's triangles in a written .su2 file."""
+    lines = Path(path).read_text().split("\n")
+    start = next(i for i, line in enumerate(lines) if line.startswith("NPOIN"))
+    count = int(lines[start].split("=")[1].split()[0])
+    points = np.array(
+        [list(map(float, line.split()[:3])) for line in lines[start + 1 : start + 1 + count]]
+    )
+    index = next(i for i, line in enumerate(lines) if line.strip() == f"MARKER_TAG= {marker}")
+    elements = int(lines[index + 1].split("=")[1])
+    triangles = np.array(
+        [list(map(int, line.split()[1:4])) for line in lines[index + 2 : index + 2 + elements]]
+    )
+    return points[triangles].mean(axis=1)
+
+
+@pytest.mark.slow
+def test_fin_and_body_triangles_land_in_their_own_markers(tmp_path):
+    """The markers are cut from the wall triangles by count, so order matters.
+
+    Concatenating in CAD face order interleaved body and fin faces, and a
+    real rocket came out with thousands of nose and body triangles in
+    WALL_FINS -- which is what a fin hinge torque restricted to the fins
+    would have integrated.
+    """
+    from backend.mesh_pipeline import MARKER_WALL_FINS
+    from backend.sample_geometry import create_reference_rocket_step
+
+    step = create_reference_rocket_step(tmp_path / "rocket.step")
+    output = tmp_path / "rocket.su2"
+    generate_mesh(
+        MeshRequest(
+            geometry=GeometryParams(step_file_path=str(step)),
+            domain=DomainParams(),
+            mesh=MeshParams(boundary_layers=5, max_targeting_iterations=0),
+            sizing_flow=FlowParams(velocity_value=1.3),
+        ),
+        output,
+    )
+    body = _marker_centroids(output, MARKER_WALL_ROCKET)
+    fins = _marker_centroids(output, MARKER_WALL_FINS)
+    body_radius = 0.04  # the sample's 80 mm airframe
+    # No fin surface in the body marker, no nose or body tube in the fins.
+    assert np.hypot(body[:, 1], body[:, 2]).max() < 1.1 * body_radius
+    assert fins[:, 0].min() > 0.6  # fins sit on the aft 40% of the 1 m body

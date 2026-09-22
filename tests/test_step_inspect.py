@@ -330,3 +330,52 @@ def test_the_real_sample_rocket_points_the_way_the_tests_assume(tmp_path):
     assert decision.confident
     assert decision.nose_end == "-X"
     assert decision.nose_direction == "+X"
+
+
+def finned_rocket_with_nozzle(nozzle_length=200.0):
+    """A body with fins at the low end and a long thin nozzle beyond them.
+
+    The nose is only mildly tapered and the nozzle is thin, so by thickness
+    alone the nozzle end looks like the nose. The fins say otherwise.
+    """
+    import math
+
+    points = []
+    for step in range(0, 41):
+        axial = step / 40.0 * 1320.0
+        taper = max(0.0, (axial - 1100.0) / 220.0)
+        radius = 40.0 * (1.0 - taper) + 22.0 * taper
+        for angle in range(0, 360, 45):
+            points.append(
+                (axial, radius * math.cos(math.radians(angle)),
+                 radius * math.sin(math.radians(angle)))
+            )
+    for axial in (100.0, 180.0, 250.0):  # four fins near the tail
+        for angle in (0.0, 90.0, 180.0, 270.0):
+            points.append(
+                (axial, 120.0 * math.cos(math.radians(angle)),
+                 120.0 * math.sin(math.radians(angle)))
+            )
+    for step in range(1, 31):  # the nozzle, sticking out behind
+        axial = -step / 30.0 * nozzle_length
+        for angle in range(0, 360, 45):
+            points.append(
+                (axial, 8.0 * math.cos(math.radians(angle)),
+                 8.0 * math.sin(math.radians(angle)))
+            )
+    return points
+
+
+def test_a_motor_nozzle_does_not_pass_for_the_nose(tmp_path):
+    """The thin end is the nozzle here; the fins mark it as the tail."""
+    target = axis_file(tmp_path, finned_rocket_with_nozzle())
+    decision = detect_body_axis(target)
+    assert decision.nose_end == "+X"
+    assert decision.nose_direction == "-X"
+    assert decision.confident
+    assert "fins" in decision.reason
+
+
+def test_fins_decide_whichever_way_the_rocket_is_drawn(tmp_path):
+    flipped = [(-x, y, z) for x, y, z in finned_rocket_with_nozzle()]
+    assert detect_body_axis(axis_file(tmp_path, flipped)).nose_end == "-X"

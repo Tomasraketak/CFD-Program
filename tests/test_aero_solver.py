@@ -1261,3 +1261,18 @@ def test_the_moment_origin_follows_a_rocket_frame_hinge(mesh_file, tmp_path):
     config = (work / "solver.cfg").read_text()
     line = next(row for row in config.splitlines() if row.startswith("REF_ORIGIN_MOMENT_X"))
     assert float(line.split("=")[1]) == pytest.approx(0.9)
+
+
+def test_solver_warnings_are_reported_as_they_ended_not_as_they_began():
+    """The y+ warning repeats every iteration; the last one is the answer."""
+    from backend.aero_solver import _warning_notes
+    from backend.su2_parser import SU2OutputParser
+
+    parser = SU2OutputParser()
+    for count in (12252, 4000, 900, 312):
+        parser.feed(f"Warning: y+ < 5 in {count} points, for which the wall model is not active.")
+    parser.feed("WARNING: SURFACE_PRESSURE_DROP can only be computed for at least 2 surfaces")
+    notes = _warning_notes(parser)
+    assert len(notes) == 2
+    assert any("312 points" in note for note in notes)
+    assert not any("12252" in note for note in notes)

@@ -1016,6 +1016,7 @@ def generate_mesh(
             if isinstance(value, int)
         },
         min_quality=best["min_quality"],
+        poor_prism_count=best.get("poor_prisms", 0),
         targeting_iterations=attempts,
         wall_time_s=time.perf_counter() - started,
     )
@@ -1198,10 +1199,17 @@ def _build_surface_mesh(
             gmsh.model.mesh.generate(2)
 
         points, _, per_surface = extract_triangulation(wall_tags)
+        # Airframe first, then fins: the markers are cut from this array by
+        # count alone, so the order is the tagging. Concatenating in CAD face
+        # order -- body and fin faces interleaved -- put thousands of body
+        # triangles in WALL_FINS and fin triangles in WALL_ROCKET.
+        ordered = [
+            per_surface[tag]
+            for tag in (*airframe_tags, *fin_tags)
+            if tag in per_surface
+        ]
         all_triangles = (
-            np.concatenate(list(per_surface.values()))
-            if per_surface
-            else np.empty((0, 3), dtype=np.int64)
+            np.concatenate(ordered) if ordered else np.empty((0, 3), dtype=np.int64)
         )
         if all_triangles.size == 0:
             raise MeshPipelineError("surface meshing produced no wall triangles")
@@ -1270,10 +1278,10 @@ def _mesh_once(
     # The prism shell is handed to a fresh session for the tet region, so the
     # farfield is meshed against the outer layer rather than the body.
     tet_points, tets, farfield_triangles, shell_indices = _mesh_farfield(
-        request, metrics, prisms, notify
+        request, metrics, prisms, notify, size_scale
     )
 
-    mesh, min_quality = _assemble(
+    mesh, (min_quality, poor_prisms) = _assemble(
         prisms=prisms,
         tet_points=tet_points,
         tets=tets,
@@ -1292,6 +1300,7 @@ def _mesh_once(
         "first_height": first_height,
         "airframe_diameter": 2.0 * airframe_radius,
         "min_quality": min_quality,
+        "poor_prisms": poor_prisms,
         "split": split,
     }
 
@@ -1347,6 +1356,7 @@ def _mesh_farfield(
     metrics: GeometryMetrics,
     prisms: PrismLayerResult,
     notify: callable,
+    size_scale: float = 1.0,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Tetrahedralise between the prism outer shell and the farfield."""
     offset = prisms.layers_built * prisms.wall_node_count
@@ -1381,6 +1391,11 @@ def _mesh_farfield(
         )
         gmsh.model.geo.addVolume([loop])
         gmsh.model.geo.synchronize()
+        _grow_with_distance_from_body(
+            nominal * size_scale,
+            nominal * request.mesh.farfield_size_multiplier,
+            FARFIELD_GROWTH_RATE.get(request.mesh.resolution.value, 0.09),
+        )
 
         try:
             with _timed(notify, "generating tetrahedral farfield mesh"):
@@ -1416,6 +1431,40 @@ def _mesh_farfield(
         )
 
     return tet_points, tets, farfield_triangles, shell_indices
+
+
+# How fast the tetrahedra may grow with distance from the body: each metre
+# away adds this many metres to the cell size. Without any field Gmsh simply
+# interpolated between the prism shell and the farfield, and the cells a
+# hand's width off a 75 mm rocket's nose were 130-400 mm across -- larger
+# than the rocket, and far too coarse to hold a shock wave, which is why a
+# Mach 1.3 solution showed none.
+#
+# Per resolution, so a finer mesh refines the air around the rocket and not
+# only its surface. Measured on a 1.3 m finned rocket, coarse lands near
+# 350k cells; 0.03 would be 1.8 million.
+FARFIELD_GROWTH_RATE = {"coarse": 0.09, "medium": 0.065, "fine": 0.05}
+
+
+def _grow_with_distance_from_body(
+    near_size: float, far_size: float, growth_rate: float
+) -> None:
+    """Make the tetrahedron size grow linearly with distance from the body."""
+    field = gmsh.model.mesh.field
+    distance = field.add("Distance")
+    field.setNumbers(distance, "SurfacesList", [_SHELL_SURFACE_TAG])
+    growth = field.add("MathEval")
+    field.setString(
+        growth,
+        "F",
+        f"Min({far_size:.9g}, {near_size:.9g} + {growth_rate:.9g} * F{distance})",
+    )
+    field.setAsBackgroundMesh(growth)
+    # The field decides; boundary interpolation would otherwise win wherever
+    # it is smaller, which is only near the shell anyway.
+    gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
+    gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)
+    gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 0)
 
 
 # Gmsh element type 4 is the 4-node tetrahedron.
@@ -1483,28 +1532,34 @@ def _assemble(
         mesh.add_marker(MARKER_FARFIELD, VTK_TRIANGLE, tet_map[farfield_triangles])
 
     mesh.validate()
-    quality = _minimum_quality(merged_points, prism_map[prisms.wedges])
+    quality = prism_quality(merged_points, prism_map[prisms.wedges])
     return mesh, quality
 
 
-def _minimum_quality(points: np.ndarray, wedges: np.ndarray) -> float:
-    """Smallest normalised prism volume, a cheap proxy for cell quality.
+# Prisms below this normalised volume are counted as poor in the report.
+POOR_PRISM_QUALITY = 0.3
 
-    Compares each prism's volume against the volume its base area and height
-    would give if it were perfectly extruded; values approach 1 for good
-    cells and 0 for slivers.
+
+def prism_quality(points: np.ndarray, wedges: np.ndarray) -> tuple[float, int]:
+    """The worst prism quality, and how many prisms are poor.
+
+    The minimum alone reads as a verdict on the whole mesh, and it is not:
+    one concave corner -- a nozzle meeting a flat base, a fin root -- squeezes
+    a handful of prisms whatever the rest of the mesh looks like. A 400k-cell
+    mesh was thrown away over a minimum of 0.22 set by fourteen prisms in one
+    such corner.
     """
     if wedges.size == 0:
-        return 0.0
+        return 0.0, 0
     from backend.prism_layers import _wedge_volumes, triangle_normals_and_areas
 
     volumes = _wedge_volumes(points, wedges)
     _, areas = triangle_normals_and_areas(points, wedges[:, :3])
-    heights = np.linalg.norm(
-        points[wedges[:, 3]] - points[wedges[:, 0]], axis=1
-    )
+    heights = np.linalg.norm(points[wedges[:, 3]] - points[wedges[:, 0]], axis=1)
     ideal = areas * heights
     valid = ideal > 0.0
     if not np.any(valid):
-        return 0.0
-    return float(np.min(volumes[valid] / ideal[valid]))
+        return 0.0, 0
+    ratios = volumes[valid] / ideal[valid]
+    return float(np.min(ratios)), int(np.count_nonzero(ratios < POOR_PRISM_QUALITY))
+

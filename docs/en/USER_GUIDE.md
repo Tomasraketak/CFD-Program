@@ -100,9 +100,11 @@ Whatever you choose here, the model is then shown nose-up along +Z.
 > original meaning.
 
 **This is filled in for you too.** On import the program finds the longest
-axis of the model and compares how thick each end is: a nose tapers, a tail
-carries fins and a blunt base, so the thinner end is the nose. The buttons
-are set from that and the note under the file name says which end it found —
+axis of the model and looks for fins: the end that carries them is the tail.
+Only when neither end has fins does it compare how thick each end is, since
+a nose tapers and a tail does not. Fins come first because thickness alone
+can be fooled by a motor nozzle, which is thin and sits at the very end of
+the tail. The buttons are set from that and the note under the file name says which end it found —
 *"nose at +Y"*.
 
 When both ends are alike — a plain tube, a body with a boat tail — it will
@@ -325,6 +327,18 @@ one.
 | 0.1 – 0.3 | Acceptable |
 | < 0.05 | Expect convergence trouble |
 
+The minimum is set by the single worst prism, and that is nearly always in a
+concave corner — a nozzle meeting a flat base, a fin root — where the layers
+are squeezed whatever the rest of the mesh looks like. Read it together with
+the **poor prism count** (quality below 0.3): a handful out of several
+hundred thousand is a local corner, not a bad mesh, and not a reason to
+throw the mesh away.
+
+Away from the wall, the tetrahedra grow in proportion to the distance from
+the body, at a rate set by the resolution (coarse fastest, fine slowest).
+Without that, cells a hand's width off a 75 mm rocket's nose were larger
+than the rocket and no shock wave could survive on them.
+
 ---
 
 ## 7. Solver
@@ -520,7 +534,17 @@ two work together rather than being alternatives.
 | Mode | Shows |
 |---|---|
 | `surface_pressure` | C_p or absolute pressure on the body |
-| `mach_slice` | Mach number on a cutting plane |
+| `mach_slice` | Mach number on a cutting plane, with iso-Mach lines |
+| `schlieren` | Density gradient on a cutting plane, like a wind-tunnel schlieren photograph |
+
+**Why schlieren for shocks.** A slender ogive nose at Mach 1.3 makes a weak
+oblique shock: the Mach number drops by a few hundredths across it, which a
+colour map spread from the stagnation point to freestream barely shows. The
+density gradient jumps by orders of magnitude across any shock, however weak,
+so the Mach cone off the nose and the one off the fins stand out plainly.
+The Mach slice's colour range is taken from the picture itself (2nd–98th
+percentile by area), not its extremes, and iso-Mach lines bunch up where a
+shock is.
 | `streamlines` | Flow paths, coloured by velocity or temperature |
 | `thermal` | Temperature contours with the sensor marked |
 

@@ -1013,6 +1013,19 @@ class MeshResult(StrictModel):
         description="Mapping of physical group name to element count."
     )
     healing_report: dict[str, int] = Field(default_factory=dict)
-    min_quality: float = Field(description="Minimum scaled-Jacobian cell quality.")
+    min_quality: float = Field(
+        description=(
+            "Worst prism quality (volume against an ideal extrusion, 1 is "
+            "perfect). Set by the single worst cell, usually in a concave "
+            "corner; read it together with poor_prism_count."
+        )
+    )
+    poor_prism_count: int = Field(
+        default=0,
+        description=(
+            "Prisms with quality below 0.3. A handful in a mesh of hundreds "
+            "of thousands is a local corner, not a bad mesh."
+        ),
+    )
     targeting_iterations: int
     wall_time_s: float

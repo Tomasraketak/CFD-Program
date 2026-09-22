@@ -567,3 +567,36 @@ def test_an_unknown_frame_is_rejected(rocket_solution, tmp_path):
         render_visualization(
             rocket_solution, "mach_slice", tmp_path / "x.png", frame="body"
         )
+
+
+def test_a_second_copy_of_the_farfield_is_not_taken_for_the_body(rocket_solution):
+    """SU2's multiblock output carries the farfield twice.
+
+    Once as the volume's outer skin, once as its own boundary block. Dropping
+    only the largest piece left the other one to be drawn translucent over
+    every slice, and stretched the crop box to the whole domain -- the
+    washed-out, uncropped pictures an operator sent back.
+    """
+    from backend.visualizer import _extract_walls
+
+    skin = rocket_solution.extract_surface()
+    outer = skin.connectivity("largest").extract_surface()
+    combined = pv.merge([rocket_solution, outer.cast_to_unstructured_grid()],
+                        merge_points=False)
+    walls = _extract_walls(combined)
+    low, high = np.array(walls.bounds[::2]), np.array(walls.bounds[1::2])
+    assert high[0] - low[0] == pytest.approx(1.0, abs=0.11)
+
+
+def test_the_mach_range_follows_the_picture_not_its_extremes():
+    """A stagnation zero must not squeeze a shock into one shade."""
+    from backend.visualizer import _area_weighted_range
+
+    plane = pv.Plane(i_resolution=100, j_resolution=100).triangulate()
+    mach = 1.1 + 0.2 * (plane.points[:, 0] + 0.5)  # 1.1 to 1.3 across
+    mach[:5] = 0.0  # a stagnation point and a sliver of wake
+    plane.point_data["Mach"] = mach
+    low, high = _area_weighted_range(plane, "Mach")
+    assert high == pytest.approx(1.3, abs=0.01)
+    # Not 0 (the extreme), and deep enough to show the flow behind a shock.
+    assert 0.0 < low <= 0.6 * 1.3 + 1e-9

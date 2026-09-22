@@ -382,12 +382,13 @@ Four kinds of image are available:
 | Mode | Shows | Use it for |
 |---|---|---|
 | `surface_pressure` | Pressure or C_p on the body | Where the loads are |
-| `mach_slice` | Mach number on a cutting plane | Shock waves and expansion fans |
+| `mach_slice` | Mach number on a cutting plane | Expansion fans, the wake, flow speed |
+| `schlieren` | Density gradient on a cutting plane | Shock waves — the clearest view of them |
 | `streamlines` | Flow paths | Separation, and airflow into the sensor intake |
 | `thermal` | Temperature contours | The sensor case |
 
 Open the **Graphics** tab. Pick the finished run, the image type
-(`mach_slice` for the shock waves), the view (`side` looks straight at the
+(`schlieren` for the shock waves), the view (`side` looks straight at the
 slice) and the size, then click **Render**. The image appears in the list
 and large beside it; **Export …** saves a copy wherever you want it, as PNG
 or JPEG, and **Copy** puts it on the clipboard for a report. A solve run from

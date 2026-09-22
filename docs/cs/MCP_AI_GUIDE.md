@@ -142,7 +142,7 @@ Načte CAD, zarovná jej, postaví oblast a vytvoří síť.
 
 Vrací `mesh_id`, `cell_count`, `within_target_band`, `reference_length_m`,
 `reference_diameter_m`, `reference_area_m2`, `estimated_yplus`,
-`boundary_markers`, `min_quality`, `wall_time_s`, dále `step_file_path`,
+`boundary_markers`, `min_quality`, `poor_prism_count`, `wall_time_s`, dále `step_file_path`,
 `scale_to_meters`, `nose_direction` a poznámky, jak se k posledním dvěma
 došlo.
 
@@ -262,7 +262,7 @@ Vykreslí obrázek z dokončené simulace.
 | Parametr | Typ | Výchozí | Poznámka |
 |---|---|---|---|
 | `sim_id` | string | — | **Povinné** |
-| `visualization_type` | string | `"surface_pressure"` | `surface_pressure`, `mach_slice`, `streamlines`, `thermal` |
+| `visualization_type` | string | `"surface_pressure"` | `surface_pressure`, `mach_slice`, `schlieren`, `streamlines`, `thermal` |
 | `camera_view` | string | `"isometric"` | `isometric`, `front`, `back`, `side`, `top`, `bottom`, `nose_quarter`, `tail_quarter` |
 | `slice_normal` | list[3] | `[0,1,0]` | Normála roviny řezu |
 | `colormap` | string | `"turbo"` | `turbo`, `coolwarm`, `viridis`, `jet`, `plasma`, `inferno` |

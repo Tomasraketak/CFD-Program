@@ -382,12 +382,13 @@ K dispozici jsou čtyři druhy obrázků:
 | Režim | Ukazuje | K čemu |
 |---|---|---|
 | `surface_pressure` | Tlak nebo C_p na tělese | Kde působí zatížení |
-| `mach_slice` | Machovo číslo v rovině řezu | Rázové vlny a expanzní vějíře |
+| `mach_slice` | Machovo číslo v rovině řezu | Expanzní vějíře, úplav, rychlost proudu |
+| `schlieren` | Gradient hustoty v rovině řezu | Rázové vlny — nejzřetelnější pohled na ně |
 | `streamlines` | Proudnice | Odtržení a nasávání do senzoru |
 | `thermal` | Teplotní pole | Případ senzoru |
 
 Otevřete záložku **Graphics**. Vyberte dokončený výpočet, typ obrázku
-(`mach_slice` pro rázové vlny), pohled (`side` se dívá přímo na řez)
+(`schlieren` pro rázové vlny), pohled (`side` se dívá přímo na řez)
 a velikost a klikněte na **Render**. Obrázek se objeví v seznamu a zvětšený
 vedle něj; **Export …** uloží kopii, kam chcete, jako PNG nebo JPEG, a
 **Copy** ho vloží do schránky pro zprávu. Výpočet spuštěný ze záložky

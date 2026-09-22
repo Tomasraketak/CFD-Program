@@ -37,6 +37,7 @@ THUMBNAIL_SIZE = QtCore.QSize(220, 124)
 # Images drawn automatically when a solve finishes in the interface: the
 # shock system from the side, and the pressure on the body.
 STANDARD_RENDERS = (
+    ("schlieren", "side"),
     ("mach_slice", "side"),
     ("surface_pressure", "isometric"),
 )

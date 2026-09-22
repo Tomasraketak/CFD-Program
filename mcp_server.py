@@ -343,6 +343,7 @@ def set_geometry_and_mesh(
         estimated_yplus=result.estimated_yplus,
         boundary_markers=result.boundary_markers,
         min_quality=result.min_quality,
+        poor_prism_count=result.poor_prism_count,
         targeting_iterations=result.targeting_iterations,
         wall_time_s=result.wall_time_s,
     )
@@ -725,7 +726,10 @@ def run_sensor_thermal_simulation(
         "Render a publication-quality image from a completed simulation. "
         "Modes: 'surface_pressure' (body Cp or absolute pressure), "
         "'mach_slice' (cutting plane showing oblique shocks and "
-        "Prandtl-Meyer expansion), 'streamlines' (seeded flow paths coloured "
+        "Prandtl-Meyer expansion), 'schlieren' (density gradient on the "
+        "cutting plane, like a wind-tunnel schlieren photograph -- the "
+        "clearest picture of a shock wave, and the one to use when asked to "
+        "show one), 'streamlines' (seeded flow paths coloured "
         "by velocity or temperature) and 'thermal' (temperature contours with "
         "the sensor marked). Saves a PNG and returns its path; the image "
         "also appears in the program's Graphics tab, where the operator can "
@@ -751,7 +755,8 @@ def generate_cfd_visualization(
     sim_id:
         Identifier of a completed simulation.
     visualization_type:
-        'surface_pressure', 'mach_slice', 'streamlines' or 'thermal'.
+        'surface_pressure', 'mach_slice', 'schlieren', 'streamlines' or
+        'thermal'.
     camera_view:
         'isometric', 'front', 'back', 'side', 'top', 'bottom',
         'nose_quarter' or 'tail_quarter'.

@@ -426,6 +426,19 @@ _END_FRACTION = 0.1
 # taper at all.
 _NOSE_RATIO = 1.25
 
+# Fins are looked for in this fraction of the length at each end: a fin root
+# chord is rarely more than a fifth of a rocket, and a nozzle can push the
+# fins a little further from the very end.
+_FIN_FRACTION = 0.3
+
+# An end reaching this many times the body radius carries fins, provided it
+# also reaches this much further than the other end. The comparison is
+# between the ends rather than against the body because the file's points
+# include spline control points, which stand off a curved nose: on one real
+# rocket they reached 1.4 body radii with no fin anywhere near.
+_FIN_REACH = 1.6
+_FIN_END_RATIO = 1.5
+
 
 class AxisDecision:
     """Which axis a slender body lies along, and where its nose is.
@@ -506,6 +519,39 @@ def _mean_radius(points: np.ndarray, axis: int, centre: np.ndarray) -> float:
     return float(np.linalg.norm(lateral, axis=1).mean())
 
 
+def _fin_end(
+    points: np.ndarray,
+    axis: int,
+    low: float,
+    high: float,
+    length: float,
+    centre: np.ndarray,
+) -> tuple[bool, float, float] | None:
+    """Which end carries fins, if exactly one visibly does.
+
+    Returns ``(tail_is_high_end, body_radius, fin_reach)``, or None when
+    neither end, or both, stand out from the body.
+    """
+    lateral = np.linalg.norm(
+        np.delete(points, axis, axis=1) - np.delete(centre, axis), axis=1
+    )
+    along = points[:, axis]
+    middle = (along > low + 0.3 * length) & (along < high - 0.3 * length)
+    if np.count_nonzero(middle) < 4:
+        return None
+    body_radius = float(np.median(lateral[middle]))
+    if body_radius <= 0.0:
+        return None
+    window = _FIN_FRACTION * length
+    low_reach = float(lateral[along <= low + window].max(initial=0.0))
+    high_reach = float(lateral[along >= high - window].max(initial=0.0))
+    if low_reach > _FIN_REACH * body_radius and low_reach > _FIN_END_RATIO * high_reach:
+        return False, body_radius, low_reach
+    if high_reach > _FIN_REACH * body_radius and high_reach > _FIN_END_RATIO * low_reach:
+        return True, body_radius, high_reach
+    return None
+
+
 def detect_body_axis(path: Path | str) -> AxisDecision:
     """Work out which way a slender body points, from the CAD alone.
 
@@ -560,6 +606,30 @@ def detect_body_axis(path: Path | str) -> AxisDecision:
     if low_radius <= 0.0 and high_radius <= 0.0:  # pragma: no cover - degenerate
         return AxisDecision(
             name, None, False, "both ends measure as points", slenderness, 0.0, 0.0
+        )
+
+    # Fins first, because they are unambiguous: they are at the tail. The
+    # taper test alone can be fooled by a motor nozzle, which is thin and
+    # sits at the very end of the tail -- a long enough one makes the tail
+    # the thinner end.
+    # The bounding-box middle, not the point mean: points bunch up wherever
+    # the geometry is detailed, which drags the mean off the axis.
+    axis_centre = 0.5 * (points.min(axis=0) + points.max(axis=0))
+    fin_end = _fin_end(points, axis, low, high, length, axis_centre)
+    if fin_end is not None:
+        tail_is_high, body_radius, reach = fin_end
+        nose_end = f"-{name}" if tail_is_high else f"+{name}"
+        return AxisDecision(
+            name,
+            nose_end,
+            True,
+            f"the body lies along {name} and carries fins at the "
+            f"{'+' if tail_is_high else '-'}{name} end, reaching "
+            f"{reach / body_radius:.1f} times the body radius, so the nose is "
+            f"at {nose_end}",
+            slenderness,
+            high_radius if tail_is_high else low_radius,
+            low_radius if tail_is_high else high_radius,
         )
 
     # The nose is the thinner end: it tapers, the tail does not.
