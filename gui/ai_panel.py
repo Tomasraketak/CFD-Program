@@ -996,6 +996,11 @@ class AITab(QtWidgets.QWidget):
 
             if str(payload).startswith(STAGE_MARKER_PREFIX):
                 self.solve_chart.begin_stage()
+        elif kind == "finished":
+            # The iterations are over; the chart has served its purpose and
+            # the answer below it is what matters now.
+            self.solve_chart.setVisible(False)
+            self._chart_active = False
 
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:  # noqa: N802
         """Stop listening to the solver and keep the conversation."""

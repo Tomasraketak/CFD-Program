@@ -118,7 +118,7 @@ a rocket flying tail-first still produces a complete drag polar.
 ### Rocket or fin, and what it tilts about
 
 **Model is a** — *Rocket* or *Fin / wing*, set from the shape when a file is
-opened: a body whose longest side is more than five times each of the other
+opened: a body whose longest side is more than 3.5 times each of the other
 two is a rocket; a thin plate is a fin. A rocket still gets its axes remapped
 automatically, nose up along +Z. A fin is referenced to its **chord** (length)
 and **planform area** (chord × span), not a body cross-section, and has no
@@ -453,6 +453,9 @@ The run stops when **either**:
 The second matters in practice: a RANS solve often reaches usable forces well
 before the residual target, and the forces are what you came for.
 
+The live convergence chart appears when a solve starts and disappears when
+its iterations end, here and in the AI Assistant tab alike.
+
 ### MPI ranks
 
 How many processes the solver splits across. Use two fewer than your logical
@@ -685,7 +688,7 @@ startup.
 
 The **AI Assistant** tab lets you say what you want in ordinary language and
 have the program do it. The assistant reaches the platform through exactly the
-same thirteen tools the MCP server exposes — it can do what you can do through
+same fourteen tools the MCP server exposes — it can do what you can do through
 the interface, and nothing else.
 
 It runs on a model of your choice through [OpenRouter](https://openrouter.ai),
@@ -736,6 +739,21 @@ is remembered between sessions.
 **You pay OpenRouter for what the assistant uses**, per token, at that model's
 rate. A short question costs a fraction of a cent; a long session of tool
 calls costs more.
+
+### It shows you the setup first
+
+Before the assistant meshes or solves a setup you have not seen — a new
+file, a different nose direction, body kind or tilt axis, or a new angle of
+attack or sideslip — it draws a quick low-resolution picture of the model in
+the chat, side and angled view, with the oncoming air as blue arrows and the
+tilt axis as an orange rod with a curved arrow. The caption says which end of
+the CAD model it takes for the nose (or a fin's leading edge). It then asks
+whether that is what you want and **waits**: nothing is meshed or solved
+until you reply. Say "yes" to go on, or say what is wrong ("the nose is at
+the other end", "tilt about Z") and it draws the corrected setup again.
+
+This is enforced by the program, not left to the model: the meshing and
+solving tools refuse a setup that has not been shown and answered.
 
 ### Picking a conversation up again
 

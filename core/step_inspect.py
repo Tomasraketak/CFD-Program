@@ -418,7 +418,7 @@ MIN_SLENDERNESS = 2.0
 # A body whose longest side is more than this many times each of the other
 # two is a rocket; anything stubbier -- a fin, a wing, a control surface --
 # is treated as a lifting surface, with no nose to find.
-ROCKET_SLENDERNESS = 5.0
+ROCKET_SLENDERNESS = 3.5
 
 # ... provided it is also thin: its thinnest side under this fraction of the
 # next. Without that, a squat rocket with big fins (4.5 times longer than

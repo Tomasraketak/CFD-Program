@@ -20,7 +20,7 @@ Jak program ovládat z AI asistenta a kompletní přehled nástrojů.
 
 Model Context Protocol (MCP) je standardní způsob, jak AI asistenti volají
 externí nástroje. AeroThermalStudio obsahuje MCP server, který vystavuje
-**třináct nástrojů** pokrývajících vše, co umí program: import CAD, síťování,
+**čtrnáct nástrojů** pokrývajících vše, co umí program: import CAD, síťování,
 aerodynamickou i tepelnou simulaci, vykreslování, parametrické studie a správu
 projektů a nastavení.
 
@@ -116,7 +116,7 @@ asistent pracuje.
 
 ## 3. Přehled nástrojů
 
-Všech třináct nástrojů vrací JSON objekt s polem `ok`. Při selhání je
+Všech čtrnáct nástrojů vrací JSON objekt s polem `ok`. Při selhání je
 `ok: false` a `error` nese zprávu určenou k jednání.
 
 ### 3.1 `set_geometry_and_mesh`
@@ -137,7 +137,7 @@ Načte CAD, zarovná jej, postaví oblast a vytvoří síť.
 | `target_yplus` | float | 45.0 | 30–300 |
 | `scale_to_meters` | float | ze souboru | `0.001` pro milimetry |
 | `sizing_mach` | float | 1.0 | Režim, pro který se dimenzuje mezní vrstva |
-| `body_kind` | string | podle tvaru | `rocket` (nejdelší strana přes 5× ostatní) nebo `fin` (tenká deska; vztaženo k hloubce a půdorysu) |
+| `body_kind` | string | podle tvaru | `rocket` (nejdelší strana přes 3,5× ostatní) nebo `fin` (tenká deska; vztaženo k hloubce a půdorysu) |
 | `pitch_axis` | string | null | Osa v CAD, kolem které se model naklápí při úhlu náběhu, např. `+Z`; musí být napříč proudem |
 | `sizing_altitude_m` | float | 0.0 | |
 | `max_targeting_iterations` | int | 4 | Pokusy o zásah cílového počtu buněk |
@@ -370,6 +370,21 @@ Vypíše dostupné projekty s jednořádkovým shrnutím. Volitelně `directory`
 `default_render_resolution`, `default_mesh_resolution` a přepínače chování.
 `update_settings` mění jen zadaná pole.
 
+### 3.14 `preview_orientation`
+
+Nakreslí rychlý obrázek modelu v nízkém rozlišení (pohled z boku a šikmo)
+s přicházejícím vzduchem jako modrými šipkami a osou naklápění jako oranžovou
+tyčí s obloukovou šipkou — přesně tak, jak by je použila síť nebo výpočet se
+stejným nastavením. Bere geometrické parametry `set_geometry_and_mesh` (nebo
+`mesh_id`) a `aoa_deg`, `sideslip_deg`; vrací `image_path`.
+
+Ve vestavěném asistentovi je povinný: nastavení, které uživatel ještě
+neviděl — nový soubor, směr špičky, typ tělesa, osa naklápění nebo nový úhel —
+`set_geometry_and_mesh`, `run_aerodynamic_simulation` i `run_parametric_sweep`
+odmítnou, dokud nebylo ukázáno **a uživatel neodpověděl**. Asistent po
+náhledu ukončí tah; další zpráva uživatele je odpověď a opravené nastavení se
+ukáže znovu. Externí MCP klienti omezeni nejsou.
+
 ---
 
 ## 4. Hotové postupy
@@ -575,7 +590,7 @@ kontextem, ne jako měření.
 
 ## 9. Vestavěný asistent
 
-Těchto třináct nástrojů pohání i asistenta **přímo v programu**, v záložce
+Těchto čtrnáct nástrojů pohání i asistenta **přímo v programu**, v záložce
 **AI Assistant**. Je pro obsluhu, která chce napsat požadavek a nechat ho
 provést, aniž by vůbec spouštěla externího MCP klienta.
 

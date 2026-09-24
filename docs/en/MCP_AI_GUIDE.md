@@ -20,7 +20,7 @@ reference.
 ## 1. What this is
 
 The Model Context Protocol (MCP) is a standard way for AI assistants to call
-external tools. AeroThermalStudio ships an MCP server exposing **thirteen
+external tools. AeroThermalStudio ships an MCP server exposing **fourteen
 tools** covering everything the desktop program can do: CAD import, meshing,
 aerodynamic and thermal simulation, rendering, parametric sweeps, and project
 and settings management.
@@ -118,7 +118,7 @@ it while the assistant is working.
 
 ## 3. Tool reference
 
-All thirteen tools return a JSON object with an `ok` field. On failure,
+All fourteen tools return a JSON object with an `ok` field. On failure,
 `ok: false` and `error` carries a message intended to be acted on.
 
 ### 3.1 `set_geometry_and_mesh`
@@ -139,7 +139,7 @@ Import CAD, align it, build the domain, generate the mesh.
 | `target_yplus` | float | 45.0 | 30–300 |
 | `scale_to_meters` | float | read from the file | `0.001` for millimetres |
 | `sizing_mach` | float | 1.0 | Condition the boundary layer is sized for |
-| `body_kind` | string | read from the shape | `rocket` (longest side over 5× the others) or `fin` (thin plate; chord and planform reference) |
+| `body_kind` | string | read from the shape | `rocket` (longest side over 3.5× the others) or `fin` (thin plate; chord and planform reference) |
 | `pitch_axis` | string | null | CAD axis the model tilts about for an angle of attack, e.g. `+Z`; must be across the flow |
 | `sizing_altitude_m` | float | 0.0 | |
 | `max_targeting_iterations` | int | 4 | Remesh attempts to hit the cell band |
@@ -371,6 +371,22 @@ Read and modify persistent preferences: `default_mpi_ranks`,
 `default_colormap`, `default_render_resolution`, `default_mesh_resolution`,
 and the behaviour toggles. `update_settings` changes only the fields supplied.
 
+### 3.14 `preview_orientation`
+
+Draws a quick, low-resolution picture of the model (side and angled view)
+with the oncoming air as blue arrows and the tilt axis as an orange rod with
+a curved arrow — exactly as a mesh or solve with the same settings would use
+them. Takes the geometry arguments of `set_geometry_and_mesh` (or a
+`mesh_id`) plus `aoa_deg` and `sideslip_deg`, and returns `image_path`.
+
+In the built-in assistant this is required: a setup the operator has not
+seen — new file, nose direction, body kind, tilt axis, or a new angle — is
+refused by `set_geometry_and_mesh`, `run_aerodynamic_simulation` and
+`run_parametric_sweep` until it has been previewed **and the operator has
+replied**. The assistant ends its turn after a preview; the operator's next
+message counts as the answer, and a corrected setup is previewed again.
+External MCP clients are not gated.
+
 ---
 
 ## 4. Worked workflows
@@ -580,7 +596,7 @@ results with that context rather than as measurements.
 
 ## 9. The built-in assistant
 
-The same thirteen tools also back an assistant **inside the program**, on the
+The same fourteen tools also back an assistant **inside the program**, on the
 **AI Assistant** tab. It is for an operator who wants to type a request and
 have it carried out without running an external MCP client at all.
 
@@ -614,7 +630,9 @@ Two behaviours are deliberate. `mcp_server.LONG_RUNNING_TOOLS` names the three
 tools that occupy the machine for minutes to hours; an approval callback is
 consulted before each of them, and a declined call is reported back to the
 model as a refusal it must not retry unchanged. The round cap
-(`ai_max_tool_rounds`, default 12) bounds what one request can spend.
+(`ai_max_tool_rounds`, default 12) bounds what one request can spend. After a
+successful `preview_orientation` the loop makes one more model call so it can
+ask about the picture, then ends the turn and waits for the operator.
 
 ### Its system prompt
 

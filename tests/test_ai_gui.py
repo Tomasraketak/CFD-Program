@@ -677,3 +677,14 @@ def test_stop_does_nothing_when_nothing_is_running(ai_tab, qt_app):
     ai_tab.stop()
     assert not ai_tab.assistant.stop_requested
     assert ai_tab.send_button.isEnabled()
+
+
+def test_the_live_chart_goes_away_when_the_iterations_end(ai_tab):
+    """It is there while the solver works, and gone once it has finished."""
+    from backend.su2_parser import IterationRecord
+
+    record = IterationRecord(iteration=1, values={"rms_rho": -2.0, "cd": 0.5, "cl": 0.0})
+    ai_tab._on_solver_event("iteration", record)
+    assert not ai_tab.solve_chart.isHidden()
+    ai_tab._on_solver_event("finished", None)
+    assert ai_tab.solve_chart.isHidden()

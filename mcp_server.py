@@ -17,7 +17,9 @@ from __future__ import annotations
 import json
 import re
 import os
+import time
 import traceback
+import uuid
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -52,7 +54,7 @@ from core.models import (
     ThermalParams,
     VelocityType,
 )
-from core.platform_env import probe_environment
+from core.platform_env import data_root, probe_environment
 from core.project import (
     PROJECT_EXTENSION,
     Project,
@@ -127,6 +129,11 @@ def _broadcast_line(line: str) -> None:
     _broadcast("line", line)
 
 
+def _broadcast_finished() -> None:
+    """The solve is over: the live chart has nothing more to show."""
+    _broadcast("finished", None)
+
+
 def _runner() -> SolverRunner:
     """Solver backend, overridable for testing via a module attribute."""
     return _RUNNER_OVERRIDE if _RUNNER_OVERRIDE is not None else SU2Runner()
@@ -155,8 +162,250 @@ def _ok(**payload: Any) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Showing the operator the setup before paying for it
+# ---------------------------------------------------------------------------
+
+# The in-app assistant turns this on. A setup -- which way the air comes
+# from, what the model tilts about, at what angle -- must have been drawn by
+# preview_orientation and the operator must have replied since, before it is
+# meshed or solved. External MCP clients leave it off: they have their own
+# conversation with the operator and no chat panel to draw into.
+_confirmation_required = False
+# Setups drawn but not yet answered, and setups the operator has seen.
+_shown_setups: set[str] = set()
+_confirmed_setups: set[str] = set()
+
+
+def require_orientation_confirmation(required: bool) -> None:
+    """Make meshing and solving wait for an approved preview (or not)."""
+    global _confirmation_required
+    _confirmation_required = bool(required)
+
+
+def acknowledge_orientation_previews() -> None:
+    """The operator has replied: what they were shown is theirs to have approved.
+
+    Called when the operator sends a message. If the reply was "no, the air
+    comes from the other end", the assistant changes the setup, and a
+    changed setup is a new key that has not been shown -- so it must draw it
+    again before it can mesh.
+    """
+    _confirmed_setups.update(_shown_setups)
+    _shown_setups.clear()
+
+
+def reset_orientation_confirmations() -> None:
+    """Forget every approval, as a new conversation should."""
+    _shown_setups.clear()
+    _confirmed_setups.clear()
+
+
+def _geometry_key(geometry: GeometryParams) -> list[Any]:
+    """What about a geometry decides how the air meets it."""
+    pitch = _pitch_or_none(geometry)
+    return [
+        str(Path(geometry.step_file_path).expanduser().resolve()),
+        [round(float(v), 4) for v in geometry.resolved_nose_vector()],
+        pitch,
+        geometry.body_kind.value,
+    ]
+
+
+def _pitch_or_none(geometry: GeometryParams) -> list[float] | None:
+    if geometry.pitch_axis is None:
+        return None
+    return [round(float(v), 4) for v in geometry.pitch_axis.to_vector()]
+
+
+def _setup_key(geometry_key: Any, aoa_deg: float | None, sideslip_deg: float | None) -> str:
+    angles = (
+        None
+        if aoa_deg is None
+        else [round(float(aoa_deg), 3), round(float(sideslip_deg or 0.0), 3)]
+    )
+    return json.dumps([geometry_key, angles])
+
+
+def _setup_confirmed(geometry_key: Any, aoa_deg: float | None, sideslip_deg: float | None) -> bool:
+    if aoa_deg is not None:
+        return _setup_key(geometry_key, aoa_deg, sideslip_deg) in _confirmed_setups
+    # For meshing only the geometry matters: any approved angle will do.
+    prefix = json.dumps([geometry_key, None])[:-5]
+    return any(key.startswith(prefix) for key in _confirmed_setups)
+
+
+def _orientation_gate(
+    geometry_key: Any,
+    aoa_deg: float | None = None,
+    sideslip_deg: float | None = None,
+    **where: Any,
+) -> dict[str, Any] | None:
+    """A refusal when this setup has not been shown and approved, else None."""
+    if not _confirmation_required:
+        return None
+    if _setup_confirmed(geometry_key, aoa_deg, sideslip_deg):
+        return None
+    angles = (
+        ""
+        if aoa_deg is None
+        else f" with aoa_deg={aoa_deg:g}, sideslip_deg={float(sideslip_deg or 0.0):g}"
+    )
+    return _error(
+        "the operator has not approved this setup yet. Call preview_orientation"
+        f"{angles} with the same geometry settings, tell the operator what the "
+        "picture shows (where the air comes from, what the model tilts "
+        "about), ask whether that is what they want, and END YOUR TURN. Mesh "
+        "or solve only after they reply; if they correct it, preview the "
+        "corrected setup again.",
+        needs=["operator_confirmation"],
+        **where,
+    )
+
+
+def _mesh_geometry_key(store: Any, mesh_record: Any) -> Any:
+    """The geometry key a mesh was built with, or None if unknown."""
+    key = mesh_record.metadata.get("geometry_key")
+    if key is not None:
+        return key
+    try:
+        request = MeshRequest.model_validate(
+            store.read_json(mesh_record.record_id, "mesh_request.json")
+        )
+        return _geometry_key(request.geometry)
+    except Exception:  # noqa: BLE001 - an old record: fall back to the angles
+        return None
+
+
+# ---------------------------------------------------------------------------
 # Tool 1: geometry and meshing
 # ---------------------------------------------------------------------------
+
+
+def _resolve_geometry(
+    step_file_path: str,
+    nose_vector: list[float] | None,
+    nose_direction: str | None,
+    reference_origin: list[float] | None,
+    scale_to_meters: float | None,
+    body_kind: str | None,
+    pitch_axis: str | None,
+) -> dict[str, Any]:
+    """Work out file, scale, nose, body kind and tilt axis as meshing will.
+
+    Shared by the mesher and the orientation preview, so the picture the
+    operator approves is exactly the setup that is then meshed. Returns
+    ``{"error": reply}`` when something has to be asked first.
+    """
+    loaded = active_geometry()
+    scale_note = ""
+    nose_note = ""
+    # No default: a deliberate "+X" used to be indistinguishable from an
+    # unset one, so a fin whose air arrives at its -X edge could not be set.
+    nose_given = nose_direction is not None or nose_vector is not None
+
+    if not step_file_path:
+        if loaded is None:
+            return {"error": _error(
+                "no STEP file given and none is loaded. Pass step_file_path, "
+                "or open a file in the application's Rocket Aerodynamics tab "
+                "and call get_active_geometry to confirm it."
+            )}
+        step_file_path = loaded.step_file_path
+        if scale_to_meters is None:
+            scale_to_meters = loaded.scale_to_meters
+            scale_note = loaded.scale_reason
+
+    if scale_to_meters is None:
+        # Reading the file's declared unit beats assuming metres: a
+        # millimetre model taken at face value is a kilometre-long rocket,
+        # and nothing downstream would flag it.
+        try:
+            decision = suggest_scale_to_meters(step_file_path)
+            scale_to_meters = decision.scale
+            scale_note = decision.reason
+        except StepInspectionError as error:
+            return {"error": _error(f"could not read '{step_file_path}': {error}")}
+
+    if (
+        not nose_given
+        and loaded is not None
+        and loaded.step_file_path == step_file_path
+        and loaded.nose_is_confident
+    ):
+        # The operator may have set it in the interface; that beats reading
+        # it off the shape again.
+        nose_direction = loaded.nose_direction
+        nose_note = loaded.nose_reason
+        nose_given = True
+
+    same_file = loaded is not None and loaded.step_file_path == step_file_path
+    if body_kind is None:
+        if same_file:
+            body_kind = loaded.body_kind
+            pitch_axis = pitch_axis or loaded.pitch_axis
+        else:
+            try:
+                shape = detect_body_axis(step_file_path)
+            except StepInspectionError:
+                shape = None
+            body_kind = shape.kind if shape is not None else "rocket"
+            if pitch_axis is None and shape is not None and shape.tilt_axis:
+                pitch_axis = f"+{shape.tilt_axis}"
+
+    if not nose_given:
+        # Which way the body points is not a default worth having. A rocket
+        # meshed backwards returns a full set of plausible forces for a
+        # vehicle flying tail-first, and nothing downstream objects.
+        try:
+            axis = detect_body_axis(step_file_path)
+        except StepInspectionError as error:
+            return {"error": _error(f"could not read '{step_file_path}': {error}")}
+        if axis.nose_direction is None and body_kind == "fin":
+            return {"error": _error(
+                f"this is a fin; which edge faces the oncoming air? {axis.reason}. "
+                f"Ask the operator, then pass nose_direction: '+{axis.axis}' if "
+                f"the air arrives at the -{axis.axis} edge, or '-{axis.axis}' "
+                f"if it arrives at the +{axis.axis} edge.",
+                axis=axis.axis,
+                needs=["nose_direction"],
+                geometry=axis.as_dict(),
+            )}
+        if axis.nose_direction is None:
+            return {"error": _error(
+                f"which end is the nose? {axis.reason}. Ask the operator, "
+                f"then pass nose_direction: '+{axis.axis}' if the nose is at "
+                f"the -{axis.axis} end of the CAD model, or '-{axis.axis}' "
+                f"if it is at the +{axis.axis} end.",
+                axis=axis.axis,
+                needs=["nose_direction"],
+                geometry=axis.as_dict(),
+            )}
+        nose_direction = axis.nose_direction
+        nose_note = axis.reason
+
+    try:
+        geometry = GeometryParams(
+            step_file_path=step_file_path,
+            nose_direction=AxisDirection(nose_direction) if nose_vector is None else None,
+            nose_vector=nose_vector,
+            reference_origin=reference_origin or [0.0, 0.0, 0.0],
+            scale_to_meters=scale_to_meters,
+            body_kind=BodyKind(body_kind),
+            pitch_axis=AxisDirection(pitch_axis) if pitch_axis else None,
+        )
+    except Exception as error:
+        return {"error": _error(f"invalid parameters: {error}")}
+    return {
+        "loaded": loaded,
+        "geometry": geometry,
+        "nose_direction": (
+            geometry.nose_direction.value if geometry.nose_direction else nose_direction
+        ),
+        "nose_note": nose_note,
+        "scale_note": scale_note,
+        "body_kind": body_kind,
+        "pitch_axis": geometry.pitch_axis.value if geometry.pitch_axis else None,
+    }
 
 
 @server.tool(
@@ -175,7 +424,7 @@ def _ok(**payload: Any) -> dict[str, Any]:
 def set_geometry_and_mesh(
     step_file_path: str = "",
     nose_vector: list[float] | None = None,
-    nose_direction: str = "+X",
+    nose_direction: str | None = None,
     reference_origin: list[float] | None = None,
     domain_multipliers: dict[str, float] | None = None,
     domain_shape: str = "cylinder",
@@ -232,7 +481,7 @@ def set_geometry_and_mesh(
         Remesh attempts allowed to reach the target cell band.
     body_kind:
         'rocket' or 'fin'. Omit it and the shape decides: a body whose
-        longest side is more than five times each of the others is a
+        longest side is more than 3.5 times each of the others is a
         rocket; a thin plate-like one is a fin. For a fin, nose_direction
         is the direction the air flows along it, leading edge to trailing
         edge, and the coefficients are referenced to chord and planform.
@@ -242,104 +491,28 @@ def set_geometry_and_mesh(
         flow. Omit it: a fin tilts about its span, a rocket keeps the
         orientation that follows from its nose.
     """
-    loaded = active_geometry()
-    scale_note = ""
-    nose_note = ""
-    # An unset nose_direction is indistinguishable from a deliberate "+X"
-    # in the wire format, so the caller's silence is read here.
-    nose_given = nose_direction != "+X" or nose_vector is not None
+    resolved = _resolve_geometry(
+        step_file_path, nose_vector, nose_direction, reference_origin,
+        scale_to_meters, body_kind, pitch_axis,
+    )
+    if "error" in resolved:
+        return resolved["error"]
+    loaded = resolved["loaded"]
+    geometry = resolved["geometry"]
+    step_file_path = geometry.step_file_path
+    scale_to_meters = geometry.scale_to_meters
+    nose_direction = resolved["nose_direction"]
+    nose_note = resolved["nose_note"]
+    scale_note = resolved["scale_note"]
+    body_kind = resolved["body_kind"]
+    pitch_axis = resolved["pitch_axis"]
 
-    if not step_file_path:
-        if loaded is None:
-            return _error(
-                "no STEP file given and none is loaded. Pass step_file_path, "
-                "or open a file in the application's Rocket Aerodynamics tab "
-                "and call get_active_geometry to confirm it."
-            )
-        step_file_path = loaded.step_file_path
-        if scale_to_meters is None:
-            scale_to_meters = loaded.scale_to_meters
-            scale_note = loaded.scale_reason
-
-    if scale_to_meters is None:
-        # Reading the file's declared unit beats assuming metres: a
-        # millimetre model taken at face value is a kilometre-long rocket,
-        # and nothing downstream would flag it.
-        try:
-            decision = suggest_scale_to_meters(step_file_path)
-            scale_to_meters = decision.scale
-            scale_note = decision.reason
-        except StepInspectionError as error:
-            return _error(f"could not read '{step_file_path}': {error}")
-
-    if (
-        not nose_given
-        and loaded is not None
-        and loaded.step_file_path == step_file_path
-        and loaded.nose_is_confident
-    ):
-        # The operator may have set it in the interface; that beats reading
-        # it off the shape again.
-        nose_direction = loaded.nose_direction
-        nose_note = loaded.nose_reason
-        nose_given = True
-
-    same_file = loaded is not None and loaded.step_file_path == step_file_path
-    if body_kind is None:
-        if same_file:
-            body_kind = loaded.body_kind
-            pitch_axis = pitch_axis or loaded.pitch_axis
-        else:
-            try:
-                shape = detect_body_axis(step_file_path)
-            except StepInspectionError:
-                shape = None
-            body_kind = shape.kind if shape is not None else "rocket"
-            if pitch_axis is None and shape is not None and shape.tilt_axis:
-                pitch_axis = f"+{shape.tilt_axis}"
-
-    if not nose_given:
-        # Which way the body points is not a default worth having. A rocket
-        # meshed backwards returns a full set of plausible forces for a
-        # vehicle flying tail-first, and nothing downstream objects.
-        try:
-            axis = detect_body_axis(step_file_path)
-        except StepInspectionError as error:
-            return _error(f"could not read '{step_file_path}': {error}")
-        if axis.nose_direction is None and body_kind == "fin":
-            return _error(
-                f"this is a fin; which edge faces the oncoming air? {axis.reason}. "
-                f"Ask the operator, then pass nose_direction: '+{axis.axis}' if "
-                f"the air arrives at the -{axis.axis} edge, or '-{axis.axis}' "
-                f"if it arrives at the +{axis.axis} edge.",
-                axis=axis.axis,
-                needs=["nose_direction"],
-                geometry=axis.as_dict(),
-            )
-        if axis.nose_direction is None:
-            return _error(
-                f"which end is the nose? {axis.reason}. Ask the operator, "
-                f"then pass nose_direction: '+{axis.axis}' if the nose is at "
-                f"the -{axis.axis} end of the CAD model, or '-{axis.axis}' "
-                f"if it is at the +{axis.axis} end.",
-                axis=axis.axis,
-                needs=["nose_direction"],
-                geometry=axis.as_dict(),
-            )
-        nose_direction = axis.nose_direction
-        nose_note = axis.reason
+    gate = _orientation_gate(_geometry_key(geometry))
+    if gate is not None:
+        return gate
 
     try:
         multipliers = domain_multipliers or {}
-        geometry = GeometryParams(
-            step_file_path=step_file_path,
-            nose_direction=AxisDirection(nose_direction) if nose_vector is None else None,
-            nose_vector=nose_vector,
-            reference_origin=reference_origin or [0.0, 0.0, 0.0],
-            scale_to_meters=scale_to_meters,
-            body_kind=BodyKind(body_kind),
-            pitch_axis=AxisDirection(pitch_axis) if pitch_axis else None,
-        )
         domain = DomainParams(
             shape=DomainShape(domain_shape),
             upstream_multiplier=float(multipliers.get("upstream", 5.0)),
@@ -395,6 +568,7 @@ def set_geometry_and_mesh(
             "reference_length_m": result.reference_length_m,
             "reference_diameter_m": result.reference_diameter_m,
             "track": track,
+            "geometry_key": _geometry_key(geometry),
         },
     )
     store.write_json(record.record_id, "mesh_request.json", request)
@@ -424,6 +598,122 @@ def set_geometry_and_mesh(
         poor_prism_count=result.poor_prism_count,
         targeting_iterations=result.targeting_iterations,
         wall_time_s=result.wall_time_s,
+    )
+
+
+def _nose_end(nose_direction: str) -> str:
+    """'+Y' (nose-to-tail along +Y) puts the nose at the CAD -Y end."""
+    if len(nose_direction) == 2 and nose_direction[0] in "+-":
+        return ("-" if nose_direction[0] == "+" else "+") + nose_direction[1]
+    return "custom"
+
+
+@server.tool(
+    name="preview_orientation",
+    description=(
+        "Draw a quick low-resolution picture of the model with the oncoming "
+        "air (blue arrows) and the tilt axis (orange rod and curved arrow), "
+        "exactly as a mesh or solve with these settings would use them. "
+        "Takes the same geometry arguments as set_geometry_and_mesh (or a "
+        "mesh_id), plus aoa_deg and sideslip_deg. In the desktop assistant a "
+        "new setup must be previewed and the operator must answer before it "
+        "can be meshed or solved: call this, describe the picture, ask "
+        "whether it is right, and end the turn."
+    ),
+)
+def preview_orientation(
+    step_file_path: str = "",
+    nose_vector: list[float] | None = None,
+    nose_direction: str | None = None,
+    reference_origin: list[float] | None = None,
+    scale_to_meters: float | None = None,
+    body_kind: str | None = None,
+    pitch_axis: str | None = None,
+    mesh_id: str | None = None,
+    aoa_deg: float = 0.0,
+    sideslip_deg: float = 0.0,
+) -> dict[str, Any]:
+    """Show the operator how the air will meet the model, before any solve.
+
+    Parameters
+    ----------
+    step_file_path, nose_vector, nose_direction, reference_origin,
+    scale_to_meters, body_kind, pitch_axis:
+        As for set_geometry_and_mesh; leave them out to use the loaded file
+        and what the shape says.
+    mesh_id:
+        Preview the geometry an existing mesh was built from instead.
+    aoa_deg, sideslip_deg:
+        The flow angles to draw.
+    """
+    store = _store()
+    if mesh_id:
+        try:
+            mesh_record = store.get(mesh_id)
+            request = MeshRequest.model_validate(
+                store.read_json(mesh_id, "mesh_request.json")
+            )
+        except Exception as error:  # noqa: BLE001 - reported
+            return _error(f"cannot preview mesh {mesh_id}: {error}", mesh_id=mesh_id)
+        geometry = request.geometry
+        key = _mesh_geometry_key(store, mesh_record)
+        nose_label = (
+            geometry.nose_direction.value if geometry.nose_direction else "custom vector"
+        )
+        kind = geometry.body_kind.value
+        pitch_label = geometry.pitch_axis.value if geometry.pitch_axis else None
+    else:
+        resolved = _resolve_geometry(
+            step_file_path, nose_vector, nose_direction, reference_origin,
+            scale_to_meters, body_kind, pitch_axis,
+        )
+        if "error" in resolved:
+            return resolved["error"]
+        geometry = resolved["geometry"]
+        key = _geometry_key(geometry)
+        nose_label = resolved["nose_direction"] if nose_vector is None else "custom vector"
+        kind = resolved["body_kind"]
+        pitch_label = resolved["pitch_axis"]
+
+    from gui.flow_overlay import describe
+
+    tilt = f"CAD {pitch_label}" if pitch_label else "the automatic axis"
+    nose_end = _nose_end(nose_label)
+    front = "leading edge" if kind == "fin" else "nose"
+    caption = (
+        f"{kind}, {front} at the {nose_end} end of the CAD model | tilt about "
+        f"{tilt} | alpha {aoa_deg:g} deg, beta {sideslip_deg:g} deg"
+    )
+    destination = (
+        data_root()
+        / "previews"
+        / f"orientation-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}.png"
+    )
+    try:
+        from backend.orientation_preview import render_orientation_preview
+
+        path = render_orientation_preview(
+            geometry, destination, aoa_deg, sideslip_deg, caption=caption
+        )
+    except Exception as error:  # noqa: BLE001 - reported
+        return _error(f"could not draw the preview: {error}")
+
+    _shown_setups.add(_setup_key(key, aoa_deg, sideslip_deg))
+    return _ok(
+        image_path=str(path),
+        body_kind=kind,
+        nose_direction=nose_label,
+        nose_at=f"the {nose_end} end of the CAD model",
+        pitch_axis=pitch_label,
+        aoa_deg=aoa_deg,
+        sideslip_deg=sideslip_deg,
+        shows=describe(aoa_deg, sideslip_deg, pitch_label)
+        + " The model is drawn in rocket axes: nose up along +Z.",
+        next_step=(
+            "Tell the operator what the picture shows and ask whether the air "
+            "direction and tilt axis are what they want. Then stop and wait "
+            "for their answer."
+        ),
     )
 
 
@@ -536,6 +826,12 @@ def run_aerodynamic_simulation(
     except RecordNotFoundError as error:
         return _error(str(error), mesh_id=mesh_id)
 
+    gate = _orientation_gate(
+        _mesh_geometry_key(store, mesh_record), aoa_deg, sideslip_deg, mesh_id=mesh_id
+    )
+    if gate is not None:
+        return gate
+
     try:
         axes = _hinge_axes(hinge_axes)
         request = AeroRunRequest(
@@ -591,6 +887,8 @@ def run_aerodynamic_simulation(
     except Exception as error:
         store.update_metadata(record.record_id, {"failed": str(error)})
         return _error(str(error), sim_id=record.record_id)
+    finally:
+        _broadcast_finished()
 
     store.write_json(record.record_id, "result.json", result)
     store.update_metadata(
@@ -1019,6 +1317,10 @@ def run_parametric_sweep_tool(
     if not values:
         return _error("a sweep needs at least one value in 'values'")
 
+    gate = _orientation_gate(_mesh_geometry_key(store, mesh_record), mesh_id=mesh_id)
+    if gate is not None:
+        return gate
+
     fixed = dict(fixed_params or {})
     try:
         axes = _hinge_axes(hinge_axes)
@@ -1059,6 +1361,8 @@ def run_parametric_sweep_tool(
     except Exception as error:
         store.update_metadata(record.record_id, {"failed": str(error)})
         return _error(str(error), sweep_id=record.record_id)
+    finally:
+        _broadcast_finished()
 
     store.write_json(record.record_id, "sweep.json", sweep.as_dict())
     return _ok(sweep_id=record.record_id, **sweep.as_dict())
@@ -1498,6 +1802,7 @@ def update_settings(
 # what the server actually registered.
 TOOL_FUNCTIONS: dict[str, Any] = {
     "set_geometry_and_mesh": set_geometry_and_mesh,
+    "preview_orientation": preview_orientation,
     "run_aerodynamic_simulation": run_aerodynamic_simulation,
     "run_sensor_thermal_simulation": run_sensor_thermal_simulation,
     "generate_cfd_visualization": generate_cfd_visualization,

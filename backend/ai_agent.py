@@ -82,6 +82,21 @@ _RETRY_BACKOFF_S = (2.0, 8.0, 20.0)
 # operator would rather be told than left staring at a frozen window.
 _MAX_RETRY_AFTER_S = 30.0
 
+# The tool whose picture the operator must answer before work goes on.
+PREVIEW_TOOL = "preview_orientation"
+
+AWAITING_CONFIRMATION_TEXT = (
+    "Here is how the air will meet the model. Is the direction of the air "
+    "and the tilt axis what you want? Reply to confirm, or tell me what to "
+    "change."
+)
+
+
+def tool_calls_run(invocations: list["ToolInvocation"], count: int) -> list["ToolInvocation"]:
+    """The invocations made in the latest round."""
+    return invocations[-count:] if count else []
+
+
 SYSTEM_PROMPT = """\
 You are the assistant built into AeroThermalStudio, a CFD and thermal
 simulation program. You help the operator run rocket aerodynamics and sensor
@@ -107,7 +122,14 @@ Working rules:
   min_quality, then retry with convective_scheme 'ROE', cfl_number 0.5,
   cfl_growth 1.05 and a low cfl_max such as 10. A low cfl_number alone is
   not a low CFL, because the adaptive ramp decides where it goes.
-- Models can be rockets or fins. A body whose longest side is more than five
+- Before meshing or solving a setup the operator has not seen -- a new file,
+  a changed nose direction, body kind or tilt axis, or a new angle of attack
+  or sideslip -- call preview_orientation with exactly those settings (once
+  per angle you will run), say in a sentence what the picture shows, ask the
+  operator whether the air direction and tilt axis are what they want, and
+  end your turn. The meshing and solving tools refuse until they have
+  answered. If they correct something, change it and preview again.
+- Models can be rockets or fins. A body whose longest side is more than 3.5
   times each of the others is a rocket; a thin plate is a fin, referenced to
   its chord and planform area. get_active_geometry says which, and for a fin
   which edge faces the air is the operator's to confirm. set_geometry_and_mesh
@@ -700,8 +722,12 @@ class AIAssistant:
         on_event: EventCallback | None = None,
         max_rounds: int = MAX_TOOL_ROUNDS,
         system_prompt: str = SYSTEM_PROMPT,
+        confirm_orientation: bool = False,
     ) -> None:
         self.client = client
+        # When set, a setup must be previewed and answered by the operator
+        # before it is meshed or solved (see mcp_server's orientation gate).
+        self.confirm_orientation = confirm_orientation
         self.model = model
         self.approve = approve
         self.on_progress = on_progress
@@ -737,6 +763,9 @@ class AIAssistant:
     def reset(self) -> None:
         """Start a fresh conversation, keeping the system prompt."""
         self.messages = self.messages[:1]
+        import mcp_server
+
+        mcp_server.reset_orientation_confirmations()
 
     def history(self) -> list[dict[str, Any]]:
         """The conversation so far, excluding the system prompt."""
@@ -826,6 +855,10 @@ class AIAssistant:
 
         self.messages.append({"role": "user", "content": prompt})
         tools = build_tool_schemas()
+        mcp_server.require_orientation_confirmation(self.confirm_orientation)
+        # This message is the operator's answer to any picture shown last
+        # turn; what they were shown is now theirs to have approved.
+        mcp_server.acknowledge_orientation_previews()
 
         invocations: list[ToolInvocation] = []
         usage: dict[str, Any] = {}
@@ -897,6 +930,10 @@ class AIAssistant:
             self._report_metrics(metrics)
             if self._stop_requested.is_set():
                 return self._stopped_reply(invocations, rounds, usage, metrics, started)
+            if self.confirm_orientation and any(
+                item.name == PREVIEW_TOOL and item.succeeded for item in tool_calls_run(invocations, len(tool_calls))
+            ):
+                return self._await_operator(invocations, rounds, usage, metrics, started)
 
         self._emit(
             ProgressEvent(kind=EVENT_LIMIT, message="Reached the tool-call limit.")
@@ -910,6 +947,51 @@ class AIAssistant:
             tool_calls=invocations,
             rounds=rounds,
             stopped_early=True,
+            usage=usage,
+            metrics=metrics,
+        )
+
+    def _await_operator(
+        self,
+        invocations: list[ToolInvocation],
+        rounds: int,
+        usage: dict[str, Any],
+        metrics: UsageMetrics,
+        started: float,
+    ) -> AgentReply:
+        """End the turn after a preview, so the operator can answer it.
+
+        The model gets one more call to describe the picture and ask. Any
+        tool it tries to call in the same breath is answered with "not run",
+        because nothing may be meshed or solved until the operator replies.
+        """
+        message = self.client.complete(self.messages, tools=build_tool_schemas(), model=self.model)
+        usage = _merge_usage(usage, message.pop("_usage", {}))
+        _apply_usage(metrics, usage, rounds + 1, time.perf_counter() - started)
+        self.messages.append(_assistant_message(message))
+        for call in message.get("tool_calls") or []:
+            self.messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": call.get("id", ""),
+                    "name": (call.get("function") or {}).get("name", ""),
+                    "content": json.dumps(
+                        {"ok": False, "error": "not run: waiting for the operator to answer the preview"}
+                    ),
+                }
+            )
+        text = (message.get("content") or "").strip() or AWAITING_CONFIRMATION_TEXT
+        if message.get("tool_calls"):
+            # The transcript must end on an assistant turn the operator can
+            # answer, not on tool results.
+            self.messages.append({"role": "assistant", "content": text})
+        metrics.elapsed_seconds = time.perf_counter() - started
+        self._report_metrics(metrics)
+        return AgentReply(
+            text=text,
+            tool_calls=invocations,
+            rounds=rounds + 1,
+            stopped_early=False,
             usage=usage,
             metrics=metrics,
         )
@@ -1087,6 +1169,7 @@ def create_assistant(
         on_progress=on_progress,
         on_metrics=on_metrics,
         on_event=on_event,
+        confirm_orientation=True,
     )
     # The transport cannot reach the assistant's emitter on its own, so a
     # retry is handed to it here and lands in the transcript like everything

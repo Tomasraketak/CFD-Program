@@ -118,7 +118,7 @@ letící pozpátku vyprodukuje kompletní polární křivku odporu.
 ### Raketa nebo křidélko, a kolem čeho se naklápí
 
 **Model is a** — *Rocket* nebo *Fin / wing*, nastaví se podle tvaru při
-otevření souboru: těleso, jehož nejdelší strana je víc než pětkrát delší než
+otevření souboru: těleso, jehož nejdelší strana je víc než 3,5krát delší než
 každá z ostatních dvou, je raketa; tenká deska je křidélko. Raketa dál dostává
 automatické přemapování os, špičkou nahoru podél +Z. Křidélko se vztahuje ke
 své **hloubce** (délka) a **půdorysné ploše** (hloubka × rozpětí), ne k průřezu
@@ -445,6 +445,9 @@ Výpočet se zastaví, když **buď**:
 Druhé je v praxi důležité: RANS výpočet často dosáhne použitelných sil dávno
 před cílovým reziduem, a právě o síly vám jde.
 
+Živý konvergenční graf se objeví se začátkem výpočtu a po skončení iterací
+zmizí, tady i v záložce AI Assistant.
+
 ### MPI ranks
 
 Na kolik procesů se řešič rozdělí. Použijte o dvě méně, než máte logických
@@ -676,7 +679,7 @@ spuštění.
 ## 12. AI asistent
 
 Záložka **AI Assistant** umožňuje napsat běžnou větou, co chcete, a nechat to
-program udělat. Asistent sahá na program přesně přes těch třináct nástrojů,
+program udělat. Asistent sahá na program přesně přes těch čtrnáct nástrojů,
 které vystavuje MCP server — umí tedy to, co umíte vy přes rozhraní, a nic
 víc.
 
@@ -727,6 +730,22 @@ povídat. Volba se pamatuje mezi spuštěními.
 **Za to, co asistent spotřebuje, platíte OpenRouteru** podle tokenů a sazby
 daného modelu. Krátký dotaz stojí zlomek centu, delší série volání nástrojů
 víc.
+
+### Nejdřív vám ukáže nastavení
+
+Než asistent vysíťuje nebo spočítá nastavení, které jste ještě neviděl —
+nový soubor, jiný směr špičky, typ tělesa nebo osu naklápění, nový úhel
+náběhu či vybočení — nakreslí do chatu rychlý obrázek modelu v nízkém
+rozlišení (z boku a šikmo) s přicházejícím vzduchem jako modrými šipkami a
+osou naklápění jako oranžovou tyčí s obloukovou šipkou. Popisek říká, na
+kterém konci CAD modelu je podle něj špička (u křidélka náběžná hrana). Pak
+se zeptá, jestli je to tak, jak chcete, a **počká**: dokud neodpovíte, nic se
+nesíťuje ani nepočítá. Napište „ano“ a pokračuje, nebo napište, co je špatně
+(„špička je na druhém konci“, „naklápět kolem Z“), a nakreslí opravené
+nastavení znovu.
+
+Hlídá to program, ne jen model: nástroje pro síť a výpočet nastavení, které
+nebylo ukázáno a odsouhlaseno, odmítnou.
 
 ### Jak navázat na starší konverzaci
 

@@ -379,3 +379,11 @@ def test_a_motor_nozzle_does_not_pass_for_the_nose(tmp_path):
 def test_fins_decide_whichever_way_the_rocket_is_drawn(tmp_path):
     flipped = [(-x, y, z) for x, y, z in finned_rocket_with_nozzle()]
     assert detect_body_axis(axis_file(tmp_path, flipped)).nose_end == "-X"
+
+
+def test_four_times_longer_than_wide_is_a_rocket(tmp_path):
+    """The rocket threshold is 3.5 lengths, not 5: a stubby rocket is still a rocket."""
+    from core.step_inspect import detect_body_axis
+
+    decision = detect_body_axis(axis_file(tmp_path, rocket_points(length=720.0)))
+    assert decision.kind == "rocket"

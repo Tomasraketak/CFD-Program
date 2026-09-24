@@ -509,7 +509,7 @@ out-of-range angle of attack gets a message it can act on.
 
 ### The built-in assistant
 
-`backend/ai_agent.py` drives the same thirteen tools from inside the program
+`backend/ai_agent.py` drives the same fourteen tools from inside the program
 over OpenRouter's OpenAI-compatible API, so no external MCP client is needed.
 Schemas are read from `server.list_tools()` rather than hand-copied, and a
 test asserts the direct-call registry and the registered tool list are

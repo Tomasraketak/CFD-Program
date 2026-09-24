@@ -1018,3 +1018,11 @@ def test_the_tilt_axis_can_be_chosen(aero_tab):
     aero_tab.step_path.setText("/models/fin.step")
     aero_tab.tilt_axis.setCurrentIndex(aero_tab.tilt_axis.findData("+Y"))
     assert aero_tab.geometry_params().pitch_axis.value == "+Y"
+
+
+def test_the_convergence_chart_shows_only_while_solving(aero_tab):
+    """No empty plot before a run, and the space back for results after it."""
+    assert aero_tab.chart.isHidden()
+    aero_tab.chart.setVisible(True)
+    aero_tab._finish()
+    assert aero_tab.chart.isHidden()

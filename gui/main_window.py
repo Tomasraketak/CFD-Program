@@ -706,6 +706,9 @@ class AerodynamicsTab(QtWidgets.QWidget):
         layout.addWidget(self.overlay_note)
 
         self.chart = ResidualChart()
+        # Shown only while a solve is iterating; afterwards the space goes
+        # back to the model and the results.
+        self.chart.setVisible(False)
         layout.addWidget(self.chart, 2)
 
         cards = QtWidgets.QHBoxLayout()
@@ -1330,6 +1333,7 @@ class AerodynamicsTab(QtWidgets.QWidget):
         record = self.store.create("aero", {"mesh_id": self.mesh_id})
         mesh_record = self.store.get(self.mesh_id)
         self.chart.clear()
+        self.chart.setVisible(True)
 
         worker = AeroWorker(
             request,
@@ -1525,6 +1529,7 @@ class AerodynamicsTab(QtWidgets.QWidget):
         self._worker = None
         self._stop_step_clock()
         self.progress.setVisible(False)
+        self.chart.setVisible(False)
         self.cancel_button.setEnabled(False)
         self.mesh_button.setEnabled(True)
         self.run_button.setEnabled(self.mesh_id is not None)

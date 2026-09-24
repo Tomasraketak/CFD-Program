@@ -101,7 +101,7 @@ class ActiveGeometry(StrictModel):
     body_kind: str = Field(
         default="rocket",
         description=(
-            "'rocket' when one side is more than five times each of the "
+            "'rocket' when one side is more than 3.5 times each of the "
             "others, 'fin' for a thin lifting surface."
         ),
     )

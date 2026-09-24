@@ -38,6 +38,7 @@ SUPPORTING_TOOLS = {
     "list_saved_projects",
     "get_settings",
     "update_settings",
+    "preview_orientation",
 }
 
 EXPECTED_TOOLS = SPECIFIED_TOOLS | SUPPORTING_TOOLS
