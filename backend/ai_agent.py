@@ -52,7 +52,7 @@ SUGGESTED_MODELS = (
     "deepseek/deepseek-v4.1-flash",
     "meta/muse-spark-1.3-contributor",
     "qwen/qwen3.7-flash",
-    "openai/gpt-5.6-luna",
+    "openai/gpt-6-luna",
     "deepseek/deepseek-chat",
 )
 

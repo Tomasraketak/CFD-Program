@@ -42,7 +42,7 @@ from core.credentials import (
     save_api_key,
 )
 from core.chat_history import ChatHistory, Conversation
-from core.settings import AppSettings, save_settings
+from core.settings import AppSettings, load_settings, save_settings
 from gui.charts import ResidualChart, format_duration
 from gui.markdown_render import markdown_to_html
 from gui.theme import ACCENT, DANGER, SUCCESS, TEXT_MUTED, WARNING
@@ -327,6 +327,24 @@ class AITab(QtWidgets.QWidget):
         rounds.addWidget(self.max_rounds)
         rounds.addStretch(1)
         safety_layout.addLayout(rounds)
+
+        iterations = QtWidgets.QHBoxLayout()
+        iterations_label = QtWidgets.QLabel("Iteration limit")
+        iterations_label.setObjectName("hint")
+        self.iteration_limit = QtWidgets.QSpinBox()
+        self.iteration_limit.setRange(100, 100_000)
+        self.iteration_limit.setSingleStep(250)
+        self.iteration_limit.setValue(self.settings.solver_max_iterations)
+        self.iteration_limit.setToolTip(
+            "Solves the assistant runs stop here at the latest, and the result "
+            "is taken as final. The assistant can change it too."
+        )
+        # Saved at once: the solver reads it when a solve starts.
+        self.iteration_limit.valueChanged.connect(self._persist_settings)
+        iterations.addWidget(iterations_label)
+        iterations.addWidget(self.iteration_limit)
+        iterations.addStretch(1)
+        safety_layout.addLayout(iterations)
 
         note = QtWidgets.QLabel(
             "The assistant can only use this program's own simulation tools. "
@@ -656,11 +674,25 @@ class AITab(QtWidgets.QWidget):
             self._approve_tool if self.confirm_long.isChecked() else None
         )
 
+    def _reload_iteration_limit(self) -> None:
+        """Show a limit the assistant set through update_settings."""
+        try:
+            stored = load_settings(self.data_root, refresh=True).solver_max_iterations
+        except Exception:  # noqa: BLE001 - keep what is on screen
+            return
+        self.settings.solver_max_iterations = stored
+        blocked = self.iteration_limit.blockSignals(True)
+        self.iteration_limit.setValue(stored)
+        self.iteration_limit.blockSignals(blocked)
+
     def _persist_settings(self) -> None:
         """Remember the model and safety choices between sessions."""
         self.settings.ai_model = self.selected_model()
         self.settings.ai_confirm_long_tools = self.confirm_long.isChecked()
         self.settings.ai_max_tool_rounds = self.max_rounds.value()
+        if hasattr(self, "iteration_limit"):
+            # The assistant may have changed it through update_settings.
+            self.settings.solver_max_iterations = self.iteration_limit.value()
         save_settings(self.settings, self.data_root)
 
     def _approve_tool(self, name: str, arguments: dict[str, Any]) -> bool:
@@ -844,6 +876,7 @@ class AITab(QtWidgets.QWidget):
     def _on_finished(self, reply: Any) -> None:
         """Render the completed reply."""
         self._set_busy(False)
+        self._reload_iteration_limit()
         self.activity.clear()
         if getattr(reply, "metrics", None) is not None:
             self._metrics = reply.metrics

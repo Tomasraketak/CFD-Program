@@ -513,7 +513,7 @@ def test_a_mach_slice_is_cropped_to_the_body(rocket_solution, tmp_path, monkeypa
     captured = {}
     original = visualizer.apply_camera
 
-    def spy(plotter, dataset, settings):
+    def spy(plotter, dataset, settings, face_normal=None):
         captured["bounds"] = dataset.bounds
         return original(plotter, dataset, settings)
 
@@ -666,3 +666,24 @@ def test_every_image_names_its_speed_and_angle(tmp_path):
     caption = flow_caption(point)
     assert "Mach 0.50" in caption and "170 m/s" in caption and "AoA 7°" in caption
     assert flow_caption(tmp_path / "nothing") == ""
+
+
+def test_a_slice_is_seen_face_on_from_any_named_view():
+    """From an angle a slice was a skewed parallelogram with the field squashed."""
+    import pyvista as pv
+
+    from backend.visualizer import RenderSettings, apply_camera
+
+    plane = pv.Plane(center=(0, 0, 0), direction=(0, 1, 0), i_size=1.0, j_size=2.0)
+    plotter = pv.Plotter(off_screen=True, window_size=(320, 180))
+    try:
+        apply_camera(
+            plotter, plane, RenderSettings(resolution="hd", camera_view="isometric", frame="rocket"),
+            face_normal=(0.0, 1.0, 0.0),
+        )
+        position, focal, _up = plotter.camera_position
+        view = np.subtract(position, focal)
+        view /= np.linalg.norm(view)
+        assert abs(abs(view[1]) - 1.0) < 1e-9
+    finally:
+        plotter.close()

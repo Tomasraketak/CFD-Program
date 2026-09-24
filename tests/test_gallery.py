@@ -289,3 +289,24 @@ def test_the_status_line_says_when_rendering_is_done(graphics_tab):
     graphics_tab._render_finished()
     assert graphics_tab.render_button.text() == "Render"
     assert "ready" in messages[-1]
+
+
+def test_several_images_can_be_picked_and_deleted(graphics_tab, store):
+    """Old renders pile up; picking a handful and deleting them should be easy."""
+    keep = make_render(store, "keep.png")
+    first = make_render(store, "old_a.png")
+    second = make_render(store, "old_b.png")
+    graphics_tab.refresh(force=True)
+
+    graphics_tab.image_list.clearSelection()
+    for row in range(graphics_tab.image_list.count()):
+        item = graphics_tab.image_list.item(row)
+        if item.data(QtCore.Qt.ItemDataRole.UserRole) in (str(first), str(second)):
+            item.setSelected(True)
+    assert sorted(graphics_tab.selected_paths()) == sorted([str(first), str(second)])
+    assert graphics_tab.delete_button.text() == "Delete 2"
+
+    deleted = graphics_tab.delete_selected(confirm=False)
+    assert sorted(deleted) == sorted([first, second])
+    assert not first.exists() and not second.exists() and keep.exists()
+    assert graphics_tab.image_list.count() == 1

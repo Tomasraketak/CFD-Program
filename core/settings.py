@@ -122,6 +122,16 @@ class AppSettings(StrictModel):
             "drops after the model has generated is paid for twice."
         ),
     )
+    solver_max_iterations: int = Field(
+        default=1000,
+        ge=100,
+        le=100_000,
+        description=(
+            "Iteration limit for solves the assistant runs. A solve that "
+            "reaches it without meeting the residual criterion is taken as "
+            "the result, with a note saying so."
+        ),
+    )
     ai_max_tool_rounds: int = Field(
         default=12,
         ge=1,

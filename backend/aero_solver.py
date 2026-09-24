@@ -437,6 +437,15 @@ def run_aero_case(
             "restarted automatically; the result is from the second start.",
         )
 
+    if reached_iteration_limit(parser, request.solver.max_iterations):
+        drop = relative_residual_drop(parser)
+        fallen = f"; the residual fell {-drop:.1f} orders" if drop is not None else ""
+        notes.append(
+            f"Stopped at the iteration limit of {request.solver.max_iterations} "
+            f"and taken as the result{fallen}. Raise the limit if the forces "
+            "were still changing."
+        )
+
     coefficients = _collect_coefficients(parser, working_directory)
     result = _build_result(
         request=request,
@@ -813,6 +822,9 @@ def _build_result(
         final_residual_rho=residual,
         converged=bool(
             stopped_early
+            # The operator's iteration limit is their definition of "enough":
+            # a run that reaches it is taken as final (and says so in a note).
+            or reached_iteration_limit(parser, request.solver.max_iterations)
             or (
                 (drop := relative_residual_drop(parser)) is not None
                 and len(parser.records) >= MIN_CONVERGED_ITERATIONS
@@ -821,6 +833,11 @@ def _build_result(
         ),
         wall_time_s=wall_time_s,
     )
+
+
+def reached_iteration_limit(parser: SU2OutputParser, limit: int) -> bool:
+    """Whether the solve ran all the iterations it was allowed."""
+    return bool(parser.records) and parser.records[-1].iteration + 1 >= limit
 
 
 # Below this fraction of the axial force, a transverse force is treated as

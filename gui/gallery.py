@@ -283,7 +283,17 @@ class GraphicsTab(QtWidgets.QWidget):
         self.image_list.setWordWrap(True)
         self.image_list.setSpacing(6)
         self.image_list.setUniformItemSizes(True)
+        # Ctrl/Shift-click (and Ctrl+A) pick several, to export or delete
+        # together; the large view shows whichever was clicked last.
+        self.image_list.setSelectionMode(
+            QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection
+        )
         self.image_list.currentItemChanged.connect(self._show_current)
+        self.image_list.itemSelectionChanged.connect(self._selection_changed)
+        delete_shortcut = QtGui.QShortcut(
+            QtGui.QKeySequence(QtGui.QKeySequence.StandardKey.Delete), self.image_list
+        )
+        delete_shortcut.activated.connect(lambda: self.delete_selected())
         self.image_list.itemDoubleClicked.connect(lambda _item: self.open_externally())
         layout.addWidget(self.image_list, 1)
 
@@ -336,9 +346,15 @@ class GraphicsTab(QtWidgets.QWidget):
         self.open_button.clicked.connect(self.open_externally)
         self.folder_button = QtWidgets.QPushButton("Show folder")
         self.folder_button.clicked.connect(self.open_folder)
+        self.delete_button = QtWidgets.QPushButton("Delete")
+        self.delete_button.setToolTip(
+            "Delete the selected images from disk (Ctrl/Shift-click to pick "
+            "several; Delete key works too). The simulation is kept."
+        )
+        self.delete_button.clicked.connect(lambda: self.delete_selected())
         for button in (
             self.export_button, self.export_run_button, self.copy_button,
-            self.open_button, self.folder_button,
+            self.open_button, self.folder_button, self.delete_button,
         ):
             buttons.addWidget(button)
         buttons.addStretch(1)
@@ -496,9 +512,55 @@ class GraphicsTab(QtWidgets.QWidget):
     def _set_actions_enabled(self, enabled: bool) -> None:
         for button in (
             self.export_button, self.export_run_button, self.copy_button,
-            self.open_button, self.folder_button,
+            self.open_button, self.folder_button, self.delete_button,
         ):
             button.setEnabled(enabled)
+
+    def selected_paths(self) -> list[str]:
+        """Every selected image, in list order."""
+        rows = sorted(self.image_list.row(item) for item in self.image_list.selectedItems())
+        return [
+            self.image_list.item(row).data(QtCore.Qt.ItemDataRole.UserRole) for row in rows
+        ]
+
+    def _selection_changed(self) -> None:
+        """Say how many are picked, on the buttons that act on all of them."""
+        count = len(self.selected_paths())
+        many = count > 1
+        self.export_button.setText(f"Export {count} …" if many else "Export …")
+        self.delete_button.setText(f"Delete {count}" if many else "Delete")
+        if count:
+            self._set_actions_enabled(True)
+
+    def delete_selected(self, confirm: bool = True) -> list[Path]:
+        """Delete the selected image files, after asking."""
+        paths = [Path(p) for p in self.selected_paths()]
+        if not paths:
+            return []
+        if confirm:
+            names = "\n".join(p.name for p in paths[:8])
+            more = f"\n… and {len(paths) - 8} more" if len(paths) > 8 else ""
+            answer = QtWidgets.QMessageBox.question(
+                self,
+                "Delete images",
+                f"Delete {len(paths)} image{'s' if len(paths) > 1 else ''} from "
+                f"disk?\n\n{names}{more}\n\nThe simulations stay; images can "
+                "be drawn again.",
+            )
+            if answer != QtWidgets.QMessageBox.StandardButton.Yes:
+                return []
+        deleted: list[Path] = []
+        for path in paths:
+            try:
+                path.unlink()
+                deleted.append(path)
+            except FileNotFoundError:
+                deleted.append(path)
+            except OSError as error:
+                QtWidgets.QMessageBox.warning(self, "Delete images", f"{path.name}: {error}")
+        self.refresh(force=True)
+        self.statusMessage.emit(f"Deleted {len(deleted)} image{'s' if len(deleted) != 1 else ''}")
+        return deleted
 
     # -- export ------------------------------------------------------------
 
@@ -520,7 +582,30 @@ class GraphicsTab(QtWidgets.QWidget):
             pass
 
     def export_selected(self) -> Path | None:
-        """Save a copy of the selected image where the operator chooses."""
+        """Save a copy of the selected image where the operator chooses.
+
+        With several selected, they are all copied into a chosen folder.
+        """
+        chosen = self.selected_paths()
+        if len(chosen) > 1:
+            directory = QtWidgets.QFileDialog.getExistingDirectory(
+                self, f"Export {len(chosen)} images", self._export_directory()
+            )
+            if not directory:
+                return None
+            try:
+                for source in chosen:
+                    source_path = Path(source)
+                    export_image(
+                        source_path,
+                        Path(directory) / f"{source_path.parent.parent.name}_{source_path.name}",
+                    )
+            except OSError as error:
+                QtWidgets.QMessageBox.warning(self, "Export images", str(error))
+                return None
+            self._remember_export_directory(Path(directory))
+            self.statusMessage.emit(f"Exported {len(chosen)} images")
+            return Path(directory)
         source = self.selected_path()
         if source is None:
             return None

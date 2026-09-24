@@ -727,6 +727,14 @@ def preview_orientation(
 # Tool 2: aerodynamic simulation
 # ---------------------------------------------------------------------------
 
+def _iteration_limit() -> int:
+    """The operator's iteration limit (AI Assistant tab, or update_settings)."""
+    try:
+        return load_settings(_store().root, refresh=True).solver_max_iterations
+    except Exception:  # noqa: BLE001 - a broken settings file is not fatal
+        return AppSettings().solver_max_iterations
+
+
 def _cop_from_nose(cop_rocket: Any, mesh_record: Any) -> dict[str, Any]:
     """The centre of pressure as a distance behind the nose tip.
 
@@ -803,7 +811,7 @@ def run_aerodynamic_simulation(
     reference_length_m: float | None = None,
     moment_origin: list[float] | None = None,
     mpi_ranks: int = 10,
-    max_iterations: int = 5000,
+    max_iterations: int | None = None,
     convergence_residual: float = -5.0,
     turbulence_model: str = "SST",
     cfl_number: float | None = None,
@@ -837,7 +845,10 @@ def run_aerodynamic_simulation(
         MPI ranks for the solver; 10 suits a 6-core/12-thread machine.
     max_iterations, convergence_residual, turbulence_model:
         convergence_residual is the drop in log10 RMS[Rho] from its peak.
-        Solver controls.
+        max_iterations defaults to the operator's iteration limit
+        (solver_max_iterations, 1000 unless changed); a run that reaches it
+        is taken as the result, with a note. Change the default for good
+        with update_settings. Solver controls.
     cfl_number:
         Starting CFL. Leave null to pick it from the flow regime: a cold
         supersonic start needs a far more cautious one than a subsonic run,
@@ -880,7 +891,7 @@ def run_aerodynamic_simulation(
             ),
             solver=SolverParams(
                 mpi_ranks=mpi_ranks,
-                max_iterations=max_iterations,
+                max_iterations=max_iterations or _iteration_limit(),
                 convergence_residual=convergence_residual,
                 turbulence_model=turbulence_model,
                 cfl_number=cfl_number,
@@ -1364,7 +1375,10 @@ def run_parametric_sweep_tool(
                 sideslip_deg=float(fixed.get("sideslip_deg", 0.0)),
                 altitude_m=float(fixed.get("altitude_m", 0.0)),
             ),
-            solver=SolverParams(mpi_ranks=mpi_ranks),
+            solver=SolverParams(
+                mpi_ranks=mpi_ranks,
+                max_iterations=int(fixed.get("max_iterations") or _iteration_limit()),
+            ),
             hinge_axes=axes,
         )
     except Exception as error:

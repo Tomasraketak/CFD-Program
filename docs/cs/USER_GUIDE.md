@@ -613,6 +613,7 @@ jsou seřazené od nejnovějšího, s náhledy, a vybraný se ukáže zvětšen�
 | **Copy** | Vloží obrázek do schránky, např. do zprávy |
 | **Open** | Otevře ho v systémovém prohlížeči (také dvojklikem) |
 | **Show folder** | Otevře složku, kde je obrázek uložen |
+| **Delete** | Smaže vybrané obrázky z disku (nejdřív se zeptá; simulace zůstane). Ctrl/Shift-klik nebo Ctrl+A vybere víc — Export i Delete pak platí pro všechny; funguje i klávesa Delete |
 
 Řádek nahoře kreslí nový obrázek: vyberte dokončený výpočet, typ obrázku,
 pohled, barvy a velikost a klikněte na **Render**. Když výpočet doběhne
@@ -723,7 +724,7 @@ Tlačítko **Remove** klíč smaže ze všech úložišť naráz.
 
 Rozbalovací seznam **Model** obsahuje výběr: `deepseek/deepseek-v4.1-flash`,
 `meta/muse-spark-1.3-contributor`, `qwen/qwen3.7-flash`,
-`openai/gpt-5.6-luna` a `deepseek/deepseek-chat`. První položka,
+`openai/gpt-6-luna` a `deepseek/deepseek-chat`. První položka,
 **Custom…**, otevře pod seznamem políčko, do kterého napíšete libovolné id.
 **Fetch available models** přidá pod výběr živý katalog, na který váš účet
 skutečně dosáhne, a nabízí ho i jako našeptávač při psaní vlastního id —
@@ -861,6 +862,7 @@ větší šanci splést si dvě úlohy.
 |---|---|
 | Ask before meshing, solving or sweeping | Potvrzení před každým dlouhým krokem, s názvem nástroje, argumenty a očekávanou dobou běhu. Standardně zapnuto. |
 | Max tool rounds | Strop počtu kol volání nástrojů na jeden požadavek. Zabrání zmatenému modelu utrácet kredit ve smyčce. Výchozí 12. |
+| Iteration limit | Výpočty spuštěné asistentem skončí nejpozději tady a výsledek se bere jako konečný, s poznámkou, o kolik řádů kleslo reziduum. Výchozí 1000; asistent ho umí změnit (`solver_max_iterations`). |
 
 Když krok odmítnete, model se to dozví a zeptá se, co byste chtěli místo
 toho — nezkusí totéž znovu.

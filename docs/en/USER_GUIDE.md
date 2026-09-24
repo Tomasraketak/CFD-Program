@@ -621,6 +621,7 @@ them newest first with thumbnails and shows the selected one large.
 | **Copy** | Put the image on the clipboard, to paste into a report |
 | **Open** | Open it in the system image viewer (also: double-click) |
 | **Show folder** | Open the folder the image is stored in |
+| **Delete** | Delete the selected images from disk (asks first; the simulation stays). Ctrl/Shift-click or Ctrl+A picks several — Export and Delete then act on all of them; the Delete key works too |
 
 The row at the top draws a new image: pick a finished run, the image type,
 view, colours and size, then **Render**. When a solve finishes in the
@@ -732,7 +733,7 @@ repository. **Remove** deletes the key from every backend at once.
 
 The **Model** drop-down holds a shortlist: `deepseek/deepseek-v4.1-flash`,
 `meta/muse-spark-1.3-contributor`, `qwen/qwen3.7-flash`,
-`openai/gpt-5.6-luna` and `deepseek/deepseek-chat`. Its first entry,
+`openai/gpt-6-luna` and `deepseek/deepseek-chat`. Its first entry,
 **Custom…**, opens a box underneath where you can type any id at all.
 **Fetch available models** adds the live catalogue your account can actually
 reach below the shortlist, and offers it as suggestions while you type a
@@ -873,6 +874,7 @@ gives the model more chance to confuse two studies.
 |---|---|
 | Ask before meshing, solving or sweeping | Confirms each long-running step, showing the tool, its arguments and the expected runtime. On by default. |
 | Max tool rounds | Caps how many tool-calling rounds one request may take. Stops a confused model spending your credit in a loop. Default 12. |
+| Iteration limit | Solves the assistant runs stop here at the latest and the result is taken as final, with a note saying how far the residual fell. Default 1000; the assistant can change it (`solver_max_iterations`). |
 
 Declining a step tells the model you declined and asks what you would prefer,
 rather than having it retry the same thing.

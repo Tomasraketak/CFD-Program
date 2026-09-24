@@ -392,7 +392,7 @@ def test_the_model_list_is_the_requested_drop_down(ai_tab):
         "deepseek/deepseek-v4.1-flash",
         "meta/muse-spark-1.3-contributor",
         "qwen/qwen3.7-flash",
-        "openai/gpt-5.6-luna",
+        "openai/gpt-6-luna",
     ):
         assert requested in items
 
@@ -442,9 +442,9 @@ def test_a_typed_model_id_is_used(ai_tab):
 
 
 def test_a_listed_model_is_used(ai_tab):
-    ai_tab.set_model("openai/gpt-5.6-luna")
-    assert ai_tab.model_combo.currentText() == "openai/gpt-5.6-luna"
-    assert ai_tab.selected_model() == "openai/gpt-5.6-luna"
+    ai_tab.set_model("openai/gpt-6-luna")
+    assert ai_tab.model_combo.currentText() == "openai/gpt-6-luna"
+    assert ai_tab.selected_model() == "openai/gpt-6-luna"
 
 
 def test_the_custom_placeholder_is_never_persisted(ai_tab, isolated_data_root):
@@ -688,3 +688,14 @@ def test_the_live_chart_goes_away_when_the_iterations_end(ai_tab):
     assert not ai_tab.solve_chart.isHidden()
     ai_tab._on_solver_event("finished", None)
     assert ai_tab.solve_chart.isHidden()
+
+
+def test_the_iteration_limit_is_set_here_and_read_by_the_solver(ai_tab, isolated_data_root):
+    """1000 by default; changing the box is what the next solve uses."""
+    import mcp_server
+    from core.settings import load_settings
+
+    assert ai_tab.iteration_limit.value() == 1000
+    ai_tab.iteration_limit.setValue(2500)
+    assert load_settings(isolated_data_root, refresh=True).solver_max_iterations == 2500
+    assert mcp_server._iteration_limit() == 2500

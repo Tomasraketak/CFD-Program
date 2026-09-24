@@ -330,9 +330,18 @@ def _scalar_bar_arguments(title: str) -> dict:
 
 
 def apply_camera(
-    plotter: pv.Plotter, dataset: pv.DataSet, settings: RenderSettings
+    plotter: pv.Plotter,
+    dataset: pv.DataSet,
+    settings: RenderSettings,
+    face_normal: Sequence[float] | None = None,
 ) -> None:
-    """Point the camera at the data from a named viewpoint."""
+    """Point the camera at the data from a named viewpoint.
+
+    ``face_normal`` is for flat things -- a slice. A plane seen from an
+    angle is a skewed parallelogram with the field squashed across it, so
+    the camera looks straight at it from whichever side the named view is
+    on, and keeps that view's notion of up.
+    """
     view = settings.camera_view
     views = ROCKET_CAMERA_VIEWS if settings.frame == "rocket" else CAMERA_VIEWS
     if view not in views:
@@ -343,7 +352,17 @@ def apply_camera(
     direction, up = views[view]
     direction = np.array(direction, dtype=float)
     direction /= np.linalg.norm(direction)
+    if face_normal is not None:
+        normal = np.array(face_normal, dtype=float)
+        if np.linalg.norm(normal) > 0.0:
+            normal /= np.linalg.norm(normal)
+            direction = normal if np.dot(normal, direction) >= 0.0 else -normal
     up_vector = np.array(up, dtype=float)
+    if abs(np.dot(up_vector, direction)) > 0.99 * np.linalg.norm(up_vector):
+        # Looking along "up": take the body axis instead.
+        up_vector = np.array([0.0, 0.0, 1.0] if settings.frame == "rocket" else [1.0, 0.0, 0.0])
+        if abs(np.dot(up_vector, direction)) > 0.99:
+            up_vector = np.array([0.0, 1.0, 0.0])
     # Up must be perpendicular to the view direction for the fit below.
     up_vector = up_vector - np.dot(up_vector, direction) * direction
     if np.linalg.norm(up_vector) < 1.0e-9:  # pragma: no cover - degenerate view
@@ -528,7 +547,7 @@ def render_mach_slice(
     if show_body and body is not None and body.n_points:
         plotter.add_mesh(body, color="#8a8f98", opacity=0.55, smooth_shading=True)
 
-    apply_camera(plotter, plane, settings)
+    apply_camera(plotter, plane, settings, face_normal=slice_normal)
     return _save(plotter, Path(output_path))
 
 
@@ -589,7 +608,7 @@ def render_schlieren(
     )
     if show_body and body is not None and body.n_points:
         plotter.add_mesh(body, color="#4da3ff", smooth_shading=True)
-    apply_camera(plotter, derived, settings)
+    apply_camera(plotter, derived, settings, face_normal=slice_normal)
     return _save(plotter, Path(output_path))
 
 

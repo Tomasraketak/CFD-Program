@@ -1447,3 +1447,18 @@ def test_the_incompressible_pressure_residual_drives_convergence():
     assert record is not None
     assert record.rms_rho == pytest.approx(-4.244849)
     assert record.get("cd") == pytest.approx(1.723264)
+
+
+def test_reaching_the_iteration_limit_is_taken_as_the_result(mesh_file, tmp_path):
+    """The operator's limit is their definition of enough, and it says so."""
+    runner = FakeRunner(lines=screen_rows(120), artifacts={"forces_breakdown.dat": FORCES_BREAKDOWN})
+    result = run_aero_case(
+        make_request(
+            flow=FlowParams(velocity_value=0.5),
+            solver=SolverParams(max_iterations=120, convergence_residual=-12.0),
+        ),
+        mesh_path=mesh_file, working_directory=tmp_path / "run", runner=runner,
+        reference_area_m2=0.005, reference_length_m=0.08,
+    )
+    assert result.converged
+    assert any("iteration limit of 120" in note for note in result.notes)
