@@ -341,16 +341,56 @@ def apply_camera(
             f"{', '.join(views)}"
         )
     direction, up = views[view]
-    centre = np.array(dataset.center, dtype=float)
-    diagonal = float(np.linalg.norm(np.array(dataset.bounds[1::2]) - np.array(dataset.bounds[::2])))
-    distance = max(diagonal, 1.0e-6) * 1.5
+    direction = np.array(direction, dtype=float)
+    direction /= np.linalg.norm(direction)
+    up_vector = np.array(up, dtype=float)
+    # Up must be perpendicular to the view direction for the fit below.
+    up_vector = up_vector - np.dot(up_vector, direction) * direction
+    if np.linalg.norm(up_vector) < 1.0e-9:  # pragma: no cover - degenerate view
+        up_vector = np.array([0.0, 0.0, 1.0])
+    up_vector /= np.linalg.norm(up_vector)
+    right = np.cross(direction, up_vector)
 
-    position = centre + np.array(direction, dtype=float) / math.sqrt(
-        sum(component**2 for component in direction)
-    ) * distance
-    plotter.camera_position = [tuple(position), tuple(centre), up]
-    if settings.zoom != 1.0:
-        plotter.camera.zoom(settings.zoom)
+    low = np.array(dataset.bounds[::2], dtype=float)
+    high = np.array(dataset.bounds[1::2], dtype=float)
+    centre = 0.5 * (low + high)
+    corners = np.array(
+        [[x, y, z] for x in (low[0], high[0]) for y in (low[1], high[1]) for z in (low[2], high[2])]
+    ) - centre
+    half_width = float(np.max(np.abs(corners @ right)))
+    half_height = float(np.max(np.abs(corners @ up_vector)))
+    depth = float(np.max(np.abs(corners @ direction)))
+
+    # Parallel projection, fitted to what the model actually covers on
+    # screen. The old placement stood the camera 1.5 diagonals away with a
+    # 30-degree perspective lens, which for a 1.3 m rocket standing upright
+    # in a wide image cut off the nose and the tail. The legend takes the
+    # right-hand sixth of the frame, so only the rest is counted as usable.
+    width, height = settings.window_size()
+    aspect = (width / height) * USABLE_WIDTH_FRACTION
+    scale = max(half_height, half_width / aspect, 1.0e-6) * FRAME_MARGIN
+    distance = max(depth * 3.0, scale * 4.0, 1.0e-3)
+    # Shift left by half the legend's share, so the model is centred in the
+    # space it has rather than under the legend.
+    shift = right * scale * (width / height) * (1.0 - USABLE_WIDTH_FRACTION)
+    # ``direction`` points from the model to the camera, so ``right`` as
+    # computed is screen-left; moving the focal point that way moves the
+    # model right on screen -- under the legend. Hence the minus.
+    focal = centre - shift
+    plotter.camera_position = [
+        tuple(focal + direction * distance),
+        tuple(focal),
+        tuple(up_vector),
+    ]
+    plotter.enable_parallel_projection()
+    plotter.camera.parallel_scale = scale / max(settings.zoom, 1.0e-6)
+    plotter.camera.clipping_range = (1.0e-4 * distance, distance * 4.0 + depth * 4.0)
+
+
+# Share of the image width the model may use; the scalar bar has the rest.
+USABLE_WIDTH_FRACTION = 0.78
+# Breathing room around the model.
+FRAME_MARGIN = 1.08
 
 
 def _save(plotter: pv.Plotter, output_path: Path) -> Path:
@@ -399,13 +439,17 @@ def render_surface_pressure(
         except VisualizationError:
             quantity = "pressure"
     name = resolve_field(surface, quantity)
+    # By area, like the Mach slice: the stagnation point at the nose tip is
+    # a few square millimetres at C_p 2.2, and taking the range from it
+    # painted the whole body one shade of blue.
+    clim = settings.clim or _area_weighted_range(surface, name, 1.0, 99.0, floor=None)
 
     plotter = _new_plotter(settings)
     plotter.add_mesh(
         surface,
         scalars=name,
         cmap=settings.validated_colormap(),
-        clim=settings.clim,
+        clim=clim,
         show_edges=settings.show_edges,
         smooth_shading=True,
         scalar_bar_args=_scalar_bar_arguments(
@@ -569,6 +613,12 @@ def render_streamlines(
     settings = settings or RenderSettings()
     velocity_name = resolve_field(dataset, "velocity")
 
+    body = _extract_walls(dataset) if show_body else None
+    if seed_center is None and body is not None and body.n_points:
+        return _render_body_streamlines(
+            dataset, body, velocity_name, output_path, settings, n_points, colour_by
+        )
+
     bounds = np.array(dataset.bounds, dtype=float)
     extent = bounds[1::2] - bounds[::2]
     centre = (
@@ -636,6 +686,127 @@ def render_streamlines(
             plotter.add_mesh(body, color="#8a8f98", opacity=0.35, smooth_shading=True)
 
     apply_camera(plotter, dataset, settings)
+    return _save(plotter, Path(output_path))
+
+
+# Streamline seeding around a body: a disc this many body radii across,
+# this far upstream of the nose in body lengths, and the lines cropped to
+# this margin around the body.
+STREAMLINE_SEED_RADII = 2.2
+STREAMLINE_UPSTREAM = 0.15
+STREAMLINE_MARGIN = 0.35
+# Seeds in the rake.
+STREAMLINE_RAKE_COUNT = 31
+
+
+def _screen_right(settings: RenderSettings, flow: np.ndarray) -> np.ndarray:
+    """A direction across the flow that lies across the picture."""
+    views = ROCKET_CAMERA_VIEWS if settings.frame == "rocket" else CAMERA_VIEWS
+    direction, up = views.get(settings.camera_view, views["isometric"])
+    right = np.cross(np.array(up, dtype=float), np.array(direction, dtype=float))
+    right = right - np.dot(right, flow) * flow
+    if np.linalg.norm(right) < 1.0e-9:
+        right = np.cross(flow, [0.0, 0.0, 1.0])
+        if np.linalg.norm(right) < 1.0e-9:
+            right = np.cross(flow, [1.0, 0.0, 0.0])
+    return right / np.linalg.norm(right)
+
+
+def _render_body_streamlines(
+    dataset: pv.DataSet,
+    body: pv.DataSet,
+    velocity_name: str,
+    output_path: Path | str,
+    settings: RenderSettings,
+    n_points: int,
+    colour_by: str,
+) -> Path:
+    """Flow paths past a body, seeded just upstream of it.
+
+    Seeding at the middle of the domain -- what this did before -- put the
+    seeds in open air beside a slender rocket, and every line came out
+    straight and the same colour: a picture of the freestream. Here the
+    seeds are a disc just ahead of the nose, slightly wider than the fins,
+    so each line passes the body, and the picture is cropped to the body.
+    """
+    velocity = np.asarray(dataset.point_data[velocity_name], dtype=float)
+    flow = np.median(velocity, axis=0)
+    if np.linalg.norm(flow) < 1.0e-12:
+        raise VisualizationError("the velocity field is zero everywhere")
+    flow = flow / np.linalg.norm(flow)
+
+    low = np.array(body.bounds[::2], dtype=float)
+    high = np.array(body.bounds[1::2], dtype=float)
+    centre = 0.5 * (low + high)
+    corners = np.array(
+        [[x, y, z] for x in (low[0], high[0]) for y in (low[1], high[1]) for z in (low[2], high[2])]
+    ) - centre
+    length = float(np.ptp(corners @ flow))
+    lateral = corners - np.outer(corners @ flow, flow)
+    radius = float(np.max(np.linalg.norm(lateral, axis=1))) or 0.05 * length
+
+    upstream = centre - flow * (0.5 * length + STREAMLINE_UPSTREAM * length)
+    # A rake of seeds across the flow in the plane the camera looks at, like
+    # smoke filaments in a wind tunnel: a full disc of seeds buried the
+    # rocket in a wall of lines.
+    across = _screen_right(settings, flow)
+    count = max(9, min(STREAMLINE_RAKE_COUNT, n_points))
+    offsets = np.linspace(-STREAMLINE_SEED_RADII * radius, STREAMLINE_SEED_RADII * radius, count)
+    seeds = pv.PolyData(upstream + np.outer(offsets, across))
+
+    span = float(np.linalg.norm(np.array(dataset.bounds[1::2]) - np.array(dataset.bounds[::2])))
+    try:
+        lines = dataset.streamlines_from_source(
+            seeds,
+            vectors=velocity_name,
+            integration_direction="forward",
+            max_length=span,
+        )
+    except TypeError:  # pragma: no cover - older PyVista
+        lines = dataset.streamlines_from_source(
+            seeds, vectors=velocity_name, integration_direction="forward", max_time=span
+        )
+    if lines.n_points == 0:
+        raise VisualizationError("no streamlines could be traced past the body")
+    lines = _crop_to_body(lines, body, STREAMLINE_MARGIN)
+
+    try:
+        colour_field = resolve_field(lines, "mach" if colour_by == "velocity" else colour_by)
+        quantity = "mach" if colour_by == "velocity" else colour_by
+    except VisualizationError:
+        colour_field = resolve_field(lines, colour_by)
+        quantity = colour_by
+    values = np.asarray(lines.point_data[colour_field], dtype=float)
+    if values.ndim > 1:
+        values = np.linalg.norm(values, axis=1)
+        lines.point_data["_colour"] = values
+        colour_field = "_colour"
+    clim = settings.clim or (
+        float(np.percentile(values, 2)),
+        float(np.percentile(values, 99.5)),
+    )
+    if not clim[1] > clim[0]:
+        clim = None
+
+    geometry = lines
+    try:
+        geometry = lines.tube(radius=0.03 * radius)
+    except Exception:  # pragma: no cover - degenerate lines
+        pass
+
+    plotter = _new_plotter(settings)
+    plotter.add_mesh(
+        geometry,
+        scalars=colour_field,
+        cmap=settings.validated_colormap(),
+        clim=clim,
+        smooth_shading=True,
+        scalar_bar_args=_scalar_bar_arguments(
+            scalar_bar_title(quantity, settings.scalar_bar_title)
+        ),
+    )
+    plotter.add_mesh(body, color="#c8ccd4", smooth_shading=True)
+    apply_camera(plotter, geometry, settings)
     return _save(plotter, Path(output_path))
 
 
@@ -715,7 +886,11 @@ def render_thermal(
 
 
 def _area_weighted_range(
-    plane: pv.DataSet, name: str, low: float = 2.0, high: float = 98.0
+    plane: pv.DataSet,
+    name: str,
+    low: float = 2.0,
+    high: float = 98.0,
+    floor: float | None = 0.6,
 ) -> tuple[float, float] | None:
     """The colour range that covers most of the picture, by area.
 
@@ -747,7 +922,9 @@ def _area_weighted_range(
     # Freestream fills most of the area, so the low percentile sits close to
     # it; keeping the range at least 40% of the top value deep leaves room
     # for the flow behind a shock and around the body to read as colour.
-    return min(lower, 0.6 * upper), upper
+    if floor is None:
+        return lower, upper
+    return min(lower, floor * upper), upper
 
 
 def _extract_walls(dataset: pv.DataSet) -> pv.PolyData | None:
@@ -981,6 +1158,13 @@ def to_rocket_frame(dataset: pv.DataSet) -> pv.DataSet:
     Vector fields are rotated with the points, so velocity still points the
     way the air moves -- downwards, past a rocket climbing nose-first.
     """
+    # Voxels and pixels are axis-aligned by definition; rotated, VTK can no
+    # longer find a point inside them and streamline tracing silently finds
+    # nothing. SU2 writes tetrahedra and prisms, but an image-derived grid
+    # does not, so those are split first.
+    celltypes = getattr(dataset, "celltypes", None)
+    if celltypes is not None and np.isin(celltypes, (8, 11)).any():
+        dataset = dataset.triangulate()
     return dataset.transform(
         homogeneous_solver_to_rocket(),
         transform_all_input_vectors=True,

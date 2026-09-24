@@ -600,3 +600,51 @@ def test_the_mach_range_follows_the_picture_not_its_extremes():
     assert high == pytest.approx(1.3, abs=0.01)
     # Not 0 (the extreme), and deep enough to show the flow behind a shock.
     assert 0.0 < low <= 0.6 * 1.3 + 1e-9
+
+
+def test_the_camera_frames_the_whole_model(rocket_solution):
+    """A tall rocket in a wide image lost its nose and tail to the old fit."""
+    from backend.visualizer import apply_camera, to_rocket_frame
+
+    rocket = to_rocket_frame(rocket_solution)
+    for view in ("side", "isometric", "front"):
+        plotter = pv.Plotter(off_screen=True, window_size=(1920, 1080))
+        settings = RenderSettings(resolution="hd", camera_view=view, frame="rocket")
+        apply_camera(plotter, rocket, settings)
+        camera = plotter.camera
+        assert camera.parallel_projection
+        low, high = np.array(rocket.bounds[::2]), np.array(rocket.bounds[1::2])
+        # Parallel scale is half the visible height; the model must fit in it.
+        if view == "side":
+            assert camera.parallel_scale >= 0.5 * (high[2] - low[2])
+        plotter.close()
+
+
+def test_body_streamlines_pass_the_body(rocket_solution, tmp_path):
+    """Seeded ahead of the nose, not in open air beside it."""
+    path = render_visualization(
+        rocket_solution, "streamlines", tmp_path / "s.png",
+        camera_view="side", resolution="preview", frame="rocket",
+    )
+    assert image_is_not_blank(path, minimum_colours=20)
+
+
+def test_the_surface_colour_range_ignores_the_stagnation_point(rocket_solution, tmp_path, monkeypatch):
+    import backend.visualizer as visualizer
+
+    seen = {}
+    original = visualizer.pv.Plotter.add_mesh
+
+    def spy(self, mesh, *args, **kwargs):
+        if kwargs.get("scalars"):
+            seen["clim"] = kwargs.get("clim")
+        return original(self, mesh, *args, **kwargs)
+
+    monkeypatch.setattr(visualizer.pv.Plotter, "add_mesh", spy)
+    render_visualization(
+        rocket_solution, "surface_pressure", tmp_path / "p.png",
+        resolution="preview", frame="rocket",
+    )
+    pressure = np.asarray(rocket_solution.point_data["Pressure"])
+    assert seen["clim"] is not None
+    assert seen["clim"][1] <= pressure.max()
