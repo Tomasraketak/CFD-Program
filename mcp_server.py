@@ -15,11 +15,11 @@ structured arguments.
 from __future__ import annotations
 
 import json
+import math
 import re
 import os
 import time
 import traceback
-import uuid
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -70,7 +70,7 @@ from core.step_inspect import (
     detect_body_axis,
     suggest_scale_to_meters,
 )
-from core.store import RecordNotFoundError, RunStore, default_store
+from core.store import RUN_ID_PATTERN, RecordNotFoundError, RunStore, default_store
 from core.workspace import active_geometry, set_active_geometry
 
 SERVER_NAME = "aerothermalstudio"
@@ -457,7 +457,9 @@ def set_geometry_and_mesh(
         tapering end is the nose -- and when the shape does not say, the
         call fails asking which end it is rather than guessing.
     reference_origin:
-        Point [x0, y0, z0] moved to the tunnel origin, typically the nose tip.
+        Point [x0, y0, z0] moved to the tunnel origin, e.g. the CG. Omit it
+        and the nose tip is put at the origin, so the centre of pressure and
+        hinge points read as distances from the nose.
     domain_multipliers:
         Farfield envelope as multiples of body length, e.g.
         {"upstream": 5, "downstream": 10, "radial": 5}.
@@ -569,6 +571,8 @@ def set_geometry_and_mesh(
             "reference_diameter_m": result.reference_diameter_m,
             "track": track,
             "geometry_key": _geometry_key(geometry),
+            # The mesher put the nose tip at the origin (see _apply_alignment).
+            "nose_at_origin": not any(geometry.reference_origin),
         },
     )
     store.write_json(record.record_id, "mesh_request.json", request)
@@ -684,11 +688,13 @@ def preview_orientation(
         f"{kind}, {front} at the {nose_end} end of the CAD model | tilt about "
         f"{tilt} | alpha {aoa_deg:g} deg, beta {sideslip_deg:g} deg"
     )
-    destination = (
-        data_root()
-        / "previews"
-        / f"orientation-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}.png"
-    )
+    folder = data_root() / "previews"
+    stem = f"orientation-{time.strftime('%Y%m%d-%H%M%S')}"
+    destination = folder / f"{stem}.png"
+    counter = 2
+    while destination.exists():
+        destination = folder / f"{stem}-{counter}.png"
+        counter += 1
     try:
         from backend.orientation_preview import render_orientation_preview
 
@@ -721,6 +727,34 @@ def preview_orientation(
 # Tool 2: aerodynamic simulation
 # ---------------------------------------------------------------------------
 
+def _cop_from_nose(cop_rocket: Any, mesh_record: Any) -> dict[str, Any]:
+    """The centre of pressure as a distance behind the nose tip.
+
+    Only for meshes whose nose tip sits at the origin; on older meshes the
+    origin is wherever the CAD had it, and a number that looks like a
+    distance from the nose would not be one.
+    """
+    if not mesh_record.metadata.get("nose_at_origin"):
+        return {
+            "center_of_pressure_note": (
+                "this mesh predates nose-at-origin meshing: the centre of "
+                "pressure is relative to the CAD origin, not the nose tip. "
+                "Remesh to get it measured from the nose."
+            )
+        }
+    try:
+        behind = -float(cop_rocket[2])
+    except (TypeError, IndexError, ValueError):
+        return {}
+    if not math.isfinite(behind):
+        return {"center_of_pressure_behind_nose_m": None}
+    length = float(mesh_record.metadata.get("reference_length_m") or 0.0)
+    reply: dict[str, Any] = {"center_of_pressure_behind_nose_m": behind}
+    if length > 0.0:
+        reply["center_of_pressure_fraction_of_length"] = behind / length
+    return reply
+
+
 def _hinge_axes(hinge_axes: list[dict[str, Any]] | None) -> list[HingeAxis]:
     """Build hinge axes from tool arguments, in the rocket frame by default.
 
@@ -745,9 +779,9 @@ def _hinge_axes(hinge_axes: list[dict[str, Any]] | None) -> list[HingeAxis]:
     name="run_aerodynamic_simulation",
     description=(
         "Run a RANS aerodynamic simulation on a previously generated mesh. "
-        "The convective scheme is selected from the Mach number (JST central "
-        "below 0.8, Roe upwind with MUSCL and the Venkatakrishnan limiter "
-        "above), with the SST k-omega turbulence model. Returns dimensional "
+        "The solver is selected from the Mach number (incompressible below "
+        "0.3, JST central to 0.8, Roe upwind with MUSCL and the "
+        "Venkatakrishnan limiter above), with the SST k-omega turbulence model. Returns dimensional "
         "force components, drag/lift/side coefficients, the centre of "
         "pressure, and the scalar servo torque about each fin hinge axis. "
         "Force components come in the ROCKET frame (nose along +Z, so drag on "
@@ -816,8 +850,9 @@ def run_aerodynamic_simulation(
         not a low CFL: the ramp decides where it goes, so to run cautiously
         lower cfl_max and keep cfl_growth near 1.05.
     convective_scheme:
-        'JST', 'ROE', 'AUSM' or 'HLLC' to override the automatic choice (JST
-        below Mach 0.8, Roe at and above). Null keeps the automatic choice.
+        'JST', 'ROE', 'AUSM' or 'HLLC' to override the automatic choice
+        (incompressible below Mach 0.3, JST to 0.8, Roe above). Naming one
+        always solves compressible. Null keeps the automatic choice.
     """
     store = _store()
     try:
@@ -935,6 +970,7 @@ def run_aerodynamic_simulation(
         },
         center_of_pressure_rocket_frame=result.center_of_pressure_rocket,
         center_of_pressure_solver_frame=result.center_of_pressure,
+        **_cop_from_nose(result.center_of_pressure_rocket, mesh_record),
         hinge_torques=[
             {
                 "name": torque.name,
@@ -1195,7 +1231,7 @@ def render_run_image(
         # folder, with a full volume solution of its own. The assistant used
         # to conclude that sweeps kept no solutions, and re-ran every point
         # as a separate simulation just to draw it.
-        match = re.fullmatch(r"(sweep-\d{8}-\d{6}-[0-9a-f]{6})-(\d{3})", sim_id)
+        match = re.fullmatch(rf"({RUN_ID_PATTERN})-(\d{{3}})", sim_id)
         if not match:
             return _error(str(error), sim_id=sim_id)
         try:
@@ -1249,15 +1285,10 @@ def render_run_image(
 
 def _render_title(record: Any, visualization_type: str) -> str:
     """A caption naming the case, so an exported image stands on its own."""
+    # The flow condition is added by the renderer from the run's own solver
+    # configuration, which sweep points have too.
     label = visualization_type.replace("_", " ")
-    parts = [label]
-    mach = record.metadata.get("mach")
-    if isinstance(mach, (int, float)):
-        parts.append(f"M {mach:.2f}")
-    aoa = record.metadata.get("aoa_deg")
-    if isinstance(aoa, (int, float)):
-        parts.append(f"alpha {aoa:g} deg")
-    parts.append(record.record_id)
+    parts = [label, record.record_id]
     return "  |  ".join(parts)
 
 
@@ -1364,8 +1395,12 @@ def run_parametric_sweep_tool(
     finally:
         _broadcast_finished()
 
-    store.write_json(record.record_id, "sweep.json", sweep.as_dict())
-    return _ok(sweep_id=record.record_id, **sweep.as_dict())
+    report = sweep.as_dict()
+    for point in report["points"]:
+        if point.get("succeeded"):
+            point.update(_cop_from_nose(point.get("center_of_pressure_rocket"), mesh_record))
+    store.write_json(record.record_id, "sweep.json", report)
+    return _ok(sweep_id=record.record_id, **report)
 
 
 # ---------------------------------------------------------------------------

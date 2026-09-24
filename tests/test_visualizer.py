@@ -648,3 +648,21 @@ def test_the_surface_colour_range_ignores_the_stagnation_point(rocket_solution, 
     pressure = np.asarray(rocket_solution.point_data["Pressure"])
     assert seen["clim"] is not None
     assert seen["clim"][1] <= pressure.max()
+
+
+def test_every_image_names_its_speed_and_angle(tmp_path):
+    """The caption comes from the run's own solver config, sweep points too."""
+    from backend.visualizer import flow_caption, flow_condition
+
+    point = tmp_path / "point_003"
+    point.mkdir()
+    (point / "solver.cfg").write_text(
+        "MACH_NUMBER= 0.500000\nAOA= 7.000000\nSIDESLIP_ANGLE= 0.000000\n"
+        "FREESTREAM_TEMPERATURE= 288.150000\n"
+    )
+    condition = flow_condition(point)
+    assert condition["mach"] == 0.5 and condition["aoa_deg"] == 7.0
+    assert abs(condition["speed_ms"] - 170.1) < 0.5
+    caption = flow_caption(point)
+    assert "Mach 0.50" in caption and "170 m/s" in caption and "AoA 7°" in caption
+    assert flow_caption(tmp_path / "nothing") == ""

@@ -772,8 +772,7 @@ def test_visualization_frame_can_be_chosen(store, monkeypatch):
          visualization_type="thermal")
 
     assert [frame for frame, _ in seen] == ["rocket", "solver", "solver"]
-    # The caption names the case, so an exported image stands on its own.
-    assert "M 1.30" in seen[0][1] and "alpha 4" in seen[0][1]
+    # The caption names the run; the renderer adds the flow condition.
     assert aero.record_id in seen[0][1]
 
 

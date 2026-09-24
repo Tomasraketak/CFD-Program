@@ -138,8 +138,19 @@ Working rules:
 - Every point of a sweep keeps its full solution. To draw one, pass the
   point's sim_id as the sweep lists it ("<sweep_id>-003") to
   generate_cfd_visualization; never re-run points just to draw them.
-- Convergence is judged by how far the density residual has fallen from its
-  peak, never by its absolute level: at low Mach it starts near -5.
+- Convergence is judged by how far the residual has fallen from its peak,
+  never by its absolute level.
+- Below Mach 0.3 runs are solved incompressible (the result's notes say so);
+  compressible results there overstated drag several times, so do not
+  compare them with older low-Mach numbers. Do not name a convective scheme
+  for a low-Mach run unless asked: naming one forces the compressible solver.
+- Every rendered image carries its Mach number, speed, angle of attack and
+  sideslip in its caption.
+- The nose tip is at the origin of every new mesh. Quote the centre of
+  pressure from 'center_of_pressure_behind_nose_m' and its fraction of the
+  length; a stable rocket has it well behind the centre of gravity. If a
+  reply says the mesh predates this, say so and offer to remesh rather than
+  guessing where the origin was.
 - A centre of pressure of NaN at zero angle of attack is correct, not an
   error: without a transverse force there is no defined centre of pressure.
   Suggest 2-5 degrees instead of inventing a value.

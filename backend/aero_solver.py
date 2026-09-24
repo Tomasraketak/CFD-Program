@@ -18,7 +18,12 @@ from pathlib import Path
 import numpy as np
 
 from backend.runner import RunOutcome, SolverRunner, SolverTimeoutError
-from backend.su2_config import build_config_for_request, write_config
+from backend.su2_config import (
+    INCOMPRESSIBLE_MACH_MAX,
+    build_config_for_request,
+    solves_incompressible,
+    write_config,
+)
 from backend.su2_parser import (
     ConvergenceMonitor,
     SU2OutputParser,
@@ -411,13 +416,19 @@ def run_aero_case(
         )
 
     notes.extend(_warning_notes(parser))
-    if request.flow.mach() < LOW_MACH_LIMIT:
+    if solves_incompressible(request.flow.mach(), request.solver):
         notes.append(
-            f"Mach {request.flow.mach():.2f} is below {LOW_MACH_LIMIT:g}, where "
-            "a compressible solver is at its least accurate: its numerical "
-            "dissipation scales with the speed of sound, not the flow speed. "
-            "On a 1.3 m finned rocket at Mach 0.1 it overstated C_d by a "
-            "factor of two or more. Treat this drag as indicative only."
+            f"Mach {request.flow.mach():.2f} is below "
+            f"{INCOMPRESSIBLE_MACH_MAX:g}, so this was solved incompressible "
+            "(constant density). A compressible solver's numerical dissipation "
+            "swamps the physics at low Mach and overstated C_d several times."
+        )
+    elif request.flow.mach() < LOW_MACH_LIMIT:
+        notes.append(
+            f"Mach {request.flow.mach():.2f} was solved compressible because a "
+            "convective scheme was chosen by name. Below Mach "
+            f"{LOW_MACH_LIMIT:g} that overstates drag several times; leave the "
+            "scheme automatic to get the incompressible solver."
         )
     if startup_retried:
         notes.insert(

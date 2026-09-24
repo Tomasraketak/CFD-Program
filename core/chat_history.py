@@ -22,11 +22,12 @@ from pathlib import Path
 from typing import Any
 
 from core.platform_env import data_root
+from core.store import RUN_ID_PATTERN
 
 CHAT_DIRECTORY = "ai_chats"
 
 # Ids the run registry hands out, and saved project files.
-_RUN_ID = re.compile(r"\b(?:mesh|aero|therm|sweep)-\d{8}-\d{6}-[0-9a-f]{6}\b")
+_RUN_ID = re.compile(rf"\b{RUN_ID_PATTERN}\b")
 _PROJECT = re.compile(r"[^\s\"'<>|]+\.atsproj\b")
 
 # Long enough to recognise a conversation in a list.

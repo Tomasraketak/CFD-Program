@@ -220,10 +220,10 @@ class SU2OutputParser:
     def _set_columns(self, fields: list[str]) -> None:
         """Record the header, mapping known headings to canonical names."""
         self._raw_headers = list(fields)
-        self.columns = [
+        self.columns = _primary_residual([
             _COLUMN_ALIASES.get(f.strip().lower(), f.strip().lower())
             for f in fields
-        ]
+        ])
 
     def history(self, name: str) -> np.ndarray:
         """All recorded values of one quantity, as an array."""
@@ -255,6 +255,19 @@ def _split_row(line: str) -> list[str]:
     if set(line) <= set("+-| ="):
         return []
     return [part for part in re.split(r"[|\s]+", line.strip()) if part]
+
+
+def _primary_residual(columns: list[str]) -> list[str]:
+    """Read the incompressible solver's pressure residual as the primary one.
+
+    Everything that judges a solve -- convergence, divergence, the live
+    chart -- follows ``rms_rho``, the continuity residual. The incompressible
+    solver, used below Mach 0.3, has no density equation; its continuity
+    residual is the pressure one, and it plays exactly the same part.
+    """
+    if "rms_rho" in columns or "rms_pressure" not in columns:
+        return columns
+    return ["rms_rho" if name == "rms_pressure" else name for name in columns]
 
 
 def _looks_like_header(fields: list[str]) -> bool:
@@ -452,12 +465,12 @@ def parse_history_csv(path: Path | str) -> dict[str, np.ndarray]:
             header = next(reader)
         except StopIteration:
             return {}
-        names = [
+        names = _primary_residual([
             _COLUMN_ALIASES.get(
                 column.strip().strip('"').lower(), column.strip().strip('"').lower()
             )
             for column in header
-        ]
+        ])
         columns: list[list[float]] = [[] for _ in names]
         for row in reader:
             if len(row) != len(names):

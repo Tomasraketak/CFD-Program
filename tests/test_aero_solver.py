@@ -1308,7 +1308,7 @@ def test_a_low_mach_residual_that_starts_low_is_not_convergence():
 
 def test_the_config_converges_on_the_relative_residual():
     settings = parse_config(
-        build_aero_config(FlowParams(velocity_value=0.1), SolverParams(), base_context())
+        build_aero_config(FlowParams(velocity_value=0.5), SolverParams(), base_context())
     )
     assert settings["CONV_FIELD"] == "REL_RMS_DENSITY"
     assert int(settings["CONV_STARTITER"]) >= 100
@@ -1382,11 +1382,68 @@ def test_a_solver_that_stalls_mid_run_is_not_retried(mesh_file, tmp_path):
     assert len(runner.calls) == 1
 
 
-def test_a_low_mach_result_says_it_is_indicative(mesh_file, tmp_path):
+def test_a_low_mach_result_says_how_it_was_solved(mesh_file, tmp_path):
     runner = FakeRunner(lines=screen_rows(120), artifacts={"forces_breakdown.dat": FORCES_BREAKDOWN})
     result = run_aero_case(
         make_request(flow=FlowParams(velocity_value=0.1)),
         mesh_path=mesh_file, working_directory=tmp_path / "run", runner=runner,
         reference_area_m2=0.005, reference_length_m=0.08,
     )
-    assert any("indicative" in note for note in result.notes)
+    assert any("incompressible" in note for note in result.notes)
+
+
+# ---------------------------------------------------------------------------
+# Low Mach: the incompressible solver
+# ---------------------------------------------------------------------------
+
+
+def test_low_mach_is_solved_incompressible():
+    """Below Mach 0.3 the compressible solver's dissipation swamps the physics.
+
+    On the Sapphire at Mach 0.1 it gave C_d 2.2 where the second-order
+    incompressible solution is about 1.3.
+    """
+    settings = parse_config(
+        build_aero_config(
+            FlowParams(velocity_value=0.1, aoa_deg=7.0), SolverParams(), base_context()
+        )
+    )
+    assert settings["SOLVER"] == "INC_RANS"
+    assert settings["CONV_NUM_METHOD_FLOW"] == "FDS"
+    assert settings["MUSCL_FLOW"] == "YES"
+    assert settings["CONV_FIELD"] == "REL_RMS_PRESSURE"
+    assert "FLUID_MODEL" not in settings and "RMS_DENSITY" not in settings["SCREEN_OUTPUT"]
+    # The velocity carries the angle; AOA stays for projecting lift and drag.
+    u, v, w = (float(x) for x in settings["INC_VELOCITY_INIT"].strip("() ").split(","))
+    assert math.degrees(math.atan2(w, u)) == pytest.approx(7.0)
+    assert v == pytest.approx(0.0, abs=1e-9)
+    assert math.hypot(u, w) == pytest.approx(0.1 * 340.29, rel=1e-3)
+    assert float(settings["AOA"]) == pytest.approx(7.0)
+
+
+def test_a_named_scheme_keeps_low_mach_compressible():
+    settings = parse_config(
+        build_aero_config(
+            FlowParams(velocity_value=0.1),
+            SolverParams(convective_scheme="ROE"),
+            base_context(),
+        )
+    )
+    assert settings["SOLVER"] == "RANS"
+
+
+def test_mach_point_three_and_up_stays_compressible():
+    settings = parse_config(
+        build_aero_config(FlowParams(velocity_value=0.3), SolverParams(), base_context())
+    )
+    assert settings["SOLVER"] == "RANS"
+
+
+def test_the_incompressible_pressure_residual_drives_convergence():
+    """No density equation, so rms[P] plays the part rms[Rho] usually does."""
+    parser = SU2OutputParser()
+    parser.feed("|  Inner_Iter|      rms[P]|      rms[U]|          CL|          CD|")
+    record = parser.feed("|          12|   -4.244849|  -5.635413|    0.480182|    1.723264|")
+    assert record is not None
+    assert record.rms_rho == pytest.approx(-4.244849)
+    assert record.get("cd") == pytest.approx(1.723264)

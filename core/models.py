@@ -150,7 +150,9 @@ class GeometryParams(StrictModel):
         default=[0.0, 0.0, 0.0],
         description=(
             "Point [x0, y0, z0] in CAD coordinates translated to the wind-tunnel "
-            "origin before meshing. Typically the nose tip or the CG."
+            "origin before meshing, e.g. the CG. Left at [0, 0, 0], the nose "
+            "tip is put at the origin, on the body axis, whatever the CAD "
+            "origin was."
         ),
     )
     heal_geometry: bool = Field(

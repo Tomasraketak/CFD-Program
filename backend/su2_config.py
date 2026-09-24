@@ -12,6 +12,7 @@ at Mach 0.8, where transonic pockets first appear on a slender body.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -74,6 +75,30 @@ CFL_SUPERSONIC = 1.0
 CFL_ADAPT_SUBSONIC = (0.5, 1.15, 0.1, 100.0)
 CFL_ADAPT_TRANSONIC = (0.5, 1.10, 0.1, 50.0)
 CFL_ADAPT_SUPERSONIC = (0.5, 1.05, 0.1, 25.0)
+
+
+# Below this Mach number the flow is solved incompressible. A compressible
+# solver's numerical dissipation scales with the speed of sound, not the flow
+# speed, and at low Mach it swamps the physics: on the Sapphire at Mach 0.1
+# JST gave C_d 2.2, and first-order incompressible 2.6, both several times
+# the second-order answer. Density changes by under 5 % below Mach 0.3, so
+# nothing real is lost.
+INCOMPRESSIBLE_MACH_MAX = 0.3
+
+# Incompressible start: gentle, because the second-order pressure-based
+# scheme diverged at CFL 10 from a cold start on the same rocket and ran
+# cleanly at 2 on a slow ramp.
+CFL_INCOMPRESSIBLE = 2.0
+CFL_ADAPT_INCOMPRESSIBLE = (0.5, 1.05, 0.5, 50.0)
+
+
+def solves_incompressible(mach: float, solver: SolverParams) -> bool:
+    """Whether a run is solved with the incompressible solver.
+
+    Only when the operator left the scheme to the program: asking for a
+    compressible scheme by name is honoured.
+    """
+    return mach < INCOMPRESSIBLE_MACH_MAX and solver.convective_scheme is None
 
 
 def default_cfl(mach: float) -> float:
@@ -156,8 +181,9 @@ def build_aero_config(
     """
     state = flow.atmosphere()
     mach = flow.mach()
+    incompressible = solves_incompressible(mach, solver)
     scheme = select_convective_scheme(mach, solver.convective_scheme)
-    upwind = uses_upwind(scheme)
+    upwind = uses_upwind(scheme) or incompressible
 
     lines: list[str] = []
     add = lines.append
@@ -168,7 +194,7 @@ def build_aero_config(
     add("")
 
     add(_banner("Problem definition"))
-    add("SOLVER= RANS")
+    add("SOLVER= INC_RANS" if incompressible else "SOLVER= RANS")
     add(f"KIND_TURB_MODEL= {solver.turbulence_model.value}")
     if solver.turbulence_model is TurbulenceModel.SST:
         add("SST_OPTIONS= V1994m")
@@ -193,10 +219,31 @@ def build_aero_config(
             / state.viscosity_pa_s
         )
     )
-    add("FLUID_MODEL= IDEAL_GAS")
-    add("GAMMA_VALUE= 1.4")
-    add("GAS_CONSTANT= 287.058")
-    add("VISCOSITY_MODEL= SUTHERLAND")
+    if incompressible:
+        # MACH_NUMBER, AOA and SIDESLIP_ANGLE above stay: the incompressible
+        # solver ignores the Mach number but projects lift and drag with the
+        # angles, and the images read their caption from them.
+        speed = flow.speed_ms()
+        alpha = math.radians(flow.aoa_deg)
+        beta = math.radians(flow.sideslip_deg)
+        velocity = (
+            speed * math.cos(alpha) * math.cos(beta),
+            speed * math.sin(beta),
+            speed * math.sin(alpha) * math.cos(beta),
+        )
+        add("INC_NONDIM= DIMENSIONAL")
+        add("INC_DENSITY_MODEL= CONSTANT")
+        add(f"INC_DENSITY_INIT= {state.density_kg_m3:.6f}")
+        add("INC_VELOCITY_INIT= ( {:.6f}, {:.6f}, {:.6f} )".format(*velocity))
+        add("INC_ENERGY_EQUATION= NO")
+        add(f"INC_TEMPERATURE_INIT= {state.temperature_k:.6f}")
+        add("VISCOSITY_MODEL= CONSTANT_VISCOSITY")
+        add(f"MU_CONSTANT= {state.viscosity_pa_s:.9e}")
+    else:
+        add("FLUID_MODEL= IDEAL_GAS")
+        add("GAMMA_VALUE= 1.4")
+        add("GAS_CONSTANT= 287.058")
+        add("VISCOSITY_MODEL= SUTHERLAND")
     add("")
 
     add(_banner("Reference values"))
@@ -234,12 +281,13 @@ def build_aero_config(
     add("NUM_METHOD_GRAD= GREEN_GAUSS")
     if upwind:
         add("NUM_METHOD_GRAD_RECON= GREEN_GAUSS")
-    add(f"CONV_NUM_METHOD_FLOW= {scheme.value}")
+    # FDS is the incompressible solver's upwind flux.
+    add(f"CONV_NUM_METHOD_FLOW= {'FDS' if incompressible else scheme.value}")
     if upwind:
         add(f"MUSCL_FLOW= {_yes_no(solver.muscl)}")
         add(f"SLOPE_LIMITER_FLOW= {solver.limiter}")
         add(f"VENKAT_LIMITER_COEFF= {VENKAT_LIMITER_COEFF}")
-        if scheme is ConvectiveScheme.ROE:
+        if scheme is ConvectiveScheme.ROE and not incompressible:
             # Entropy fix, needed to keep the Roe solver from admitting
             # expansion shocks at supersonic Mach numbers. 0.05 is the usual
             # production value once a solution exists; it is thin during a
@@ -291,11 +339,14 @@ def build_aero_config(
     add("")
 
     add(_banner("Convergence"))
-    cfl = solver.cfl_number if solver.cfl_number is not None else default_cfl(mach)
+    regime_cfl = CFL_INCOMPRESSIBLE if incompressible else default_cfl(mach)
+    cfl = solver.cfl_number if solver.cfl_number is not None else regime_cfl
     add(f"CFL_NUMBER= {cfl:g}")
     add(f"CFL_ADAPT= {_yes_no(solver.cfl_adapt)}")
     if solver.cfl_adapt:
-        down, up, cfl_min, cfl_max = default_cfl_adapt_param(mach)
+        down, up, cfl_min, cfl_max = (
+            CFL_ADAPT_INCOMPRESSIBLE if incompressible else default_cfl_adapt_param(mach)
+        )
         # An explicit ramp rate or ceiling wins. Without these, a starting
         # CFL of 0.5 was only a starting point: at a doubling ramp it was
         # back at 100 within eight iterations, which is how a "low-CFL"
@@ -314,7 +365,8 @@ def build_aero_config(
     add(f"ITER= {solver.max_iterations}")
     # Relative to the peak, not absolute: see relative_residual_drop. And
     # never before a hundred iterations, when the forces have not formed.
-    add("CONV_FIELD= REL_RMS_DENSITY")
+    # The incompressible solver's continuity residual is the pressure one.
+    add(f"CONV_FIELD= {'REL_RMS_PRESSURE' if incompressible else 'REL_RMS_DENSITY'}")
     add(f"CONV_RESIDUAL_MINVAL= {solver.convergence_residual:g}")
     add("CONV_STARTITER= 100")
     add("")
@@ -337,8 +389,9 @@ def build_aero_config(
     add("WRT_RESTART_OVERWRITE= YES")
     add("READ_BINARY_RESTART= YES")
     add(f"OUTPUT_WRT_FREQ= {context.output_write_frequency}")
+    residuals = "RMS_PRESSURE, RMS_VELOCITY-X" if incompressible else "RMS_DENSITY, RMS_ENERGY"
     add(
-        "SCREEN_OUTPUT= ( INNER_ITER, RMS_DENSITY, RMS_ENERGY, LIFT, DRAG, "
+        f"SCREEN_OUTPUT= ( INNER_ITER, {residuals}, LIFT, DRAG, "
         "SIDEFORCE, MOMENT_X, MOMENT_Y, MOMENT_Z )"
     )
     add(

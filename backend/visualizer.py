@@ -1073,6 +1073,60 @@ VISUALIZATION_TYPES = (
 )
 
 
+# The solver configs a run directory may hold, the one that ran last first:
+# a rescued run's final stage is what the solution came from.
+_CONFIG_NAMES = ("solver_stage_b.cfg", "solver.cfg")
+
+
+def flow_condition(directory: Path | str) -> dict[str, float] | None:
+    """Mach, speed, angle of attack and sideslip a run was solved at.
+
+    Read from the solver configuration written next to the solution, so it
+    works for single runs and sweep points alike, whatever recorded them.
+    """
+    directory = Path(directory)
+    if directory.is_file():
+        directory = directory.parent
+    for name in _CONFIG_NAMES:
+        path = directory / name
+        if not path.is_file():
+            continue
+        values: dict[str, float] = {}
+        try:
+            for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+                key, _, value = line.partition("=")
+                key = key.strip()
+                if key in ("MACH_NUMBER", "AOA", "SIDESLIP_ANGLE", "FREESTREAM_TEMPERATURE"):
+                    try:
+                        values[key] = float(value.split("%")[0].strip())
+                    except ValueError:
+                        pass
+        except OSError:
+            return None
+        if "MACH_NUMBER" not in values:
+            return None
+        mach = values["MACH_NUMBER"]
+        temperature = values.get("FREESTREAM_TEMPERATURE", 288.15)
+        return {
+            "mach": mach,
+            "speed_ms": mach * math.sqrt(1.4 * 287.05 * temperature),
+            "aoa_deg": values.get("AOA", 0.0),
+            "sideslip_deg": values.get("SIDESLIP_ANGLE", 0.0),
+        }
+    return None
+
+
+def flow_caption(directory: Path | str) -> str:
+    """'Mach 0.50 (170 m/s)  |  AoA 7°  |  sideslip 0°', or '' if unknown."""
+    condition = flow_condition(directory)
+    if condition is None:
+        return ""
+    return (
+        f"Mach {condition['mach']:.2f} ({condition['speed_ms']:.0f} m/s)  |  "
+        f"AoA {condition['aoa_deg']:g}°  |  sideslip {condition['sideslip_deg']:g}°"
+    )
+
+
 def render_visualization(
     solution: pv.DataSet | Path | str,
     visualization_type: str,
@@ -1123,6 +1177,14 @@ def render_visualization(
             f"unknown frame '{frame}'; choose one of {', '.join(FRAMES)}"
         )
 
+    title = kwargs.pop("title", None)
+    if isinstance(solution, (str, Path)):
+        # Every picture says which case it is: an exported image of a sweep
+        # point is otherwise indistinguishable from its neighbours.
+        condition = flow_caption(solution)
+        if condition:
+            title = f"{title}\n{condition}" if title else condition
+
     dataset = _coerce_dataset(solution)
     if frame == "rocket":
         dataset = to_rocket_frame(dataset)
@@ -1130,7 +1192,7 @@ def render_visualization(
         resolution=resolution,
         colormap=colormap,
         camera_view=camera_view,
-        title=kwargs.pop("title", None),
+        title=title,
         clim=kwargs.pop("clim", None),
         frame=frame,
     )

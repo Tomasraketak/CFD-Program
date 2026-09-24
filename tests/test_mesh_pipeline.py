@@ -794,3 +794,22 @@ def test_prisms_that_lost_a_column_are_written_as_pyramids_and_tets():
     )
     assert pyramid_volume[0] > 0.0
     assert _tet_volumes(points, tets)[0] > 0.0
+
+
+def test_the_nose_tip_is_put_at_the_origin(tmp_path):
+    """Distances are read from the nose, wherever the CAD origin was.
+
+    The Sapphire's CAD origin sat at its tail, so a centre of pressure 0.83 m
+    behind the nose came back as 0.47 m ahead of the origin.
+    """
+    from backend.mesh_pipeline import tessellate_geometry
+
+    step = capsule_step_for(tmp_path)  # hemisphere nose reaching x = -0.04
+    preview = tessellate_geometry(
+        GeometryParams(step_file_path=str(step), nose_direction="+X"), 2000
+    )
+    low, high = preview.points.min(axis=0), preview.points.max(axis=0)
+    # Within a millimetre: a coarse triangulation cuts the curved tip short.
+    assert abs(low[0]) < 1e-3
+    assert abs(high[0] - 0.54) < 1e-3
+    assert abs(low[1] + high[1]) < 1e-3 and abs(low[2] + high[2]) < 1e-3

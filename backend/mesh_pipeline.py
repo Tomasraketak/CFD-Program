@@ -326,6 +326,30 @@ def _apply_alignment(
         occ.rotate(entities, 0.0, 0.0, 0.0, *axis, angle)
 
     occ.synchronize()
+
+    if not np.any(origin != 0.0):
+        # No reference point given: put the nose tip at the origin, on the
+        # body's axis. Everything downstream -- the centre of pressure, the
+        # pitching moment, hinge points "1.2 m behind the nose" -- is read
+        # from the nose, and the CAD origin is wherever the designer happened
+        # to leave it. On the Sapphire it was at the tail, so a centre of
+        # pressure 0.83 m behind the nose was reported as 0.47 m *ahead* of
+        # the origin, and looked like a point in front of the rocket.
+        low = np.full(3, np.inf)
+        high = np.full(3, -np.inf)
+        # OpenCASCADE pads its boxes by the shape tolerance -- half a
+        # millimetre on a curved nose. The triangulated bound is tight.
+        gmsh.option.setNumber("Geometry.OCCBoundsUseStl", 1)
+        for dim, tag in entities:
+            box = gmsh.model.getBoundingBox(dim, tag)
+            low = np.minimum(low, box[:3])
+            high = np.maximum(high, box[3:])
+        if np.all(np.isfinite(low)) and np.all(np.isfinite(high)):
+            shift = np.array([low[0], 0.5 * (low[1] + high[1]), 0.5 * (low[2] + high[2])])
+            if np.any(np.abs(shift) > 0.0):
+                occ.translate(entities, *(-shift))
+                occ.synchronize()
+
     return rotation
 
 

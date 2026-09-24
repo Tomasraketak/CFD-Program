@@ -401,7 +401,7 @@ set_geometry_and_mesh(
      step_file_path = "C:\\models\\rocket.step",
      nose_direction = "+X",
      mesh_resolution = "coarse")
-   └─ mesh_id = "mesh-20260921-101500-a1b2c3"
+   └─ mesh_id = "mesh-20260921-101500"
       cell_count = 252,303, estimated_yplus = 45.0
 
 run_aerodynamic_simulation(

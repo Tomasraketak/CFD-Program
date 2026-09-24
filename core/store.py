@@ -11,7 +11,6 @@ from __future__ import annotations
 import json
 import shutil
 import threading
-import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,6 +23,10 @@ from core.platform_env import data_root
 RecordKind = Literal["mesh", "aero", "thermal", "sweep"]
 
 _METADATA_FILENAME = "record.json"
+# A record id anywhere in text. Older ids end in six random hex digits;
+# current ones have no tail, or -2, -3 ... when two share a second.
+RUN_ID_PATTERN = r"(?:mesh|aero|therm|sweep)-\d{8}-\d{6}(?:-[0-9a-f]{6}|-\d{1,2})?"
+
 _ID_PREFIXES: dict[RecordKind, str] = {
     "mesh": "mesh",
     "aero": "aero",
@@ -108,11 +111,20 @@ class RunStore:
         return self._runs_dir
 
     def new_id(self, kind: RecordKind) -> str:
-        """Generate a readable, collision-free identifier for a record."""
+        """A readable identifier: the kind and the local time it was made.
+
+        ``aero-20260924-143012`` reads as the clock on the operator's wall,
+        not UTC, and carries no random tail. Two records in the same second
+        get ``-2``, ``-3`` and so on.
+        """
         prefix = _ID_PREFIXES[kind]
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-        suffix = uuid.uuid4().hex[:6]
-        return f"{prefix}-{stamp}-{suffix}"
+        base = f"{prefix}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+        identifier = base
+        counter = 2
+        while (self._runs_dir / identifier).exists():
+            identifier = f"{base}-{counter}"
+            counter += 1
+        return identifier
 
     def create(
         self,

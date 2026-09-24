@@ -375,7 +375,7 @@ than the rocket and no shock wave could survive on them.
 | Setting | Default | Notes |
 |---|---|---|
 | Turbulence model | SST | SST k-ω, or SA (Spalart–Allmaras) |
-| Scheme | Auto | JST below Mach 0.8, Roe above; or pick JST, ROE, AUSM, HLLC |
+| Scheme | Auto | Incompressible below Mach 0.3, JST to 0.8, Roe above; or pick JST, ROE, AUSM, HLLC (always compressible) |
 | CFL start | Auto | 5.0 below Mach 0.6, 2.0 up to Mach 1.2, 1.0 above. A number you type is always used as given |
 | CFL growth | Auto | Factor the adaptive CFL grows by each iteration: 1.15 / 1.10 / 1.05 by regime |
 | CFL max | Auto | Where the adaptive CFL stops: 100 / 50 / 25 by regime |
@@ -434,8 +434,14 @@ started by the assistant can also be ended with its **Stop** button.
 
 Chosen automatically from the Mach number:
 
-- **Below Mach 0.8** — JST central differencing with scalar dissipation.
-  Efficient and accurate in smooth subsonic flow.
+- **Below Mach 0.3** — SU2's **incompressible** solver (constant density,
+  FDS flux, second-order MUSCL). A compressible solver's numerical
+  dissipation scales with the speed of sound, not the flow speed, so at low
+  Mach it swamps the physics: on the Sapphire at Mach 0.1 compressible JST
+  gave C_d 2.2 where the incompressible answer is about 1.3. Below Mach 0.3
+  density changes by under 5 %, so nothing real is lost.
+- **Mach 0.3 to 0.8** — JST central differencing with scalar dissipation.
+  Efficient in smooth subsonic flow.
 - **At and above Mach 0.8** — Roe upwind with second-order MUSCL
   reconstruction and the Venkatakrishnan limiter, plus an entropy fix. The
   limiter is what prevents oscillations at shocks; the entropy fix stops the

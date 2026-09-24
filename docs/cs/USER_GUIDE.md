@@ -367,7 +367,7 @@ na nich nemohla přežít.
 | Nastavení | Výchozí | Poznámka |
 |---|---|---|
 | Turbulence model | SST | SST k-ω, nebo SA (Spalart–Allmaras) |
-| Scheme | Auto | JST pod Mach 0,8, Roe nad; nebo zvolte JST, ROE, AUSM, HLLC |
+| Scheme | Auto | Nestlačitelně pod Mach 0,3, JST do 0,8, Roe nad; nebo zvolte JST, ROE, AUSM, HLLC (vždy stlačitelně) |
 | CFL start | Auto | 5,0 pod Mach 0,6, 2,0 do Mach 1,2, 1,0 nad. Číslo, které zadáte, se použije přesně tak |
 | CFL growth | Auto | Kolikrát adaptivní CFL vzroste za iteraci: 1,15 / 1,10 / 1,05 podle režimu |
 | CFL max | Auto | Kde adaptivní CFL skončí: 100 / 50 / 25 podle režimu |
@@ -426,8 +426,14 @@ ukončit jeho tlačítkem **Stop**.
 
 Vybírá se automaticky podle Machova čísla:
 
-- **Pod Mach 0,8** — centrální diference JST se skalární disipací. Účinné a
-  přesné v hladkém podzvukovém proudění.
+- **Pod Mach 0,3** — **nestlačitelný** řešič SU2 (konstantní hustota, tok
+  FDS, MUSCL druhého řádu). Numerická disipace stlačitelného řešiče roste
+  s rychlostí zvuku, ne s rychlostí proudění, takže při nízkém Machu přehluší
+  fyziku: na Sapphire při Mach 0,1 dal stlačitelný JST C_d 2,2, nestlačitelný
+  výsledek je kolem 1,3. Pod Mach 0,3 se hustota mění o méně než 5 %, takže
+  se nic skutečného neztratí.
+- **Mach 0,3 až 0,8** — centrální diference JST se skalární disipací. Účinné
+  v hladkém podzvukovém proudění.
 - **Od Mach 0,8 výše** — protiproudé schéma Roe s rekonstrukcí MUSCL druhého
   řádu a Venkatakrishnanovým limiterem, plus entropická korekce. Limiter je
   to, co brání oscilacím na rázových vlnách; entropická korekce brání

@@ -116,3 +116,18 @@ def test_environment_probe_reports_missing_toolchain():
     if not report.solver_ready:
         assert report.missing
     assert set(report.as_dict()) >= {"os_name", "data_root", "solver_ready", "missing"}
+
+
+def test_ids_read_as_local_time_with_no_random_tail(tmp_path):
+    """'aero-20260924-143012', and '-2' only when two share a second."""
+    import re
+    from datetime import datetime
+
+    from core.store import RunStore
+
+    store = RunStore(tmp_path)
+    first = store.create("aero").record_id
+    second = store.create("aero").record_id
+    assert re.fullmatch(r"aero-\d{8}-\d{6}", first)
+    assert first[5:13] == datetime.now().strftime("%Y%m%d")
+    assert second == first + "-2" or re.fullmatch(r"aero-\d{8}-\d{6}", second)
