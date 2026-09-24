@@ -17,13 +17,21 @@ from pathlib import Path
 
 import numpy as np
 
-from backend.runner import RunOutcome, SolverRunner
+from backend.runner import RunOutcome, SolverRunner, SolverTimeoutError
 from backend.su2_config import build_config_for_request, write_config
 from backend.su2_parser import (
     ConvergenceMonitor,
     SU2OutputParser,
     parse_forces_breakdown,
+    relative_residual_drop,
 )
+
+# A solve reported as converged must have run at least this long; below it
+# the forces have not formed, whatever the residual says.
+MIN_CONVERGED_ITERATIONS = 100
+
+# Below this Mach number a result carries a warning about its accuracy.
+LOW_MACH_LIMIT = 0.3
 from core.frames import Frame, to_rocket
 from core.models import (
     AeroResult,
@@ -353,7 +361,26 @@ def run_aero_case(
             on_iteration=on_iteration,
         )
 
-    stage = run_stage(solver, CONFIG_FILENAME, allow_early_stop=True)
+    try:
+        stage = run_stage(solver, CONFIG_FILENAME, allow_early_stop=True)
+    except SolverTimeoutError as error:
+        # An MPI job that hangs before its first iteration -- a rank that
+        # never joined, a stuck startup -- is not the case's fault, and on
+        # the operator's machine a Mach 1.3 run did exactly that and then
+        # ran cleanly when repeated by hand. Once, and only when nothing
+        # was computed; a solve that stalls mid-run is a real problem.
+        if error.limit != "stall" or _reported_iterations(error.tail):
+            raise
+        _announce(
+            on_line,
+            "retry",
+            f"The solver produced no output for {error.limit_s:.0f} s before "
+            "its first iteration; starting it again once.",
+        )
+        stage = run_stage(solver, CONFIG_FILENAME, allow_early_stop=True)
+        startup_retried = True
+    else:
+        startup_retried = False
 
     if stage.diverged:
         if not solver.rescue_on_divergence:
@@ -384,6 +411,20 @@ def run_aero_case(
         )
 
     notes.extend(_warning_notes(parser))
+    if request.flow.mach() < LOW_MACH_LIMIT:
+        notes.append(
+            f"Mach {request.flow.mach():.2f} is below {LOW_MACH_LIMIT:g}, where "
+            "a compressible solver is at its least accurate: its numerical "
+            "dissipation scales with the speed of sound, not the flow speed. "
+            "On a 1.3 m finned rocket at Mach 0.1 it overstated C_d by a "
+            "factor of two or more. Treat this drag as indicative only."
+        )
+    if startup_retried:
+        notes.insert(
+            0,
+            "The first start of the solver hung before any iteration and was "
+            "restarted automatically; the result is from the second start.",
+        )
 
     coefficients = _collect_coefficients(parser, working_directory)
     result = _build_result(
@@ -613,6 +654,15 @@ def _rescue(
     return stage_b, notes
 
 
+def _reported_iterations(tail) -> bool:
+    """True when the solver's last output includes an iteration row."""
+    parser = SU2OutputParser()
+    lines = tail.splitlines() if isinstance(tail, str) else list(tail or [])
+    for line in lines:
+        parser.feed(line)
+    return bool(parser.records)
+
+
 def replace(solver: SolverParams, **changes) -> SolverParams:
     """A ``dataclasses.replace`` for the Pydantic solver settings.
 
@@ -715,6 +765,13 @@ def _build_result(
     ]
 
     cop = center_of_pressure(forces.force, forces.moment, moment_origin)
+    # At zero incidence the transverse force is numerical noise -- a few
+    # newtons against hundreds of drag from an unstructured mesh that is not
+    # perfectly symmetric -- and M / N divides one noise by another. A sweep
+    # reported the centre of pressure 5.9 m ahead of the nose that way. Said
+    # plainly instead: undefined, as it physically is.
+    if _transverse_force_is_noise(forces.force, flow):
+        cop = np.array([math.nan if index == 0 else 0.0 for index in range(3)])
     residual = parser.final_value("rms_rho")
 
     return AeroResult(
@@ -745,10 +802,28 @@ def _build_result(
         final_residual_rho=residual,
         converged=bool(
             stopped_early
-            or (math.isfinite(residual) and residual <= request.solver.convergence_residual)
+            or (
+                (drop := relative_residual_drop(parser)) is not None
+                and len(parser.records) >= MIN_CONVERGED_ITERATIONS
+                and drop <= request.solver.convergence_residual
+            )
         ),
         wall_time_s=wall_time_s,
     )
+
+
+# Below this fraction of the axial force, a transverse force is treated as
+# noise rather than as something with a point of action.
+TRANSVERSE_NOISE_FRACTION = 0.05
+
+
+def _transverse_force_is_noise(force: np.ndarray, flow) -> bool:
+    """True when the centre of pressure cannot mean anything."""
+    if abs(flow.aoa_deg) < 1.0e-9 and abs(flow.sideslip_deg) < 1.0e-9:
+        return True
+    axial = abs(float(force[0]))
+    normal = math.hypot(float(force[1]), float(force[2]))
+    return normal < TRANSVERSE_NOISE_FRACTION * axial
 
 
 def _resolve_moment_origin(request: AeroRunRequest) -> np.ndarray:

@@ -98,6 +98,21 @@ class ActiveGeometry(StrictModel):
         ge=0.0,
         description="How many times longer the body is than it is wide.",
     )
+    body_kind: str = Field(
+        default="rocket",
+        description=(
+            "'rocket' when one side is more than five times each of the "
+            "others, 'fin' for a thin lifting surface."
+        ),
+    )
+    pitch_axis: str | None = Field(
+        default=None,
+        description=(
+            "CAD axis the model tilts about for an angle of attack, e.g. "
+            "'+Z'. For a fin it is read as the span; null for a rocket "
+            "leaves the orientation to the flow direction."
+        ),
+    )
     selected_at: str = Field(
         default="",
         description="UTC timestamp, ISO 8601, of when this file was chosen.",
@@ -126,6 +141,9 @@ class ActiveGeometry(StrictModel):
             "" if self.largest_extent_m is None
             else f" — {self.largest_extent_m:.3g} m long"
         )
+        if self.body_kind == "fin":
+            tilt = f", tilting about {self.pitch_axis}" if self.pitch_axis else ""
+            return f"{name}, read as {units}{size}, a fin{tilt}"
         if self.nose_end:
             return f"{name}, read as {units}{size}, nose at {self.nose_end}"
         return f"{name}, read as {units}{size}"
@@ -144,7 +162,13 @@ class ActiveGeometry(StrictModel):
                 f"What unit is this model drawn in? "
                 f"{self.scale_reason or 'The file does not say.'}"
             )
-        if not self.nose_is_confident:
+        if not self.nose_is_confident and self.body_kind == "fin":
+            axis = (self.nose_direction or "+X")[1:]
+            questions.append(
+                f"This looks like a fin. Which edge faces the oncoming air: "
+                f"+{axis} or -{axis}? Set it under 'Air comes from'."
+            )
+        elif not self.nose_is_confident:
             axis = (self.nose_direction or "+X")[1:]
             questions.append(
                 f"Which end of the {axis} axis is the nose on, "
@@ -240,6 +264,8 @@ def set_active_geometry(
     nose_confident = nose_direction is not None
     nose_reason = "set explicitly" if nose_direction is not None else ""
     slenderness = 0.0
+    body_kind = "rocket"
+    pitch_axis: str | None = None
 
     if resolved.is_file():
         try:
@@ -248,6 +274,9 @@ def set_active_geometry(
             axis = None
         if axis is not None:
             slenderness = axis.slenderness
+            body_kind = getattr(axis, "kind", "rocket")
+            if getattr(axis, "tilt_axis", None):
+                pitch_axis = f"+{axis.tilt_axis}"
             if nose_direction is None:
                 # Nothing was specified, so take the reading -- including
                 # when it is inconclusive, which is what makes the interface
@@ -274,6 +303,8 @@ def set_active_geometry(
         nose_is_confident=nose_confident,
         nose_reason=nose_reason,
         slenderness=slenderness,
+        body_kind=body_kind,
+        pitch_axis=pitch_axis,
         selected_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
         source=source,
     )

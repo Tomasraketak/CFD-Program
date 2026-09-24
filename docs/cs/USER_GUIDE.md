@@ -79,7 +79,7 @@ hrany odstraní, drobné plošky opraví. Pokud ozdravení těleso zničí — c
 u některých jednoduchých tvarů stává — použije se neozdravený import a zpráva
 to uvede.
 
-### Nose points to
+### Air comes from
 
 Směr, kterým **míří špička** ve vašem CAD souboru. Raketa nakreslená
 nastojato, špičkou nahoru v modelu s osou Y nahoru, je **`+Y`**.
@@ -114,6 +114,28 @@ asistent se zeptá na totéž místo toho, aby si jeden konec vybral.
 Toto je nastavení s největšími důsledky. Když je špatně, těleso se vysíťuje
 bokem nebo pozpátku a všechny výsledky budou věrohodné a chybné: raketa
 letící pozpátku vyprodukuje kompletní polární křivku odporu.
+
+### Raketa nebo křidélko, a kolem čeho se naklápí
+
+**Model is a** — *Rocket* nebo *Fin / wing*, nastaví se podle tvaru při
+otevření souboru: těleso, jehož nejdelší strana je víc než pětkrát delší než
+každá z ostatních dvou, je raketa; tenká deska je křidélko. Raketa dál dostává
+automatické přemapování os, špičkou nahoru podél +Z. Křidélko se vztahuje ke
+své **hloubce** (délka) a **půdorysné ploše** (hloubka × rozpětí), ne k průřezu
+trupu, a nemá špičku: kterou hranou míří proti vzduchu, nastavíte v **Air
+comes from**.
+
+**Tilt about** — osa v CAD, kolem které se model naklápí při změně úhlu
+náběhu: rozpětí nebo osa závěsu křidélka. Stane se osou, kolem které řešič
+úhel náběhu otáčí proud, takže „naklop křidélko kolem závěsu" znamená přesně
+to. *Automatic* naklápí křidélko kolem rozpětí a raketu podle osy špičky. Musí
+ležet napříč proudem.
+
+**Vidět na modelu.** 3D náhled obojí kreslí přes naimportovaný model: **modré
+šipky** pro přicházející vzduch pod úhlem náběhu a vybočení nastaveným ve
+*Flight condition* (posuňte posuvníky a šipky se natočí) a **oranžovou tyč**
+modelem pro osu naklápění, s obloukovou šipkou pro smysl kladného úhlu.
+Obrázek zkontrolujte před síťováním.
 
 ### Reference origin
 
@@ -342,7 +364,7 @@ na nich nemohla přežít.
 | CFL growth | Auto | Kolikrát adaptivní CFL vzroste za iteraci: 1,15 / 1,10 / 1,05 podle režimu |
 | CFL max | Auto | Kde adaptivní CFL skončí: 100 / 50 / 25 podle režimu |
 | Max iterations | 5000 | Tvrdý strop |
-| Convergence residual | −5,0 | log₁₀ RMS rezidua hustoty |
+| Convergence residual | −5,0 | Pokles log₁₀ RMS rezidua hustoty od maxima, v řádech. Relativně, protože při Mach 0,1 reziduum *začíná* kolem −5 a absolutní práh ukončoval výpočty po 15 iteracích |
 | MPI ranks | 10 | O dvě méně než vláken |
 | Rescue on divergence | zapnuto | Rozpadlý výpočet zopakovat v prvním řádu a pak restartovat ve druhém |
 | Stall timeout | 300 s | Vzdát to, když řešič takto dlouho mlčí |
@@ -452,7 +474,7 @@ s raketou. Soustava proudu je zarovnaná s prouděním. Při nulovém úhlu náb
 splývají; při úhlu se liší přesně o něj. Odpor a vztlak jsou z definice
 veličiny v soustavě proudu.
 
-**Působiště** hlásí `NaN`, když není příčná síla — při nulovém náběhu na
+**Působiště** hlásí `NaN` při nulovém úhlu náběhu i vybočení a vždy, když je příčná síla pod 5 % osové — to je numerický šum a dělení šumu momentu šumem síly jednou umístilo působiště 5,9 m před špičku. Obecně je `NaN`, když není příčná síla — při nulovém náběhu na
 symetrickém tělese působiště skutečně není definováno a uvést číslo by svádělo
 věřit něčemu bezvýznamnému. Spusťte při 2–5°, abyste dostali použitelnou
 hodnotu.

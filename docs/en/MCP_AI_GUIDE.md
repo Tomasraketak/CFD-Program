@@ -139,6 +139,8 @@ Import CAD, align it, build the domain, generate the mesh.
 | `target_yplus` | float | 45.0 | 30–300 |
 | `scale_to_meters` | float | read from the file | `0.001` for millimetres |
 | `sizing_mach` | float | 1.0 | Condition the boundary layer is sized for |
+| `body_kind` | string | read from the shape | `rocket` (longest side over 5× the others) or `fin` (thin plate; chord and planform reference) |
+| `pitch_axis` | string | null | CAD axis the model tilts about for an angle of attack, e.g. `+Z`; must be across the flow |
 | `sizing_altitude_m` | float | 0.0 | |
 | `max_targeting_iterations` | int | 4 | Remesh attempts to hit the cell band |
 
@@ -264,7 +266,7 @@ Render an image from a completed simulation.
 
 | Parameter | Type | Default | Notes |
 |---|---|---|---|
-| `sim_id` | string | — | **Required** |
+| `sim_id` | string | — | **Required**. A sweep point as the sweep lists it (`<sweep_id>-003`) works too: every point keeps its solution |
 | `visualization_type` | string | `"surface_pressure"` | `surface_pressure`, `mach_slice`, `schlieren`, `streamlines`, `thermal` |
 | `camera_view` | string | `"isometric"` | `isometric`, `front`, `back`, `side`, `top`, `bottom`, `nose_quarter`, `tail_quarter` |
 | `slice_normal` | list[3] | `[0,1,0]` | Cutting-plane normal |

@@ -415,6 +415,16 @@ def suggest_scale_to_meters(path: Path | str) -> ScaleDecision:
 # "which way does the nose point" has no answer worth guessing at.
 MIN_SLENDERNESS = 2.0
 
+# A body whose longest side is more than this many times each of the other
+# two is a rocket; anything stubbier -- a fin, a wing, a control surface --
+# is treated as a lifting surface, with no nose to find.
+ROCKET_SLENDERNESS = 5.0
+
+# ... provided it is also thin: its thinnest side under this fraction of the
+# next. Without that, a squat rocket with big fins (4.5 times longer than
+# its fin span) or a plain box would be taken for a fin.
+FIN_THICKNESS_RATIO = 0.35
+
 # Fraction of the length sampled at each end when comparing how thick the
 # two ends are. A tenth is short enough to sit inside a nose cone and long
 # enough to average out a sparse point cloud.
@@ -454,6 +464,8 @@ class AxisDecision:
     """
 
     __slots__ = (
+        "kind",
+        "tilt_axis",
         "axis",
         "nose_end",
         "nose_direction",
@@ -473,7 +485,11 @@ class AxisDecision:
         slenderness: float,
         nose_radius: float,
         tail_radius: float,
+        kind: str = "rocket",
+        tilt_axis: str | None = None,
     ) -> None:
+        self.kind = kind
+        self.tilt_axis = tilt_axis
         self.axis = axis
         self.nose_end = nose_end
         self.nose_direction = _opposite(nose_end)
@@ -494,6 +510,8 @@ class AxisDecision:
             "slenderness": self.slenderness,
             "nose_end_radius": self.nose_radius,
             "tail_end_radius": self.tail_radius,
+            "kind": self.kind,
+            "tilt_axis": self.tilt_axis,
         }
 
     def __repr__(self) -> str:  # pragma: no cover - diagnostics
@@ -552,6 +570,35 @@ def _fin_end(
     return None
 
 
+def _fin_decision(span: np.ndarray, slenderness: float) -> AxisDecision:
+    """A lifting surface: guess the chord and the span, and ask the rest.
+
+    The thinnest dimension is the thickness. Of the two in the plane, the
+    longer is taken as the chord, which the air flows along, and the other
+    as the span, which the fin tilts about -- how a control surface turns
+    on its hinge. Which edge faces the air cannot be read from the extents,
+    so that is left for the operator to confirm.
+    """
+    order = np.argsort(span)
+    thickness, span_axis, chord_axis = (int(index) for index in order)
+    chord = "XYZ"[chord_axis]
+    tilt = "XYZ"[span_axis]
+    return AxisDecision(
+        chord,
+        None,
+        False,
+        f"a lifting surface, not a rocket: its longest side is only "
+        f"{slenderness:.1f} times the others. Taking the air along {chord} "
+        f"(the chord) and tilting about {tilt} (the span), {'XYZ'[thickness]} "
+        "being the thickness. Which edge faces the air is for you to say",
+        slenderness,
+        0.0,
+        0.0,
+        kind="fin",
+        tilt_axis=tilt,
+    )
+
+
 def detect_body_axis(path: Path | str) -> AxisDecision:
     """Work out which way a slender body points, from the CAD alone.
 
@@ -580,6 +627,11 @@ def detect_body_axis(path: Path | str) -> AxisDecision:
     length = float(span[axis])
     width = float(np.max(np.delete(span, axis)))
     slenderness = length / width if width > 0.0 else float("inf")
+
+    ordered = np.sort(span)
+    thin = ordered[1] > 0.0 and ordered[0] < FIN_THICKNESS_RATIO * ordered[1]
+    if 0.0 < length and slenderness <= ROCKET_SLENDERNESS and thin:
+        return _fin_decision(span, slenderness)
 
     if length <= 0.0 or slenderness < MIN_SLENDERNESS:
         return AxisDecision(

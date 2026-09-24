@@ -312,9 +312,11 @@ def build_aero_config(
             f"{min(cfl_min, cfl):g}, {cfl_max:g} )"
         )
     add(f"ITER= {solver.max_iterations}")
-    add("CONV_FIELD= RMS_DENSITY")
+    # Relative to the peak, not absolute: see relative_residual_drop. And
+    # never before a hundred iterations, when the forces have not formed.
+    add("CONV_FIELD= REL_RMS_DENSITY")
     add(f"CONV_RESIDUAL_MINVAL= {solver.convergence_residual:g}")
-    add("CONV_STARTITER= 10")
+    add("CONV_STARTITER= 100")
     add("")
 
     add(_banner("Input / output"))
@@ -340,7 +342,7 @@ def build_aero_config(
         "SIDEFORCE, MOMENT_X, MOMENT_Y, MOMENT_Z )"
     )
     add(
-        "HISTORY_OUTPUT= ( ITER, RMS_RES, AERO_COEFF, FORCES_BREAKDOWN )"
+        "HISTORY_OUTPUT= ( ITER, RMS_RES, REL_RMS_RES, AERO_COEFF, FORCES_BREAKDOWN )"
     )
     add("SCREEN_WRT_FREQ_INNER= 1")
     add("")

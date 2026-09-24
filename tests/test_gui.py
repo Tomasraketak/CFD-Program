@@ -812,6 +812,9 @@ class FakeViewport:
     def _apply_view(self, name):
         self.view_applied = name
 
+    def set_overlay(self, items):
+        self.overlay = items
+
 
 def preview_for(points=None, triangles=None, length=1.32):
     """A GeometryPreview standing in for real tessellation."""
@@ -980,3 +983,38 @@ def test_solver_numerics_can_be_set_and_round_trip(aero_tab):
 def test_a_cfl_typed_below_the_range_is_auto_not_zero(aero_tab):
     aero_tab.cfl_start.setValue(0.0)
     assert aero_tab.solver_params().cfl_number is None
+
+
+
+def test_the_preview_shows_the_air_and_the_tilt_axis(aero_tab):
+    """What the operator chose is drawn on the model, and follows alpha."""
+    pytest.importorskip("pyvista")
+    aero_tab.viewport = FakeViewport()
+    aero_tab._preview_token = 3
+    aero_tab._preview_ready((3, preview_for()))
+    assert len(aero_tab.viewport.overlay) >= 10  # arrows, rod, arc, tip
+    aero_tab.aoa.setValue(5.0)
+    assert "alpha 5.0" in aero_tab.overlay_note.text()
+
+
+def test_a_fin_is_set_up_from_its_shape(aero_tab, tmp_path):
+    """A thin plate is a fin, tilting about its span."""
+    from tests.test_step_inspect import MILLIMETRES, write_step
+
+    corners = [(x, y, z) for x in (0.0, 120.0) for y in (-2.0, 2.0) for z in (0.0, 70.0)]
+    path = write_step(tmp_path / "fin.step", MILLIMETRES, corners)
+    aero_tab.step_path.setText(path)
+    aero_tab._on_step_path_changed()
+    assert aero_tab.body_kind.currentData() == "fin"
+    for button in aero_tab.axis_buttons.buttons():
+        button.setChecked(button.text() == "-X")
+    geometry = aero_tab.geometry_params()
+    assert geometry.body_kind.value == "fin"
+    assert geometry.pitch_axis is not None and geometry.pitch_axis.value == "+Z"
+    assert "fin" in aero_tab.geometry_note.text()
+
+
+def test_the_tilt_axis_can_be_chosen(aero_tab):
+    aero_tab.step_path.setText("/models/fin.step")
+    aero_tab.tilt_axis.setCurrentIndex(aero_tab.tilt_axis.findData("+Y"))
+    assert aero_tab.geometry_params().pitch_axis.value == "+Y"

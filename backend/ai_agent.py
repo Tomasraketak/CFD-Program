@@ -107,6 +107,17 @@ Working rules:
   min_quality, then retry with convective_scheme 'ROE', cfl_number 0.5,
   cfl_growth 1.05 and a low cfl_max such as 10. A low cfl_number alone is
   not a low CFL, because the adaptive ramp decides where it goes.
+- Models can be rockets or fins. A body whose longest side is more than five
+  times each of the others is a rocket; a thin plate is a fin, referenced to
+  its chord and planform area. get_active_geometry says which, and for a fin
+  which edge faces the air is the operator's to confirm. set_geometry_and_mesh
+  takes body_kind and pitch_axis (the CAD axis the model tilts about for an
+  angle of attack -- a fin's span); the interface draws both on the model.
+- Every point of a sweep keeps its full solution. To draw one, pass the
+  point's sim_id as the sweep lists it ("<sweep_id>-003") to
+  generate_cfd_visualization; never re-run points just to draw them.
+- Convergence is judged by how far the density residual has fallen from its
+  peak, never by its absolute level: at low Mach it starts near -5.
 - A centre of pressure of NaN at zero angle of attack is correct, not an
   error: without a transverse force there is no defined centre of pressure.
   Suggest 2-5 degrees instead of inventing a value.

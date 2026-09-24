@@ -88,6 +88,9 @@ _DIVERGENCE_MARKERS = (
 _WARNING_MARKERS = (
     "Warning",
     "WARNING",
+    # The mesh writer orients every element the way SU2 wants, so a
+    # re-orientation report now means genuinely inverted cells.
+    "re-orientation of",
 )
 
 
@@ -273,6 +276,23 @@ def _to_float(text: str) -> float | None:
 # ---------------------------------------------------------------------------
 
 
+def relative_residual_drop(parser: SU2OutputParser) -> float | None:
+    """How far log10 RMS[Rho] has fallen from its peak, as a negative number.
+
+    The absolute level means nothing across flight conditions. At Mach 0.1
+    the density barely changes, and the residual *starts* at -4.8: a -5
+    threshold stopped a Mach 0.1 solve after fifteen iterations, with the
+    drag coefficient still swinging between -1 and 45, and reported it as
+    converged. The drop from the peak is what measures convergence, and it
+    is what SU2's own REL_RMS_DENSITY reports.
+    """
+    history = parser.history("rms_rho")
+    finite = history[np.isfinite(history)]
+    if finite.size < 2:
+        return None
+    return float(finite[-1] - np.max(finite))
+
+
 class ConvergenceMonitor:
     """Decides when a solve has converged and can be stopped early.
 
@@ -291,7 +311,7 @@ class ConvergenceMonitor:
         residual_threshold: float = -5.0,
         force_window: int = 250,
         force_tolerance: float = 1.0e-4,
-        minimum_iterations: int = 50,
+        minimum_iterations: int = 100,
     ) -> None:
         self.residual_threshold = residual_threshold
         self.force_window = force_window
@@ -304,11 +324,11 @@ class ConvergenceMonitor:
         if len(parser.records) < self.minimum_iterations:
             return False
 
-        residual = parser.final_value("rms_rho")
-        if math.isfinite(residual) and residual <= self.residual_threshold:
+        drop = relative_residual_drop(parser)
+        if drop is not None and drop <= self.residual_threshold:
             self.reason = (
-                f"density residual reached {residual:.2f} "
-                f"(threshold {self.residual_threshold:.2f})"
+                f"density residual fell {-drop:.2f} orders "
+                f"(target {-self.residual_threshold:.2f})"
             )
             return True
 
@@ -316,7 +336,7 @@ class ConvergenceMonitor:
             return True
         return False
 
-    def forces_are_steady(self, parser: SU2OutputParser) -> bool:
+    def forces_are_steady(self, parser: SU2OutputParser) -> bool:  # noqa: D401
         """True when C_d has been stable across the trailing window."""
         history = parser.history("cd")
         finite = history[np.isfinite(history)]

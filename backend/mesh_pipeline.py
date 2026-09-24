@@ -212,16 +212,81 @@ def rotation_matrix_from_vectors(
     return np.eye(3) + sine * skew + (1.0 - cosine) * skew @ skew
 
 
+def _is_fin(geometry) -> bool:
+    kind = getattr(geometry, "body_kind", None)
+    return getattr(kind, "value", kind) == "fin"
+
+
+def _reference_values(geometry, metrics, airframe_diameter: float) -> dict:
+    """Reference length, diameter and area for the coefficients.
+
+    A rocket is referenced to its body cross-section, a fin to its planform:
+    chord times span. Using a fin's "diameter" -- the airframe radius
+    estimate has nothing to measure on a flat plate -- would make every
+    coefficient meaningless.
+    """
+    if not _is_fin(geometry):
+        return {
+            "reference_length_m": metrics.reference_length_m,
+            "reference_diameter_m": airframe_diameter,
+            "reference_area_m2": math.pi * 0.25 * airframe_diameter**2,
+        }
+    low = np.asarray(metrics.bounding_box_min, dtype=float)
+    high = np.asarray(metrics.bounding_box_max, dtype=float)
+    extent = high - low
+    chord = float(extent[0])
+    # Aligned, Y is the pitch axis -- the span -- when one was given.
+    span = float(extent[1]) if geometry.pitch_axis is not None else float(max(extent[1:]))
+    thickness = float(extent[2]) if geometry.pitch_axis is not None else float(min(extent[1:]))
+    return {
+        "reference_length_m": chord,
+        "reference_diameter_m": thickness,
+        "reference_area_m2": chord * span,
+    }
+
+
+def _pitch_vector(geometry) -> tuple[float, float, float] | None:
+    """The geometry's pitch axis as a vector, if it has one."""
+    axis = getattr(geometry, "pitch_axis", None)
+    return None if axis is None else axis.to_vector()
+
+
 def _skew(vector: np.ndarray) -> np.ndarray:
     """Skew-symmetric cross-product matrix of a 3-vector."""
     x, y, z = vector
     return np.array([[0.0, -z, y], [z, 0.0, -x], [-y, x, 0.0]])
 
 
+def alignment_rotation(
+    nose_vector: tuple[float, float, float],
+    pitch_axis: tuple[float, float, float] | None = None,
+) -> np.ndarray:
+    """The rotation from CAD coordinates into the solver frame.
+
+    The flow direction goes onto +X. With a pitch axis, that axis goes onto
+    +Y as well -- the axis SU2's angle of attack turns the flow about -- so
+    "tilt about the fin's span" means exactly that. Without one, the
+    smallest rotation that lines up the flow is used, as it always was.
+    """
+    flow = np.asarray(nose_vector, dtype=float)
+    flow = flow / np.linalg.norm(flow)
+    if pitch_axis is None:
+        return rotation_matrix_from_vectors(flow, np.array([1.0, 0.0, 0.0]))
+    axis = np.asarray(pitch_axis, dtype=float)
+    axis = axis - np.dot(axis, flow) * flow
+    if np.linalg.norm(axis) < 1.0e-9:
+        raise MeshPipelineError("the pitch axis cannot lie along the flow")
+    axis = axis / np.linalg.norm(axis)
+    third = np.cross(flow, axis)
+    # Rows are the solver axes in CAD coordinates, so R @ flow = +X.
+    return np.array([flow, axis, third])
+
+
 def _apply_alignment(
     entities: list[tuple[int, int]],
     nose_vector: tuple[float, float, float],
     reference_origin: tuple[float, float, float],
+    pitch_axis: tuple[float, float, float] | None = None,
 ) -> np.ndarray:
     """Translate and rotate the model into wind-tunnel coordinates.
 
@@ -239,9 +304,7 @@ def _apply_alignment(
     if np.any(origin != 0.0):
         occ.translate(entities, *(-origin))
 
-    rotation = rotation_matrix_from_vectors(
-        np.asarray(nose_vector, dtype=float), np.array([1.0, 0.0, 0.0])
-    )
+    rotation = alignment_rotation(nose_vector, pitch_axis)
     # Convert the matrix to an axis-angle pair for Gmsh's rotate().
     angle = math.acos(max(-1.0, min(1.0, (np.trace(rotation) - 1.0) / 2.0)))
     if angle > 1.0e-12:
@@ -845,6 +908,7 @@ def tessellate_geometry(
             [(3, tag) for tag in volumes],
             geometry.resolved_nose_vector(),
             tuple(geometry.reference_origin),
+            _pitch_vector(geometry),
         )
 
         cad_metrics = _measure_geometry(
@@ -1004,9 +1068,7 @@ def generate_mesh(
         surface_element_count=sum(mesh.marker_counts().values()),
         target_band=(band_low, band_high),
         within_target_band=band_low <= cells <= band_high,
-        reference_length_m=metrics.reference_length_m,
-        reference_diameter_m=best["airframe_diameter"],
-        reference_area_m2=math.pi * 0.25 * best["airframe_diameter"] ** 2,
+        **_reference_values(request.geometry, metrics, best["airframe_diameter"]),
         first_cell_height_m=best["first_height"],
         estimated_yplus=achieved_yplus,
         boundary_markers=mesh.marker_counts(),
@@ -1167,6 +1229,7 @@ def _build_surface_mesh(
             [(3, tag) for tag in body_volumes],
             geometry.resolved_nose_vector(),
             tuple(geometry.reference_origin),
+            _pitch_vector(geometry),
         )
 
         if split:
@@ -1183,6 +1246,10 @@ def _build_surface_mesh(
         airframe_tags, fin_tags, cad_airframe_radius = classify_wall_surfaces(
             wall_tags
         )
+        if _is_fin(geometry):
+            # A fin on its own is all "fin"; splitting its faces by distance
+            # from an axis it does not have would be meaningless.
+            airframe_tags, fin_tags = list(wall_tags), []
         airframe_radius = cad_airframe_radius * scale
         notify(
             f"classified {len(airframe_tags)} airframe and {len(fin_tags)} fin "
@@ -1515,7 +1582,13 @@ def _assemble(
     prism_map, tet_map = mappings
 
     mesh = SU2Mesh(points=merged_points)
-    mesh.add_volume(VTK_WEDGE, prism_map[prisms.wedges])
+    # VTK and SU2 want the base triangle wound so its normal points away
+    # from the top one. The extruder winds it towards the top (its volume
+    # and quality checks rely on that), so the order is flipped here, where
+    # the mesh is written. Unflipped, SU2 re-oriented every prism on every
+    # run -- and a handful that genuinely were inverted could not be told
+    # from the rest in its report.
+    mesh.add_volume(VTK_WEDGE, prism_map[prisms.wedges][:, [0, 2, 1, 3, 5, 4]])
     if tets.size:
         mesh.add_volume(VTK_TETRA, tet_map[tets])
 
@@ -1529,7 +1602,11 @@ def _assemble(
         mesh.add_marker(MARKER_WALL_ROCKET, VTK_TRIANGLE, wall)
 
     if farfield_triangles.size:
-        mesh.add_marker(MARKER_FARFIELD, VTK_TRIANGLE, tet_map[farfield_triangles])
+        # Wound to face out of the domain, as SU2 expects; Gmsh's own
+        # orientation of the envelope was the other way round.
+        mesh.add_marker(
+            MARKER_FARFIELD, VTK_TRIANGLE, tet_map[farfield_triangles][:, ::-1]
+        )
 
     mesh.validate()
     quality = prism_quality(merged_points, prism_map[prisms.wedges])

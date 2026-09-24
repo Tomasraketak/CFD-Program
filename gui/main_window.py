@@ -23,6 +23,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from core.models import (
     AeroRunRequest,
     AxisDirection,
+    BodyKind,
     ConvectiveScheme,
     DomainParams,
     DomainShape,
@@ -264,6 +265,27 @@ class Viewport(QtWidgets.QWidget):
             pass
         self.interactor.reset_camera()
 
+    def set_overlay(self, items: list) -> None:
+        """Replace the flow-and-axis overlay with new meshes."""
+        if self.interactor is None:
+            return
+        for actor in getattr(self, "_overlay_actors", []):
+            try:
+                self.interactor.remove_actor(actor)
+            except Exception:  # pragma: no cover - already gone
+                pass
+        self._overlay_actors = []
+        for mesh, options in items:
+            try:
+                self._overlay_actors.append(self.interactor.add_mesh(mesh, **options))
+            except Exception:  # pragma: no cover - rendering failure
+                pass
+        try:
+            self.interactor.reset_camera()
+            self.interactor.render()
+        except Exception:  # pragma: no cover
+            pass
+
     def add_line(self, start, end, colour: str = ACCENT, width: int = 4) -> None:
         """Draw a line, used for the fin hinge axis."""
         if self.interactor is None:
@@ -399,13 +421,42 @@ class AerodynamicsTab(QtWidgets.QWidget):
             button.setCheckable(True)
             button.setChecked(direction is AxisDirection.MINUS_X)
             button.setToolTip(
-                f"The nose points to {direction.value} in the CAD file. "
-                "Whatever this is, the model is shown and reported nose-up "
-                "along +Z."
+                f"The oncoming air arrives from {direction.value} in the CAD "
+                "file: where a rocket's nose points, or which edge of a fin "
+                "leads. Whatever this is, the model is shown and reported "
+                "with that side up, along +Z."
             )
+            button.toggled.connect(self._on_setup_changed)
             self.axis_buttons.addButton(button, index)
             axis_row.addWidget(button)
-        layout.addRow("Nose points to", _wrap(axis_row))
+        layout.addRow("Air comes from", _wrap(axis_row))
+
+        # Rocket or fin: read from the shape on import (one side over five
+        # times the others is a rocket, a thin plate a fin), and overridable.
+        self.body_kind = QtWidgets.QComboBox()
+        self.body_kind.addItem("Rocket", "rocket")
+        self.body_kind.addItem("Fin / wing", "fin")
+        self.body_kind.setToolTip(
+            "Set from the model's proportions when a file is opened. A fin is "
+            "referenced to its chord and planform area instead of a body "
+            "cross-section."
+        )
+        self.body_kind.currentIndexChanged.connect(self._on_setup_changed)
+        layout.addRow("Model is a", self.body_kind)
+
+        # What the model tilts about when the angle of attack changes.
+        self.tilt_axis = QtWidgets.QComboBox()
+        self.tilt_axis.addItem("Automatic", None)
+        for direction in AxisDirection:
+            self.tilt_axis.addItem(f"CAD {direction.value}", direction.value)
+        self.tilt_axis.setToolTip(
+            "The CAD axis the model tilts about for an angle of attack -- a "
+            "fin's span or hinge line. It must be across the flow. Automatic: "
+            "a fin tilts about its span, a rocket as its nose axis implies. "
+            "Shown in orange in the 3D view."
+        )
+        self.tilt_axis.currentIndexChanged.connect(self._on_setup_changed)
+        layout.addRow("Tilt about", self.tilt_axis)
 
         self.custom_nose = QtWidgets.QCheckBox("Use custom vector")
         self.nose_vector = VectorInput((-1.0, 0.0, 0.0))
@@ -647,6 +698,12 @@ class AerodynamicsTab(QtWidgets.QWidget):
 
         self.viewport = Viewport()
         layout.addWidget(self.viewport, 3)
+        self.overlay_note = QtWidgets.QLabel(
+            "Open a STEP file: the air (blue) and the tilt axis (orange) are "
+            "drawn over the model."
+        )
+        self.overlay_note.setObjectName("hint")
+        layout.addWidget(self.overlay_note)
 
         self.chart = ResidualChart()
         layout.addWidget(self.chart, 2)
@@ -754,6 +811,10 @@ class AerodynamicsTab(QtWidgets.QWidget):
             self.scale.setValue(record.scale_to_meters)
             if record.nose_is_confident and not self.custom_nose.isChecked():
                 self._check_nose_button(_opposite_axis(record.nose_direction))
+            self._detected_pitch_axis = record.pitch_axis
+            blocked = self.body_kind.blockSignals(True)
+            self.body_kind.setCurrentIndex(max(0, self.body_kind.findData(record.body_kind)))
+            self.body_kind.blockSignals(blocked)
 
         note = record.summary()
         # Anything the geometry could not settle is put to the operator here
@@ -768,6 +829,49 @@ class AerodynamicsTab(QtWidgets.QWidget):
         self.append_log(f"Loaded {Path(path).name}: {note}")
         self.statusMessage.emit(note)
         self._start_preview()
+
+    def _auto_pitch_axis(self) -> str | None:
+        """The tilt axis read from the shape, for a fin; none for a rocket."""
+        if self.body_kind.currentData() != "fin":
+            return None
+        pitch = getattr(self, "_detected_pitch_axis", None)
+        if pitch is None:
+            return None
+        # It has to lie across the flow; the shape's guess can disagree with
+        # an air direction the operator changed.
+        button = self.axis_buttons.checkedButton()
+        if button and button.text()[1:] == pitch[1:]:
+            return None
+        return pitch
+
+    def _on_setup_changed(self, *_: Any) -> None:
+        """Air direction, model kind or tilt axis changed: redraw the model.
+
+        The alignment depends on all three, so the preview is rebuilt
+        rather than the arrows merely moved.
+        """
+        if getattr(self, "_restoring", False):
+            return
+        if self.step_path.text().strip():
+            self._start_preview()
+
+    def _refresh_overlay(self, *_: Any) -> None:
+        """Draw the oncoming air and the tilt axis over the model."""
+        bounds = getattr(self, "_preview_bounds", None)
+        if bounds is None or not self.viewport.available:
+            return
+        try:
+            from gui.flow_overlay import build_overlay, describe
+
+            items = build_overlay(bounds, self.aoa.value(), self.sideslip.value())
+        except Exception as error:  # noqa: BLE001 - a picture, not a result
+            self.append_log(f"Could not draw the flow arrows: {error}")
+            return
+        self.viewport.set_overlay(items)
+        tilt = self.tilt_axis.currentData() or self._auto_pitch_axis()
+        self.overlay_note.setText(
+            describe(self.aoa.value(), self.sideslip.value(), tilt)
+        )
 
     def _check_nose_button(self, nose_points_to: str) -> None:
         """Light the button for the direction the nose points in the CAD."""
@@ -840,6 +944,8 @@ class AerodynamicsTab(QtWidgets.QWidget):
         self.viewport.show_mesh(
             surface, color="#8aa0c0", show_edges=False, smooth_shading=True
         )
+        self._preview_bounds = tuple(surface.bounds)
+        self._refresh_overlay()
         # Set the camera directly: the combo may already read "side", and
         # then setting it emits nothing and leaves the camera where
         # show_mesh's reset_camera put it.
@@ -896,7 +1002,7 @@ class AerodynamicsTab(QtWidgets.QWidget):
             self.condition_label.setText(str(error))
 
     def _update_orientation_preview(self, *_: Any) -> None:
-        """Reflect attitude changes in the status line.
+        """Reflect attitude changes in the status line and the 3D arrows.
 
         The mesh is built in the body frame and the solver applies alpha and
         beta itself, so this is presentation only.
@@ -905,6 +1011,7 @@ class AerodynamicsTab(QtWidgets.QWidget):
             f"Attitude: alpha {self.aoa.value():.1f} deg, "
             f"beta {self.sideslip.value():.1f} deg"
         )
+        self._refresh_overlay()
 
     def _draw_hinge(self, *_: Any) -> None:
         """Draw the hinge axis into the 3D scene."""
@@ -934,10 +1041,14 @@ class AerodynamicsTab(QtWidgets.QWidget):
             else AxisDirection.PLUS_X
         )
         custom = self.custom_nose.isChecked()
+        tilt = self.tilt_axis.currentData()
+        pitch = self._auto_pitch_axis() if tilt is None else tilt
         return GeometryParams(
             step_file_path=self.step_path.text().strip(),
             nose_direction=None if custom else direction,
             nose_vector=[-v for v in self.nose_vector.value()] if custom else None,
+            body_kind=BodyKind(self.body_kind.currentData() or "rocket"),
+            pitch_axis=AxisDirection(pitch) if pitch else None,
             reference_origin=self.reference_origin.value(),
             scale_to_meters=self.scale.value(),
         )
@@ -1027,14 +1138,17 @@ class AerodynamicsTab(QtWidgets.QWidget):
             self.altitude, self.hinge_name, self.hinge_point,
             self.hinge_direction, self.resolution, self.layers,
             self.target_yplus, self.ranks, self.scheme, self.cfl_start,
+            self.body_kind, self.tilt_axis,
             self.cfl_growth, self.cfl_max, self.max_iterations, self.sweep_values,
             self.sweep_parameter,
         ]
         for widget in widgets:
             widget.blockSignals(True)
+        self._restoring = True
         try:
             self._apply_project_locked(project)
         finally:
+            self._restoring = False
             for widget in widgets:
                 widget.blockSignals(False)
 
@@ -1063,6 +1177,14 @@ class AerodynamicsTab(QtWidgets.QWidget):
                 self.nose_vector.set_value(tuple(-v for v in geometry.nose_vector))
             elif geometry.nose_direction is not None:
                 self._check_nose_button(_opposite_axis(geometry.nose_direction.value))
+            self.body_kind.setCurrentIndex(
+                max(0, self.body_kind.findData(geometry.body_kind.value))
+            )
+            self.tilt_axis.setCurrentIndex(
+                max(0, self.tilt_axis.findData(
+                    geometry.pitch_axis.value if geometry.pitch_axis else None
+                ))
+            )
             # After the scale and the nose axis, so the project's own values
             # are what reach the assistant.
             self._on_step_path_changed(keep_scale=True)

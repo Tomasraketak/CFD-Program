@@ -933,3 +933,30 @@ def test_an_unknown_scheme_is_refused(prepared_mesh):
     )
     assert response["ok"] is False
     assert "invalid parameters" in response["error"]
+
+
+def test_a_sweep_point_can_be_drawn_without_re_running_it(store, monkeypatch):
+    """Every point keeps its solution; the id the sweep lists finds it."""
+    import backend.visualizer as visualizer
+
+    seen = []
+
+    def fake_render(solution, kind, output_path, **kwargs):
+        seen.append(Path(solution))
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(output_path).write_bytes(b"png")
+        return Path(output_path)
+
+    monkeypatch.setattr(visualizer, "render_visualization", fake_render)
+    sweep = store.create("sweep", {})
+    sweep.path("point_002").mkdir()
+    reply = call(
+        server_module.generate_cfd_visualization,
+        sim_id=f"{sweep.record_id}-002",
+        visualization_type="schlieren",
+    )
+    assert reply["ok"], reply.get("error")
+    assert seen[0] == sweep.path("point_002")
+    assert "point_002" in reply["image_path"]
+    missing = call(server_module.generate_cfd_visualization, sim_id=f"{sweep.record_id}-009")
+    assert missing["ok"] is False

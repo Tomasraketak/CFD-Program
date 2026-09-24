@@ -137,6 +137,8 @@ Načte CAD, zarovná jej, postaví oblast a vytvoří síť.
 | `target_yplus` | float | 45.0 | 30–300 |
 | `scale_to_meters` | float | ze souboru | `0.001` pro milimetry |
 | `sizing_mach` | float | 1.0 | Režim, pro který se dimenzuje mezní vrstva |
+| `body_kind` | string | podle tvaru | `rocket` (nejdelší strana přes 5× ostatní) nebo `fin` (tenká deska; vztaženo k hloubce a půdorysu) |
+| `pitch_axis` | string | null | Osa v CAD, kolem které se model naklápí při úhlu náběhu, např. `+Z`; musí být napříč proudem |
 | `sizing_altitude_m` | float | 0.0 | |
 | `max_targeting_iterations` | int | 4 | Pokusy o zásah cílového počtu buněk |
 
@@ -261,7 +263,7 @@ Vykreslí obrázek z dokončené simulace.
 
 | Parametr | Typ | Výchozí | Poznámka |
 |---|---|---|---|
-| `sim_id` | string | — | **Povinné** |
+| `sim_id` | string | — | **Povinné**. Funguje i bod sweepu, jak ho sweep vypíše (`<sweep_id>-003`): každý bod si řešení ponechává |
 | `visualization_type` | string | `"surface_pressure"` | `surface_pressure`, `mach_slice`, `schlieren`, `streamlines`, `thermal` |
 | `camera_view` | string | `"isometric"` | `isometric`, `front`, `back`, `side`, `top`, `bottom`, `nose_quarter`, `tail_quarter` |
 | `slice_normal` | list[3] | `[0,1,0]` | Normála roviny řezu |

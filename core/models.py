@@ -81,6 +81,13 @@ def normalize_vector(vector: Sequence[float]) -> tuple[float, float, float]:
     return (x / magnitude, y / magnitude, z / magnitude)
 
 
+class BodyKind(str, Enum):
+    """What was imported: a whole rocket, or a lifting surface on its own."""
+
+    ROCKET = "rocket"
+    FIN = "fin"
+
+
 class GeometryParams(StrictModel):
     """CAD ingestion, healing and alignment settings."""
 
@@ -104,6 +111,26 @@ class GeometryParams(StrictModel):
             "Arbitrary nose-to-tail direction [nx, ny, nz] in CAD "
             "coordinates, with the same sense as 'nose_direction'. "
             "Normalised automatically. Takes precedence over it."
+        ),
+    )
+    body_kind: BodyKind = Field(
+        default=BodyKind.ROCKET,
+        description=(
+            "'rocket' for a whole vehicle, 'fin' for a fin, wing or control "
+            "surface on its own. A fin's reference length is its chord and "
+            "its reference area its planform (chord x span), not a body "
+            "cross-section. For a fin, 'nose_direction' is the direction the "
+            "air flows along it: leading edge towards trailing edge."
+        ),
+    )
+    pitch_axis: AxisDirection | None = Field(
+        default=None,
+        description=(
+            "CAD axis the model tilts about when the angle of attack changes "
+            "-- a fin's span or hinge line, say. It becomes the solver's Y "
+            "axis, which is the axis SU2's angle of attack rotates the flow "
+            "about. Must be perpendicular to the flow direction. Null keeps "
+            "the orientation that follows from the flow direction alone."
         ),
     )
     reference_origin: Vector3 = Field(
@@ -155,6 +182,19 @@ class GeometryParams(StrictModel):
             return normalize_vector(self.nose_vector)
         assert self.nose_direction is not None  # guaranteed by the validator
         return self.nose_direction.to_vector()
+
+    @model_validator(mode="after")
+    def _pitch_axis_is_across_the_flow(self) -> "GeometryParams":
+        if self.pitch_axis is None:
+            return self
+        flow = self.resolved_nose_vector()
+        axis = self.pitch_axis.to_vector()
+        if abs(sum(f * a for f, a in zip(flow, axis))) > 0.2:
+            raise ValueError(
+                f"pitch_axis {self.pitch_axis.value} lies along the flow "
+                "direction; a model can only tilt about an axis across it"
+            )
+        return self
 
 
 # --------------------------------------------------------------------------
@@ -731,8 +771,11 @@ class SolverParams(StrictModel):
         default=-5.0,
         le=0.0,
         description=(
-            "Convergence threshold as log10 of RMS[Rho]. -5.0 means the run "
-            "stops once the density residual has dropped five orders."
+            "Convergence threshold as the drop in log10 RMS[Rho] from its "
+            "peak. -5.0 means the run stops once the density residual has "
+            "fallen five orders. Relative, because the absolute level depends "
+            "on the flight condition: at Mach 0.1 it starts near -4.8. Force "
+            "steadiness also ends a run, and usually first."
         ),
     )
     force_stabilization_window: int = Field(

@@ -77,7 +77,7 @@ removed, tiny faces repaired. If healing destroys the solid — which happens
 with some simple shapes — the unhealed import is used instead and the report
 says so.
 
-### Nose points to
+### Air comes from
 
 The direction the **nose points** in your CAD file. A rocket drawn standing
 up, tip at the top of a Y-up model, is **`+Y`**.
@@ -114,6 +114,27 @@ same question rather than picking one.
 This is the single most consequential setting. Get it wrong and the body is
 meshed sideways or backwards, and every result will be plausible and wrong:
 a rocket flying tail-first still produces a complete drag polar.
+
+### Rocket or fin, and what it tilts about
+
+**Model is a** — *Rocket* or *Fin / wing*, set from the shape when a file is
+opened: a body whose longest side is more than five times each of the other
+two is a rocket; a thin plate is a fin. A rocket still gets its axes remapped
+automatically, nose up along +Z. A fin is referenced to its **chord** (length)
+and **planform area** (chord × span), not a body cross-section, and has no
+nose: which edge faces the air is yours to set under **Air comes from**.
+
+**Tilt about** — the CAD axis the model tilts about when the angle of attack
+changes: a fin's span or hinge line. It becomes the axis the solver's angle
+of attack turns the flow about, so "tilt the fin about its hinge" means
+exactly that. *Automatic* tilts a fin about its span and leaves a rocket as
+its nose axis implies. It must lie across the flow.
+
+**Seen on the model.** The 3D view draws both over the imported model:
+**blue arrows** for the oncoming air, arriving at the angle of attack and
+sideslip set in *Flight condition* (move the sliders and they follow), and an
+**orange rod** through the model for the tilt axis, with a curved arrow
+showing the sense of a positive angle. Check the picture before meshing.
 
 ### Reference origin
 
@@ -351,7 +372,7 @@ than the rocket and no shock wave could survive on them.
 | CFL growth | Auto | Factor the adaptive CFL grows by each iteration: 1.15 / 1.10 / 1.05 by regime |
 | CFL max | Auto | Where the adaptive CFL stops: 100 / 50 / 25 by regime |
 | Max iterations | 5000 | Hard cap |
-| Convergence residual | −5.0 | log₁₀ of RMS density residual |
+| Convergence residual | −5.0 | Fall of log₁₀ RMS density residual from its peak, in orders. Relative, because at Mach 0.1 the residual *starts* near −5 and an absolute threshold stopped solves after 15 iterations |
 | MPI ranks | 10 | Two below the thread count |
 | Rescue on divergence | on | Retry a blown-up solve at first order, then restart at second |
 | Stall timeout | 300 s | Give up if the solver goes silent for this long |
@@ -462,7 +483,7 @@ are aligned with the airflow. At zero angle of attack they coincide; at angle
 they differ by exactly that angle. Drag and lift are wind-axis quantities by
 definition.
 
-**Centre of pressure** reports `NaN` when there is no transverse force — at
+**Centre of pressure** reports `NaN` at zero angle of attack and sideslip, and whenever the transverse force is under 5 % of the axial one — that is numerical noise, and dividing moment noise by it once put the centre of pressure 5.9 m ahead of the nose. More generally it is `NaN` when there is no transverse force — at
 zero incidence on a symmetric body there is genuinely no defined centre of
 pressure, and reporting a number would invite you to trust something
 meaningless. Run at 2–5° to get a usable value.

@@ -15,6 +15,7 @@ structured arguments.
 from __future__ import annotations
 
 import json
+import re
 import os
 import traceback
 from pathlib import Path
@@ -35,6 +36,7 @@ from core.frames import AXIS_CONVENTION, Frame
 from core.models import (
     AeroRunRequest,
     AxisDirection,
+    BodyKind,
     ConvectiveScheme,
     DomainParams,
     DomainShape,
@@ -185,6 +187,8 @@ def set_geometry_and_mesh(
     sizing_mach: float = 1.0,
     sizing_altitude_m: float = 0.0,
     max_targeting_iterations: int = 4,
+    body_kind: str | None = None,
+    pitch_axis: str | None = None,
 ) -> dict[str, Any]:
     """Prepare a solver-ready mesh from a CAD file.
 
@@ -226,6 +230,17 @@ def set_geometry_and_mesh(
         Flight condition the boundary layer is sized for.
     max_targeting_iterations:
         Remesh attempts allowed to reach the target cell band.
+    body_kind:
+        'rocket' or 'fin'. Omit it and the shape decides: a body whose
+        longest side is more than five times each of the others is a
+        rocket; a thin plate-like one is a fin. For a fin, nose_direction
+        is the direction the air flows along it, leading edge to trailing
+        edge, and the coefficients are referenced to chord and planform.
+    pitch_axis:
+        CAD axis the model tilts about when the angle of attack changes,
+        e.g. '+Z' for a fin whose span runs along Z. It must be across the
+        flow. Omit it: a fin tilts about its span, a rocket keeps the
+        orientation that follows from its nose.
     """
     loaded = active_geometry()
     scale_note = ""
@@ -269,6 +284,20 @@ def set_geometry_and_mesh(
         nose_note = loaded.nose_reason
         nose_given = True
 
+    same_file = loaded is not None and loaded.step_file_path == step_file_path
+    if body_kind is None:
+        if same_file:
+            body_kind = loaded.body_kind
+            pitch_axis = pitch_axis or loaded.pitch_axis
+        else:
+            try:
+                shape = detect_body_axis(step_file_path)
+            except StepInspectionError:
+                shape = None
+            body_kind = shape.kind if shape is not None else "rocket"
+            if pitch_axis is None and shape is not None and shape.tilt_axis:
+                pitch_axis = f"+{shape.tilt_axis}"
+
     if not nose_given:
         # Which way the body points is not a default worth having. A rocket
         # meshed backwards returns a full set of plausible forces for a
@@ -277,6 +306,16 @@ def set_geometry_and_mesh(
             axis = detect_body_axis(step_file_path)
         except StepInspectionError as error:
             return _error(f"could not read '{step_file_path}': {error}")
+        if axis.nose_direction is None and body_kind == "fin":
+            return _error(
+                f"this is a fin; which edge faces the oncoming air? {axis.reason}. "
+                f"Ask the operator, then pass nose_direction: '+{axis.axis}' if "
+                f"the air arrives at the -{axis.axis} edge, or '-{axis.axis}' "
+                f"if it arrives at the +{axis.axis} edge.",
+                axis=axis.axis,
+                needs=["nose_direction"],
+                geometry=axis.as_dict(),
+            )
         if axis.nose_direction is None:
             return _error(
                 f"which end is the nose? {axis.reason}. Ask the operator, "
@@ -298,6 +337,8 @@ def set_geometry_and_mesh(
             nose_vector=nose_vector,
             reference_origin=reference_origin or [0.0, 0.0, 0.0],
             scale_to_meters=scale_to_meters,
+            body_kind=BodyKind(body_kind),
+            pitch_axis=AxisDirection(pitch_axis) if pitch_axis else None,
         )
         domain = DomainParams(
             shape=DomainShape(domain_shape),
@@ -367,6 +408,8 @@ def set_geometry_and_mesh(
         scale_note=scale_note,
         nose_direction=nose_direction,
         nose_note=nose_note,
+        body_kind=body_kind,
+        pitch_axis=pitch_axis,
         cell_count=result.cell_count,
         node_count=result.node_count,
         target_band=list(result.target_band),
@@ -469,6 +512,7 @@ def run_aerodynamic_simulation(
     mpi_ranks:
         MPI ranks for the solver; 10 suits a 6-core/12-thread machine.
     max_iterations, convergence_residual, turbulence_model:
+        convergence_residual is the drop in log10 RMS[Rho] from its peak.
         Solver controls.
     cfl_number:
         Starting CFL. Leave null to pick it from the flow regime: a cold
@@ -790,7 +834,9 @@ def generate_cfd_visualization(
     Parameters
     ----------
     sim_id:
-        Identifier of a completed simulation.
+        Identifier of a completed simulation, or of one point of a sweep
+        as the sweep lists it ("<sweep_id>-003"): every sweep point keeps
+        its full solution, so there is no need to re-run it to draw it.
     visualization_type:
         'surface_pressure', 'mach_slice', 'schlieren', 'streamlines' or
         'thermal'.
@@ -842,27 +888,43 @@ def render_run_image(
     one the assistant asks for come out identical: same frame, same caption,
     same place in the registry.
     """
+    solution_directory: Path | None = None
+    point_label = ""
     try:
         record = store.get(sim_id)
     except RecordNotFoundError as error:
-        return _error(str(error), sim_id=sim_id)
+        # A sweep point: "<sweep_id>-003" lives in the sweep's point_003
+        # folder, with a full volume solution of its own. The assistant used
+        # to conclude that sweeps kept no solutions, and re-ran every point
+        # as a separate simulation just to draw it.
+        match = re.fullmatch(r"(sweep-\d{8}-\d{6}-[0-9a-f]{6})-(\d{3})", sim_id)
+        if not match:
+            return _error(str(error), sim_id=sim_id)
+        try:
+            record = store.get(match.group(1))
+        except RecordNotFoundError:
+            return _error(str(error), sim_id=sim_id)
+        solution_directory = record.path(f"point_{match.group(2)}")
+        if not solution_directory.is_dir():
+            return _error(f"sweep {match.group(1)} has no point {match.group(2)}", sim_id=sim_id)
+        point_label = f"point_{match.group(2)}"
 
     frame = frame or ("rocket" if record.kind in ("aero", "sweep") else "solver")
     title = _render_title(record, visualization_type)
+    if point_label:
+        title = f"{title}  |  {point_label}"
 
     try:
         from backend.visualizer import render_visualization
     except Exception as error:  # pragma: no cover - optional dependency
         return _error(f"visualisation unavailable: {error}")
 
-    destination = Path(
-        output_path
-        or record.path("renders", f"{visualization_type}_{camera_view}.png")
-    )
+    stem = f"{point_label + '_' if point_label else ''}{visualization_type}_{camera_view}"
+    destination = Path(output_path or record.path("renders", f"{stem}.png"))
 
     try:
         path = render_visualization(
-            record.directory,
+            solution_directory or record.directory,
             visualization_type,
             destination,
             camera_view=camera_view,

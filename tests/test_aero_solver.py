@@ -485,9 +485,9 @@ def test_parser_records_solver_errors():
 
 
 def test_convergence_monitor_stops_on_the_residual_threshold():
-    """Reaching the requested residual ends the run."""
+    """Falling the requested number of orders ends the run."""
     parser = SU2OutputParser()
-    for line in screen_rows(100, final_residual=-6.0):
+    for line in screen_rows(100, final_residual=-7.0):
         parser.feed(line)
     monitor = ConvergenceMonitor(residual_threshold=-5.0, minimum_iterations=10)
     assert monitor.should_stop(parser)
@@ -1276,3 +1276,117 @@ def test_solver_warnings_are_reported_as_they_ended_not_as_they_began():
     assert len(notes) == 2
     assert any("312 points" in note for note in notes)
     assert not any("12252" in note for note in notes)
+
+
+def test_a_low_mach_residual_that_starts_low_is_not_convergence():
+    """Mach 0.1: RMS[Rho] starts near -4.8 and crossed -5 at iteration 15.
+
+    The absolute threshold stopped the solve there and called it converged,
+    with C_d still swinging wildly. What counts is the drop from the peak.
+    """
+    from backend.su2_parser import relative_residual_drop
+
+    lines = ["+" + "-" * 70 + "+", SCREEN_HEADER, "+" + "-" * 70 + "+"]
+    for index, (residual, cd) in enumerate(
+        [(-4.35, 40.9), (-4.64, 45.9), (-4.71, 42.1), (-4.52, 28.8), (-4.62, 12.9)]
+        + [(-4.9 - 0.02 * i, 4.0 - 0.1 * i) for i in range(10)]
+    ):
+        lines.append(
+            "|{:12d}|{:12.6f}|{:12.6f}|{:12.6f}|{:12.6f}|{:12.6f}"
+            "|{:12.6f}|{:12.6f}|{:12.6f}|".format(
+                index, residual, residual - 1.0, 0.0, cd, 0.0, 0.0, 0.0, 0.0
+            )
+        )
+    parser = SU2OutputParser()
+    for line in lines:
+        parser.feed(line)
+    assert parser.final_value("rms_rho") < -5.0  # the old trap
+    assert relative_residual_drop(parser) > -1.0
+    monitor = ConvergenceMonitor(residual_threshold=-5.0, minimum_iterations=10)
+    assert not monitor.should_stop(parser)
+
+
+def test_the_config_converges_on_the_relative_residual():
+    settings = parse_config(
+        build_aero_config(FlowParams(velocity_value=0.1), SolverParams(), base_context())
+    )
+    assert settings["CONV_FIELD"] == "REL_RMS_DENSITY"
+    assert int(settings["CONV_STARTITER"]) >= 100
+
+
+def test_the_centre_of_pressure_is_undefined_at_zero_incidence(mesh_file, tmp_path):
+    """A sweep reported it 5.9 m ahead of the nose, from noise over noise."""
+    runner = FakeRunner(
+        lines=screen_rows(120), artifacts={"forces_breakdown.dat": FORCES_BREAKDOWN}
+    )
+    result = run_aero_case(
+        make_request(flow=FlowParams(velocity_value=1.3, aoa_deg=0.0)),
+        mesh_path=mesh_file,
+        working_directory=tmp_path / "run",
+        runner=runner,
+        reference_area_m2=0.005,
+        reference_length_m=0.08,
+    )
+    assert math.isnan(result.center_of_pressure_rocket[2])
+
+
+def test_a_solver_that_hangs_before_its_first_iteration_is_started_again(
+    mesh_file, tmp_path
+):
+    """An MPI start-up hang is retried once; a result follows."""
+    from backend.runner import SolverTimeoutError
+
+    class HangsOnce(FakeRunner):
+        def run(self, *args, **kwargs):
+            if not getattr(self, "_hung", False):
+                self._hung = True
+                self.calls.append({"config_text": "hung"})
+                raise SolverTimeoutError("stall", 300.0, 300.0, ["Reading mesh ..."])
+            return super().run(*args, **kwargs)
+
+    runner = HangsOnce(
+        lines=screen_rows(120), artifacts={"forces_breakdown.dat": FORCES_BREAKDOWN}
+    )
+    result = run_aero_case(
+        make_request(),
+        mesh_path=mesh_file,
+        working_directory=tmp_path / "run",
+        runner=runner,
+        reference_area_m2=0.005,
+        reference_length_m=0.08,
+    )
+    assert result.cd == pytest.approx(0.42)
+    assert "restarted automatically" in result.notes[0]
+
+
+def test_a_solver_that_stalls_mid_run_is_not_retried(mesh_file, tmp_path):
+    from backend.runner import SolverTimeoutError
+
+    tail = screen_rows(5)
+
+    class StallsMidRun(FakeRunner):
+        def run(self, *args, **kwargs):
+            self.calls.append({})
+            raise SolverTimeoutError("stall", 300.0, 900.0, tail)
+
+    runner = StallsMidRun(lines=[])
+    with pytest.raises(SolverTimeoutError):
+        run_aero_case(
+            make_request(),
+            mesh_path=mesh_file,
+            working_directory=tmp_path / "run",
+            runner=runner,
+            reference_area_m2=0.005,
+            reference_length_m=0.08,
+        )
+    assert len(runner.calls) == 1
+
+
+def test_a_low_mach_result_says_it_is_indicative(mesh_file, tmp_path):
+    runner = FakeRunner(lines=screen_rows(120), artifacts={"forces_breakdown.dat": FORCES_BREAKDOWN})
+    result = run_aero_case(
+        make_request(flow=FlowParams(velocity_value=0.1)),
+        mesh_path=mesh_file, working_directory=tmp_path / "run", runner=runner,
+        reference_area_m2=0.005, reference_length_m=0.08,
+    )
+    assert any("indicative" in note for note in result.notes)
