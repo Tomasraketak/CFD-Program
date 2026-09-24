@@ -312,6 +312,14 @@ mezní vrstvu.
 Více vrstev lépe rozliší profil u stěny a stojí buňky. Sedm je dobrý
 kompromis pro modelování turbulence se stěnovými funkcemi.
 
+V konkávním koutě — kořen křidélka, zúžená záď navazující na trysku — by
+vrstvy od obou stěn narostly do stejného prostoru. Generátor to kontroluje
+u každé vrstvy a dotčené uzly zastaví, takže je tam vrstva místně tenčí.
+Buňky, které tím přijdou o stranu, se zapíší jako jehlany nebo čtyřstěny,
+ne jako zdeformované prizmy, a SU2 by měl hlásit „All volume elements are
+correctly oriented“. Pokud generátor okolní sítě vrstvy přesto odmítne,
+síť se zkusí znovu s o jednu vrstvu méně, místo aby skončila chybou.
+
 ### Target y+
 
 Rozsah 30–300, výchozí 45.

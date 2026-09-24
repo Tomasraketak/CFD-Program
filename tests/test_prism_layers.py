@@ -19,6 +19,7 @@ from backend.prism_layers import (
     compute_vertex_normals,
     diagnose_surface,
     extrude_prism_layers,
+    front_self_intersections,
     layers_for_thickness,
     smooth_directions,
     stack_height,
@@ -365,3 +366,79 @@ def test_report_is_json_serialisable():
 def test_visibility_floor_is_respected():
     """The visibility limiter never scales a step to zero on its own."""
     assert 0.0 < MIN_VISIBILITY < 1.0
+
+
+# ---------------------------------------------------------------------------
+# A front that folds over itself
+# ---------------------------------------------------------------------------
+
+
+def test_crossing_triangles_are_found_and_neighbours_are_not():
+    """Two triangles piercing each other are reported; touching ones are not."""
+    points = np.array(
+        [
+            [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0],   # flat
+            [0.2, 0.2, -0.5], [0.3, 0.2, 0.5], [0.2, 0.3, 0.5],  # pierces it
+            [1.0, 1.0, 0.0],                                    # shares an edge
+        ]
+    )
+    triangles = np.array([[0, 1, 2], [3, 4, 5], [1, 6, 2]])
+    assert sorted(front_self_intersections(points, triangles)) == [0, 1]
+
+
+def test_a_clean_closed_surface_has_no_crossings():
+    points, triangles = icosphere(3)
+    assert front_self_intersections(points, triangles).size == 0
+
+
+def test_the_front_never_folds_over_itself_at_a_fin_root(monkeypatch):
+    """The outer shell must be a surface the tet mesher can accept.
+
+    In the concave corner where a fin meets the body tube, two columns that
+    are not neighbours can both keep positive volume and still march into
+    the same space. That is what made the farfield mesh of the operator's
+    rocket fail with "a segment and a facet intersect".
+    """
+    import backend.prism_layers as prism_layers
+
+    points, triangles = surface_mesh_of("finned", 0.008)
+    count = points.shape[0]
+    heights = (1.0e-3, 1.5e-3, 2.0e-3)
+
+    def outer_folds() -> list[int]:
+        folds = []
+        for height in heights:
+            result = extrude_prism_layers(points, triangles, height, 7, 1.25)
+            assert result.min_wedge_volume > 0.0
+            outer = result.points[result.layers_built * count :]
+            folds.append(front_self_intersections(outer, triangles).size)
+        return folds
+
+    assert outer_folds() == [0] * len(heights)
+
+    # And the check is what does it: without it, the same stacks fold.
+    monkeypatch.setattr(
+        prism_layers,
+        "front_self_intersections",
+        lambda p, t: np.empty(0, dtype=np.int64),
+    )
+    assert any(outer_folds())
+
+
+def test_no_prism_is_left_partly_inside_out():
+    """Every moving corner stays on the right side of the opposite face.
+
+    Beside a vertex held still, a column could lean until its top dipped
+    below the base plane. The prism's total volume stayed positive, so it
+    passed, and SU2 then reported 48 distorted prisms on the operator's
+    rocket.
+    """
+    from backend.prism_layers import _twisted
+
+    points, triangles = surface_mesh_of("finned", 0.008)
+    result = extrude_prism_layers(points, triangles, 1.0e-3, 7, 1.25)
+    wedges = result.wedges
+    standing = np.linalg.norm(
+        result.points[wedges[:, 3:]] - result.points[wedges[:, :3]], axis=2
+    ) > 0.0
+    assert not np.any(_twisted(result.points, wedges, standing))

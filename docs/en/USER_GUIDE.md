@@ -317,6 +317,14 @@ boundary layer.
 More layers resolve the near-wall profile better and cost cells. Seven is a
 good balance for wall-function turbulence modelling.
 
+In a concave corner — a fin root, a boat tail meeting a nozzle — the layers
+from the two walls would march into the same space. The mesher checks every
+layer for that and holds the affected vertices back, so the stack is locally
+thinner there. The cells that lose a side become pyramids or tetrahedra, not
+squashed prisms, and SU2 should report "All volume elements are correctly
+oriented". If the farfield mesher still rejects the stack, the mesh is
+retried with one layer fewer rather than failing.
+
 ### Target y⁺
 
 Range 30–300, default 45.

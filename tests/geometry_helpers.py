@@ -132,6 +132,12 @@ def _build_shape(name: str) -> None:
         occ.addTorus(0.0, 0.0, 0.0, 0.2, 0.05)
     elif name == "sphere":
         occ.addSphere(0.0, 0.0, 0.0, 1.0)
+    elif name == "finned":
+        # A body tube with one fin through it: the concave corners at the fin
+        # root are where a prism front folds over itself.
+        body = occ.addCylinder(0.0, 0.0, 0.0, 0.3, 0.0, 0.0, 0.03)
+        fin = occ.addBox(0.2, -0.004, -0.09, 0.1, 0.008, 0.18)
+        occ.fuse([(3, body)], [(3, fin)])
     else:  # pragma: no cover - guarded by the caller
         raise ValueError(f"unknown test shape '{name}'")
     occ.synchronize()
@@ -145,7 +151,8 @@ def surface_mesh_of(
     Parameters
     ----------
     shape:
-        One of ``cylinder``, ``cone``, ``plate``, ``torus``, ``sphere``.
+        One of ``cylinder``, ``cone``, ``plate``, ``torus``, ``sphere``,
+        ``finned``.
     mesh_size:
         Uniform target element size.
 

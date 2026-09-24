@@ -60,6 +60,19 @@ class AxisDirection(str, Enum):
     PLUS_Z = "+Z"
     MINUS_Z = "-Z"
 
+    @classmethod
+    def _missing_(cls, value: object) -> "AxisDirection | None":
+        # "x", "Y" or " -z ": a bare axis is read as its positive direction.
+        # The assistant wrote pitch_axis="X" and lost a round to the refusal.
+        if isinstance(value, str):
+            text = value.strip().upper()
+            if text in ("X", "Y", "Z"):
+                text = "+" + text
+            for member in cls:
+                if member.value == text:
+                    return member
+        return None
+
     def to_vector(self) -> tuple[float, float, float]:
         """Return the unit vector this named direction denotes."""
         return {

@@ -297,3 +297,13 @@ def test_an_old_hinge_without_a_frame_is_in_the_solver_frame():
     )
     assert hinge.frame is Frame.SOLVER
     assert hinge.solver_point() == pytest.approx([0.9, 0.05, 0.0])
+
+
+def test_a_bare_axis_name_is_read_as_its_positive_direction():
+    """The assistant asked for pitch_axis="X" and was refused a whole round."""
+    from core.models import AxisDirection
+
+    assert AxisDirection("X") is AxisDirection.PLUS_X
+    assert AxisDirection(" -z ") is AxisDirection.MINUS_Z
+    with pytest.raises(ValueError):
+        AxisDirection("W")

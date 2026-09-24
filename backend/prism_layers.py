@@ -53,6 +53,10 @@ _PROXIMITY_NEIGHBOURS = 16
 # Local step-repair attempts per layer before an offending vertex is frozen.
 _MAX_REPAIR_ATTEMPTS = 8
 
+# The last few of those freeze offending vertices instead of halving them,
+# spreading one ring further each time.
+_FREEZE_ATTEMPTS = 3
+
 
 @dataclass
 class PrismLayerResult:
@@ -510,6 +514,78 @@ def _proximity_limits(
     return limits * PROXIMITY_SAFETY
 
 
+def _segments_cross_triangles(
+    start: np.ndarray, end: np.ndarray, a: np.ndarray, b: np.ndarray, c: np.ndarray
+) -> np.ndarray:
+    """Row-wise: does segment ``start``-``end`` pass through triangle ``abc``?"""
+    direction = end - start
+    edge1 = b - a
+    edge2 = c - a
+    h = np.cross(direction, edge2)
+    det = np.einsum("ij,ij->i", edge1, h)
+    usable = np.abs(det) > 1.0e-30
+    inverse = np.zeros_like(det)
+    inverse[usable] = 1.0 / det[usable]
+    s = start - a
+    u = inverse * np.einsum("ij,ij->i", s, h)
+    q = np.cross(s, edge1)
+    v = inverse * np.einsum("ij,ij->i", direction, q)
+    t = inverse * np.einsum("ij,ij->i", edge2, q)
+    return usable & (u >= 0.0) & (v >= 0.0) & (u + v <= 1.0) & (t >= 0.0) & (t <= 1.0)
+
+
+def front_self_intersections(points: np.ndarray, triangles: np.ndarray) -> np.ndarray:
+    """Indices of triangles that pass through another, non-neighbouring one.
+
+    A march can keep every prism's volume positive and still fold the front
+    over itself: in a concave corner -- where a fin meets the airframe, or a
+    boat tail meets a nozzle -- two columns that are not neighbours advance
+    into the same space. The volume test cannot see that, and the result is
+    an outer shell the tetrahedral mesher rejects outright ("a segment and a
+    facet intersect"). Triangles sharing a vertex are skipped: they touch by
+    construction.
+    """
+    corners = points[triangles]
+    centres = corners.mean(axis=1)
+    radii = np.linalg.norm(corners - centres[:, None, :], axis=2).max(axis=1)
+    if len(triangles) < 2:
+        return np.empty(0, dtype=np.int64)
+
+    # Broad phase. Most triangles are about the same size, so one radius
+    # covers nearly all pairs; the few large ones are queried on their own
+    # rather than letting them inflate the search radius for everybody.
+    typical = float(np.quantile(radii, 0.98))
+    tree = cKDTree(centres)
+    pairs = [tree.query_pairs(2.0 * typical, output_type="ndarray")]
+    largest = float(radii.max())
+    for index in np.flatnonzero(radii > typical):
+        near = np.asarray(
+            tree.query_ball_point(centres[index], radii[index] + largest), dtype=np.int64
+        )
+        near = near[near != index]
+        pairs.append(np.column_stack([np.full(len(near), index), near]))
+    pairs = np.concatenate([p for p in pairs if len(p)] or [np.empty((0, 2), np.int64)])
+    if not len(pairs):
+        return np.empty(0, dtype=np.int64)
+    first, second = pairs[:, 0], pairs[:, 1]
+    reach = np.linalg.norm(centres[first] - centres[second], axis=1)
+    keep = reach <= radii[first] + radii[second]
+    first, second = first[keep], second[keep]
+    shared = (triangles[first][:, :, None] == triangles[second][:, None, :]).any(axis=(1, 2))
+    first, second = first[~shared], second[~shared]
+
+    # Narrow phase: two triangles intersect when an edge of one passes
+    # through the other.
+    hit = np.zeros(len(first), dtype=bool)
+    for one, other in ((first, second), (second, first)):
+        a, b, c = (corners[other][:, k] for k in range(3))
+        for k in range(3):
+            hit |= _segments_cross_triangles(
+                corners[one][:, k], corners[one][:, (k + 1) % 3], a, b, c
+            )
+    return np.unique(np.concatenate([first[hit], second[hit]]))
+
+
 def _wedge_volumes(points: np.ndarray, wedges: np.ndarray) -> np.ndarray:
     """Volume of each prism, decomposed into three tetrahedra."""
     p = [points[wedges[:, i]] for i in range(6)]
@@ -520,6 +596,27 @@ def _wedge_volumes(points: np.ndarray, wedges: np.ndarray) -> np.ndarray:
             "ij,ij->i", p[b] - p[a], np.cross(p[c] - p[a], p[d] - p[a])
         ) / 6.0
     return volume
+
+
+def _twisted(points: np.ndarray, wedges: np.ndarray, standing: np.ndarray) -> np.ndarray:
+    """Prisms that are partly inside out although their volume is positive.
+
+    Beside a vertex held still, a column can lean so far that its top lands
+    below the plane of the base (or a base corner above the top). The prism's
+    total volume stays positive, so the volume test passes it, but SU2
+    reports it as a distorted element. Each corner that actually moved is
+    checked against the opposite face; a column of zero height is a
+    deliberate pyramid or tet and is skipped.
+    """
+    corners = [points[wedges[:, k]] for k in range(6)]
+    base_normal = np.cross(corners[1] - corners[0], corners[2] - corners[0])
+    top_normal = np.cross(corners[4] - corners[3], corners[5] - corners[3])
+    bad = np.zeros(len(wedges), dtype=bool)
+    for k in range(3):
+        above = np.einsum("ij,ij->i", corners[3 + k] - corners[0], base_normal)
+        below = np.einsum("ij,ij->i", corners[k] - corners[3], top_normal)
+        bad |= standing[:, k] & ((above <= 0.0) | (below >= 0.0))
+    return bad
 
 
 def extrude_prism_layers(
@@ -642,6 +739,7 @@ def extrude_prism_layers(
             "edges frozen before marching"
         )
     layers_built = 0
+    self_intersecting_layers: list[int] = []
 
     for layer_index in range(layers):
         if notify is not None:
@@ -677,13 +775,37 @@ def extrude_prism_layers(
             # are dropped from the output further down.
             collapsed = np.all(step[march_triangles] <= 0.0, axis=1)
             inverted = (volumes <= 0.0) & ~collapsed
+            inverted |= _twisted(
+                np.concatenate([base_points, candidate], axis=0),
+                layer_wedges,
+                step[march_triangles] > 0.0,
+            ) & ~collapsed
             if not np.any(inverted):
-                accepted = candidate
-                break
+                # Positive volumes are not enough: the front may still fold
+                # over itself in a concave corner, which the farfield mesher
+                # cannot accept.
+                folded = front_self_intersections(candidate, march_triangles)
+                if not len(folded):
+                    accepted = candidate
+                    break
+                inverted = np.zeros(len(march_triangles), dtype=bool)
+                inverted[folded] = True
+                if attempt == 0:
+                    self_intersecting_layers.append(layer_index + 1)
             if attempt == _MAX_REPAIR_ATTEMPTS:
                 break
             offenders = np.unique(march_triangles[inverted])
-            if attempt == _MAX_REPAIR_ATTEMPTS - 1:
+            if attempt >= _MAX_REPAIR_ATTEMPTS - _FREEZE_ATTEMPTS:
+                # Halving has not untangled it: hold the offenders still, and
+                # on each further attempt their neighbours too, so a frozen
+                # patch is not simply overrun by the columns around it.
+                if attempt > _MAX_REPAIR_ATTEMPTS - _FREEZE_ATTEMPTS:
+                    offenders = np.unique(
+                        np.concatenate(
+                            [offenders]
+                            + [np.fromiter(adjacency[v], dtype=np.int64) for v in offenders]
+                        )
+                    )
                 step[offenders] = 0.0
             else:
                 step[offenders] *= 0.5
@@ -751,6 +873,12 @@ def extrude_prism_layers(
     outer_offset = layers_built * vertex_count
     outer_triangles = march_triangles + outer_offset
 
+    if self_intersecting_layers:
+        warnings.append(
+            "front folded over itself at layer(s) "
+            + ", ".join(str(n) for n in self_intersecting_layers)
+            + "; steps backed off locally"
+        )
     if layers_built < layers:
         warnings.append(
             f"built {layers_built} of {layers} requested layers"

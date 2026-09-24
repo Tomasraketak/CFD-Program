@@ -39,6 +39,7 @@ from backend.prism_layers import (
     extrude_prism_layers,
 )
 from backend.su2_mesh import (
+    VTK_PYRAMID,
     VTK_TETRA,
     VTK_TRIANGLE,
     VTK_WEDGE,
@@ -1331,22 +1332,44 @@ def _mesh_once(
 
     metrics = stage.metrics
     first_height = _first_layer_height(request, metrics)
-    with _timed(
-        notify, f"extruding prism layers from {len(stage.wall_triangles)} wall triangles"
-    ):
-        prisms = _extrude(
-            request, stage.wall_points, stage.wall_triangles, first_height, notify
-        )
     healing = stage.healing
     airframe_radius = stage.airframe_radius
     airframe_triangle_count = stage.airframe_triangle_count
     fin_triangle_count = stage.fin_triangle_count
 
-    # The prism shell is handed to a fresh session for the tet region, so the
-    # farfield is meshed against the outer layer rather than the body.
-    tet_points, tets, farfield_triangles, shell_indices = _mesh_farfield(
-        request, metrics, prisms, notify, size_scale
-    )
+    layers = request.mesh.boundary_layers
+    while True:
+        with _timed(
+            notify,
+            f"extruding {layers} prism layers from "
+            f"{len(stage.wall_triangles)} wall triangles",
+        ):
+            prisms = _extrude(
+                request,
+                stage.wall_points,
+                stage.wall_triangles,
+                first_height,
+                notify,
+                layers=layers,
+            )
+        # The prism shell is handed to a fresh session for the tet region, so
+        # the farfield is meshed against the outer layer rather than the body.
+        try:
+            tet_points, tets, farfield_triangles, shell_indices = _mesh_farfield(
+                request, metrics, prisms, notify, size_scale
+            )
+            break
+        except MeshPipelineError as error:
+            # The extrusion already refuses to fold its front over itself,
+            # so this should not happen; if a corner still defeats it, a
+            # thinner stack is a far better answer than no mesh at all.
+            if not _is_shell_intersection(error) or layers <= _MIN_FALLBACK_LAYERS:
+                raise
+            layers -= 1
+            notify(
+                f"the prism shell crosses itself ({error}) — retrying with "
+                f"{layers} layers"
+            )
 
     mesh, (min_quality, poor_prisms) = _assemble(
         prisms=prisms,
@@ -1387,17 +1410,31 @@ def _first_layer_height(request: MeshRequest, metrics: GeometryMetrics) -> float
     )
 
 
+# Tetgen's wording when the surface handed to it crosses itself.
+_SHELL_INTERSECTION_FAILURES = ("intersect", "plc error")
+
+# Fewest prism layers the farfield fallback will go down to.
+_MIN_FALLBACK_LAYERS = 3
+
+
+def _is_shell_intersection(error: Exception) -> bool:
+    """True when the tet mesher rejected a self-intersecting prism shell."""
+    text = str(error).lower()
+    return any(phrase in text for phrase in _SHELL_INTERSECTION_FAILURES)
+
+
 def _extrude(
     request: MeshRequest,
     wall_points: np.ndarray,
     wall_triangles: np.ndarray,
     first_height: float,
     notify: callable | None = None,
+    layers: int | None = None,
 ) -> PrismLayerResult:
     """Extrude the boundary layer, tolerating CAD defects on a second pass."""
     arguments = {
         "first_height": first_height,
-        "layers": request.mesh.boundary_layers,
+        "layers": layers if layers is not None else request.mesh.boundary_layers,
         "growth_rate": request.mesh.boundary_layer_growth,
         "notify": notify,
     }
@@ -1588,9 +1625,16 @@ def _assemble(
     # the mesh is written. Unflipped, SU2 re-oriented every prism on every
     # run -- and a handful that genuinely were inverted could not be told
     # from the rest in its report.
-    mesh.add_volume(VTK_WEDGE, prism_map[prisms.wedges][:, [0, 2, 1, 3, 5, 4]])
-    if tets.size:
-        mesh.add_volume(VTK_TETRA, tet_map[tets])
+    wedges, pyramids, collapsed_tets = split_collapsed_wedges(
+        merged_points, prism_map[prisms.wedges]
+    )
+    mesh.add_volume(VTK_WEDGE, wedges[:, [0, 2, 1, 3, 5, 4]])
+    if pyramids.size:
+        mesh.add_volume(VTK_PYRAMID, pyramids)
+    if tets.size or collapsed_tets.size:
+        mesh.add_volume(
+            VTK_TETRA, np.concatenate([tet_map[tets].reshape(-1, 4), collapsed_tets])
+        )
 
     # Wall markers come from the original wall triangulation, which occupies
     # the first node block of the prism stack.
@@ -1609,8 +1653,65 @@ def _assemble(
         )
 
     mesh.validate()
-    quality = prism_quality(merged_points, prism_map[prisms.wedges])
+    quality = prism_quality(merged_points, wedges)
     return mesh, quality
+
+
+def _tet_volumes(points: np.ndarray, tets: np.ndarray) -> np.ndarray:
+    """Signed volumes; positive when the first three nodes face the fourth."""
+    a, b, c, d = (points[tets[:, k]] for k in range(4))
+    return np.einsum("ij,ij->i", np.cross(b - a, c - a), d - a) / 6.0
+
+
+def split_collapsed_wedges(
+    points: np.ndarray, wedges: np.ndarray
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Write prisms that lost a column as the pyramid or tet they really are.
+
+    Where the extrusion holds a vertex still -- two walls too close, or a
+    front that would fold over itself in a fin root -- that column of the
+    prism has zero height, and once coincident nodes are merged the prism
+    names the same node twice. SU2 reports each one as a distorted element
+    whose orientation it cannot check. With one column gone the cell is a
+    pyramid on the quadrilateral side face; with two, a tetrahedron.
+
+    ``wedges`` are in the extruder's order (base, then top, the base wound
+    towards the top). Returns the intact prisms in that same order, and the
+    pyramids and tetrahedra in VTK order, oriented to positive volume.
+    """
+    collapsed = wedges[:, :3] == wedges[:, 3:]
+    count = collapsed.sum(axis=1)
+    intact = wedges[count == 0]
+
+    pyramids = []
+    for k in range(3):
+        rows = wedges[(count == 1) & collapsed[:, k]]
+        if not len(rows):
+            continue
+        i, j = (k + 1) % 3, (k + 2) % 3
+        pyramids.append(
+            np.column_stack([rows[:, i], rows[:, j], rows[:, 3 + j], rows[:, 3 + i], rows[:, k]])
+        )
+    pyramids = (
+        np.concatenate(pyramids) if pyramids else np.empty((0, 5), dtype=wedges.dtype)
+    )
+    if len(pyramids):
+        # Split into two tets sharing the apex to read the sign of the volume;
+        # a quad wound the wrong way round is simply reversed.
+        volume = _tet_volumes(points, pyramids[:, [0, 1, 2, 4]]) + _tet_volumes(
+            points, pyramids[:, [0, 2, 3, 4]]
+        )
+        backwards = volume < 0.0
+        pyramids[backwards] = pyramids[backwards][:, [0, 3, 2, 1, 4]]
+
+    rows = wedges[count == 2]
+    standing = np.argmin(collapsed[count == 2], axis=1)
+    tets = np.column_stack([rows[:, 0], rows[:, 1], rows[:, 2], rows[np.arange(len(rows)), 3 + standing]])
+    tets = tets.reshape(-1, 4)
+    if len(tets):
+        backwards = _tet_volumes(points, tets) < 0.0
+        tets[backwards] = tets[backwards][:, [0, 2, 1, 3]]
+    return intact, pyramids, tets
 
 
 # Prisms below this normalised volume are counted as poor in the report.

@@ -714,3 +714,83 @@ def test_fin_and_body_triangles_land_in_their_own_markers(tmp_path):
     # No fin surface in the body marker, no nose or body tube in the fins.
     assert np.hypot(body[:, 1], body[:, 2]).max() < 1.1 * body_radius
     assert fins[:, 0].min() > 0.6  # fins sit on the aft 40% of the 1 m body
+
+
+def test_a_self_crossing_prism_shell_is_retried_with_fewer_layers(monkeypatch, tmp_path):
+    """A shell the tet mesher rejects costs a layer, not the whole mesh.
+
+    The operator's rocket at Mach 0.3 with seven layers failed outright with
+    "PLC Error: A segment and a facet intersect", and no domain shape or size
+    the assistant tried could get past it.
+    """
+    import backend.mesh_pipeline as pipeline
+
+    real = pipeline._mesh_farfield
+    layers_seen: list[int] = []
+
+    def rejects_the_first_shell(request, metrics, prisms, notify, size_scale=1.0):
+        layers_seen.append(prisms.layers_requested)
+        if len(layers_seen) == 1:
+            raise MeshPipelineError(
+                "farfield tetrahedralisation failed: PLC Error:  A segment "
+                "and a facet intersect at point"
+            )
+        return real(request, metrics, prisms, notify, size_scale)
+
+    monkeypatch.setattr(pipeline, "_mesh_farfield", rejects_the_first_shell)
+    request = capsule_request(
+        capsule_step_for(tmp_path),
+        mesh={"max_targeting_iterations": 0, "boundary_layers": 6},
+    )
+    result = pipeline.generate_mesh(request, tmp_path / "fewer.su2")
+    assert layers_seen == [6, 5]
+    assert result.cell_count > 0
+
+
+def test_other_farfield_failures_are_not_retried(monkeypatch, tmp_path):
+    """Only a crossing shell is helped by a thinner stack."""
+    import backend.mesh_pipeline as pipeline
+
+    calls = {"n": 0}
+
+    def broken(request, metrics, prisms, notify, size_scale=1.0):
+        calls["n"] += 1
+        raise MeshPipelineError("farfield tetrahedralisation failed: out of memory")
+
+    monkeypatch.setattr(pipeline, "_mesh_farfield", broken)
+    request = capsule_request(
+        capsule_step_for(tmp_path), mesh={"max_targeting_iterations": 0}
+    )
+    with pytest.raises(MeshPipelineError, match="out of memory"):
+        pipeline.generate_mesh(request, tmp_path / "broken.su2")
+    assert calls["n"] == 1
+
+
+def test_prisms_that_lost_a_column_are_written_as_pyramids_and_tets():
+    """A prism naming the same node twice is what SU2 calls distorted."""
+    from backend.mesh_pipeline import _tet_volumes, split_collapsed_wedges
+
+    points = np.array(
+        [
+            [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0],   # base
+            [0.0, 0.0, 1.0], [1.0, 0.0, 1.0], [0.0, 1.0, 1.0],   # full top
+        ]
+    )
+    # Base wound towards the top, as the extruder builds it.
+    intact = [0, 1, 2, 3, 4, 5]
+    one_down = [0, 1, 2, 0, 4, 5]
+    two_down = [0, 1, 2, 0, 1, 5]
+    wedges, pyramids, tets = split_collapsed_wedges(
+        points, np.array([intact, one_down, two_down])
+    )
+    assert wedges.tolist() == [intact]
+    assert len(pyramids) == 1 and len(tets) == 1
+    assert sorted(pyramids[0].tolist()) == [0, 1, 2, 4, 5]
+    assert pyramids[0][4] == 0, "the collapsed column is the apex"
+    assert sorted(tets[0].tolist()) == [0, 1, 2, 5]
+
+    pyramid_volume = _tet_volumes(points, pyramids[:, [0, 1, 2, 4]]) + _tet_volumes(
+        points, pyramids[:, [0, 2, 3, 4]]
+    )
+    assert pyramid_volume[0] > 0.0
+    assert _tet_volumes(points, tets)[0] > 0.0
