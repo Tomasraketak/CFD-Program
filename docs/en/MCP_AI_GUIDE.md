@@ -180,14 +180,15 @@ Run one RANS simulation point.
 |---|---|---|---|
 | `mesh_id` | string | — | **Required.** From `set_geometry_and_mesh` |
 | `velocity_type` | string | `"mach"` | `mach` or `tas` |
-| `velocity_val` | float | 2.0 | Mach 0.05–3.5, or m/s |
-| `aoa_deg` | float | 0.0 | ±20 |
-| `sideslip_deg` | float | 0.0 | ±20 |
+| `velocity_val` | float | 2.0 | A bare number: Mach 0.05–3.5, or m/s. Never `"250 m/s"`; convert km/h (÷ 3.6) and knots (× 0.5144) |
+| `aoa_deg` | float | 0.0 | ±90; beyond ±20 only indicative |
+| `sideslip_deg` | float | 0.0 | ±90; beyond ±20 only indicative |
 | `altitude_m` | float | 0.0 | −610 to 32 000 |
 | `hinge_axes` | list[object] | `[]` | `{"name", "point": [x,y,z], "direction": [u,v,w], "frame": "rocket"}` — rocket axes unless `frame` is `"solver"` |
 | `reference_area_m2` | float | null | Overrides the measured value |
 | `reference_length_m` | float | null | Overrides the measured value |
 | `moment_origin` | list[3] | null | Overrides the default |
+| `pivot_height_m` | float | null | Moves the tilt axis up (+) / down (−) from the body axis relative to the zero-AoA air; pitching moments are taken about it. Also on `preview_orientation` and the sweep |
 | `mpi_ranks` | int | 10 | |
 | `max_iterations` | int | 5000 | |
 | `convergence_residual` | float | −5.0 | log₁₀ RMS density |
@@ -571,10 +572,18 @@ plainly when a result has not been verified.
 
 ## 8. Limits and judgement
 
-**Validity envelope.** Mach 0.05–3.5, angles within ±20°, altitude −610 to
+**Validity envelope.** Mach 0.05–3.5, angles up to ±90°, altitude −610 to
 32 000 m. Beyond ±20° a slender body separates massively and a steady RANS
-solution stops being meaningful — the number would still appear, and it would
-be wrong.
+solution is only indicative — the run goes ahead and its notes say so.
+
+**Speed format for agents.** Speed is always `velocity_type` plus a bare
+number in `velocity_val`: `"mach"` with `0.8`, or `"tas"` with `250` (m/s).
+Strings like `"250 m/s"` or `"M0.8"` are rejected.
+
+**Pivot.** `pivot_height_m` moves the tilt axis up or down; "up" is the side a
+positive angle of attack lifts the model towards. The flow does not change —
+the solver tilts the air, not the model — only the point moments are taken
+about. To make positive angles pitch the other way, flip `pitch_axis`.
 
 **The thermal conjugate path is less exercised** than the analytical model.
 The solid-zone meshing route has not been run against a real SU2 multizone

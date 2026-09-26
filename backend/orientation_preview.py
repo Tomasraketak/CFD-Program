@@ -32,6 +32,7 @@ def render_orientation_preview(
     aoa_deg: float = 0.0,
     sideslip_deg: float = 0.0,
     caption: str = "",
+    pivot_height_m: float = 0.0,
 ) -> Path:
     """Draw the model with the air and the tilt axis, and save it as PNG."""
     import pyvista as pv
@@ -47,7 +48,9 @@ def render_orientation_preview(
         [np.full((len(preview.triangles), 1), 3, dtype=np.int64), preview.triangles]
     ).ravel()
     surface = pv.PolyData(points_to_rocket(preview.points), faces)
-    overlay = build_overlay(tuple(surface.bounds), aoa_deg, sideslip_deg)
+    overlay = build_overlay(
+        tuple(surface.bounds), aoa_deg, sideslip_deg, pivot_height_m
+    )
 
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)

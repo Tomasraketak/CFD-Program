@@ -104,7 +104,8 @@ def test_flow_mach_and_speed_are_consistent_either_way():
 
 
 def test_flow_angle_envelope_is_enforced():
-    """Alpha and beta are clamped to the +/-20 degree envelope."""
+    """Alpha and beta are clamped to the +/-90 degree envelope."""
+    FlowParams(velocity_value=1.0, aoa_deg=45.0)
     FlowParams(velocity_value=1.0, aoa_deg=ANGLE_LIMIT_DEG)
     FlowParams(velocity_value=1.0, sideslip_deg=-ANGLE_LIMIT_DEG)
     with pytest.raises(ValidationError):
@@ -242,7 +243,7 @@ def test_assignment_is_validated_after_construction():
     flow.aoa_deg = 10.0
     assert flow.aoa_deg == 10.0
     with pytest.raises(ValidationError):
-        flow.aoa_deg = 90.0
+        flow.aoa_deg = 95.0
 
 
 def test_models_expose_descriptions_for_agent_schemas():

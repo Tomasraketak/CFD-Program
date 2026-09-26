@@ -48,11 +48,14 @@ def build_overlay(
     bounds: tuple[float, float, float, float, float, float],
     aoa_deg: float = 0.0,
     sideslip_deg: float = 0.0,
+    pivot_height_m: float = 0.0,
 ) -> list[tuple[Any, dict[str, Any]]]:
     """Meshes and drawing options for the flow arrows and the tilt axis.
 
-    ``bounds`` are the model's, in rocket axes. Returns ``(mesh, kwargs)``
-    pairs ready for a PyVista plotter's ``add_mesh``.
+    ``bounds`` are the model's, in rocket axes. ``pivot_height_m`` lifts the
+    tilt axis above (+) or below (-) the body axis, "up" being the side a
+    positive angle of attack lifts the model towards -- rocket +X. Returns
+    ``(mesh, kwargs)`` pairs ready for a PyVista plotter's ``add_mesh``.
     """
     import pyvista as pv
 
@@ -92,8 +95,9 @@ def build_overlay(
     # The tilt axis: a rod through the model, sticking out either side.
     axis = tilt_axis_direction()
     reach = 0.5 * float(np.abs(extent @ axis)) + 0.35 * length
+    pivot = centre + np.array([float(pivot_height_m), 0.0, 0.0])
     rod = pv.Cylinder(
-        center=centre,
+        center=pivot,
         direction=axis,
         radius=0.008 * length,
         height=2.0 * reach,
@@ -103,7 +107,7 @@ def build_overlay(
     # A curved arrow round the axis, showing the sense of a positive angle.
     radius = 0.12 * length
     start_angle, sweep = math.radians(-40.0), math.radians(260.0)
-    ring_centre = centre + axis * reach * 0.85
+    ring_centre = pivot + axis * reach * 0.85
     u = np.array([1.0, 0.0, 0.0])
     w = np.cross(axis, u)
     angles = np.linspace(start_angle, start_angle + sweep, 48)
@@ -123,10 +127,30 @@ def build_overlay(
     return items
 
 
-def describe(aoa_deg: float, sideslip_deg: float, pitch_axis: str | None) -> str:
+def describe(
+    aoa_deg: float,
+    sideslip_deg: float,
+    pitch_axis: str | None,
+    pivot_height_m: float = 0.0,
+) -> str:
     """One line saying what the arrows show."""
     axis = f"CAD {pitch_axis}" if pitch_axis else "the automatic axis"
+    where = ""
+    if pivot_height_m:
+        side = "above" if pivot_height_m > 0 else "below"
+        where = f", {abs(pivot_height_m):g} m {side} the body axis"
     return (
         f"Blue: oncoming air at alpha {aoa_deg:.1f} deg, beta "
-        f"{sideslip_deg:.1f} deg. Orange: tilt axis ({axis}), shown as rocket Y."
+        f"{sideslip_deg:.1f} deg. Orange: tilt axis ({axis}{where}), shown as "
+        "rocket Y."
     )
+
+
+def pivot_moment_origin(pivot_height_m: float) -> list[float]:
+    """The moment reference point of a pivot, in solver coordinates.
+
+    The pivot sits on the tilt axis through the reference origin (the nose
+    tip by default), moved along solver +Z -- rocket +X, the side positive
+    lift acts on -- by ``pivot_height_m``.
+    """
+    return [0.0, 0.0, float(pivot_height_m)]

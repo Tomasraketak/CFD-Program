@@ -35,8 +35,11 @@ from core.units import (
 
 Vector3 = Annotated[list[float], Field(min_length=3, max_length=3)]
 
-# Angle-of-attack / sideslip envelope mandated by the specification.
-ANGLE_LIMIT_DEG = 20.0
+# Angle-of-attack / sideslip envelope the tools accept.
+ANGLE_LIMIT_DEG = 90.0
+# Beyond this a slender body separates massively and steady RANS is only
+# indicative; such runs still go ahead, with a note on the result.
+RELIABLE_ANGLE_DEG = 20.0
 
 
 class StrictModel(BaseModel):
@@ -424,13 +427,19 @@ class FlowParams(StrictModel):
         default=0.0,
         ge=-ANGLE_LIMIT_DEG,
         le=ANGLE_LIMIT_DEG,
-        description="Angle of attack alpha in degrees, within [-20, +20].",
+        description=(
+            "Angle of attack alpha in degrees, within [-90, +90]. Beyond "
+            "+/-20 the steady RANS answer is only indicative."
+        ),
     )
     sideslip_deg: float = Field(
         default=0.0,
         ge=-ANGLE_LIMIT_DEG,
         le=ANGLE_LIMIT_DEG,
-        description="Sideslip angle beta in degrees, within [-20, +20].",
+        description=(
+            "Sideslip angle beta in degrees, within [-90, +90]. Beyond "
+            "+/-20 the steady RANS answer is only indicative."
+        ),
     )
     altitude_m: float | None = Field(
         default=0.0,

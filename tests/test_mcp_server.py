@@ -536,7 +536,7 @@ def test_out_of_range_parameters_are_rejected_with_an_explanation(prepared_mesh)
         server_module.run_aerodynamic_simulation,
         mesh_id=prepared_mesh,
         velocity_val=2.0,
-        aoa_deg=45.0,  # outside the +/-20 envelope
+        aoa_deg=95.0,  # outside the +/-90 envelope
         mpi_ranks=1,
     )
     assert response["ok"] is False
@@ -848,7 +848,7 @@ def test_saving_a_project_with_bad_values_is_refused(store, tmp_path):
         server_module.save_project,
         name="Bad",
         path=str(tmp_path / "bad.atsproj"),
-        aoa_deg=75.0,
+        aoa_deg=120.0,
     )
     assert response["ok"] is False
     assert "invalid parameters" in response["error"]
@@ -960,3 +960,44 @@ def test_a_sweep_point_can_be_drawn_without_re_running_it(store, monkeypatch):
     assert "point_002" in reply["image_path"]
     missing = call(server_module.generate_cfd_visualization, sim_id=f"{sweep.record_id}-009")
     assert missing["ok"] is False
+
+
+def test_steep_angles_are_run_and_flagged_as_indicative(prepared_mesh):
+    """Beyond +/-20 deg the run goes ahead, with a note it is only indicative."""
+    response = call(
+        server_module.run_aerodynamic_simulation,
+        mesh_id=prepared_mesh,
+        velocity_val=2.0,
+        aoa_deg=35.0,
+        mpi_ranks=1,
+    )
+    assert response["ok"] is True
+    assert any("only indicative" in note for note in response["notes"])
+
+
+def test_pivot_height_becomes_the_moment_origin(prepared_mesh, monkeypatch):
+    """Moving the pivot up takes pitching moments about the raised point."""
+    seen = {}
+    real = server_module.run_aero_case
+
+    def spy(request, *args, **kwargs):
+        seen["origin"] = request.reference.moment_origin
+        return real(request, *args, **kwargs)
+
+    monkeypatch.setattr(server_module, "run_aero_case", spy)
+    response = call(
+        server_module.run_aerodynamic_simulation,
+        mesh_id=prepared_mesh,
+        velocity_val=2.0,
+        pivot_height_m=-0.04,
+        mpi_ranks=1,
+    )
+    assert response["ok"] is True
+    assert seen["origin"] == pytest.approx([0.0, 0.0, -0.04])
+
+
+def test_explicit_moment_origin_wins_over_the_pivot():
+    """A moment origin given outright is never overridden."""
+    assert server_module._pivot_origin([1.0, 2.0, 3.0], 0.5) == [1.0, 2.0, 3.0]
+    assert server_module._pivot_origin(None, None) is None
+    assert server_module._pivot_origin(None, 0.5) == [0.0, 0.0, 0.5]

@@ -191,7 +191,7 @@ Volte **cylinder** pro rakety (u štíhlého tělesa plýtvá méně buňkami) a
 - **Speed as** — Machovo číslo, nebo pravá vzdušná rychlost v m/s.
 - **Speed** — pro nadzvukovou raketu zkuste 2,0.
 - **Angle of attack** — úhel náběhu, o kolik je špička sklopena vůči proudu,
-  ve stupních. Rozsah ±20°.
+  ve stupních. Rozsah ±90° (nad ±20° jen orientační).
 - **Sideslip** — totéž ve vybočení.
 - **Altitude** — výška nastaví tlak, teplotu a hustotu ze standardní
   atmosféry.

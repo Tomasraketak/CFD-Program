@@ -192,7 +192,7 @@ Choose **cylinder** for rockets (it wastes fewer cells on a slender body) and
 - **Speed as** — Mach number or true airspeed in m/s.
 - **Speed** — for a supersonic rocket, try 2.0.
 - **Angle of attack** — how much the nose is pitched relative to the airflow,
-  in degrees. Range ±20°.
+  in degrees. Range ±90° (beyond ±20° only indicative).
 - **Sideslip** — the same idea in yaw.
 - **Altitude** — sets air pressure, temperature and density from the standard
   atmosphere.

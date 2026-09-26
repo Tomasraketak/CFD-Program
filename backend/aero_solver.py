@@ -39,6 +39,7 @@ MIN_CONVERGED_ITERATIONS = 100
 LOW_MACH_LIMIT = 0.3
 from core.frames import Frame, to_rocket
 from core.models import (
+    RELIABLE_ANGLE_DEG,
     AeroResult,
     ConvectiveScheme,
     AeroRunRequest,
@@ -429,6 +430,13 @@ def run_aero_case(
             "convective scheme was chosen by name. Below Mach "
             f"{LOW_MACH_LIMIT:g} that overstates drag several times; leave the "
             "scheme automatic to get the incompressible solver."
+        )
+    steepest = max(abs(request.flow.aoa_deg), abs(request.flow.sideslip_deg))
+    if steepest > RELIABLE_ANGLE_DEG:
+        notes.append(
+            f"At {steepest:g} deg incidence the flow separates massively; a "
+            "steady RANS solution of it is only indicative (beyond "
+            f"+/-{RELIABLE_ANGLE_DEG:g} deg the forces can be well off)."
         )
     if startup_retried:
         notes.insert(

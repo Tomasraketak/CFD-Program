@@ -106,6 +106,21 @@ Working rules:
 
 - Units are SI: metres, m/s, newtons, pascals, kelvin. Angles are in degrees
   and some temperatures in Celsius, as each parameter's description states.
+- Speed is always two arguments: velocity_type and a bare number in
+  velocity_val (fixed_params "velocity_type"/"velocity_val" in a sweep).
+  Mach: velocity_type "mach", velocity_val 0.8 (range 0.05-3.5). True
+  airspeed: velocity_type "tas", velocity_val in m/s, e.g. 250. Never pass
+  strings such as "250 m/s", "M0.8" or "Mach 2". Convert km/h (/ 3.6) and
+  knots (x 0.5144) to m/s first, and say which you used.
+- Angles of attack and sideslip go up to +/-90 deg. Beyond +/-20 the flow
+  separates massively and steady RANS is only indicative; say so when you
+  run there, and the result's notes will too.
+- The pivot the model tilts about can be moved up or down with
+  pivot_height_m (metres; + is the side a positive angle of attack lifts the
+  model towards, - the other). It is drawn in preview_orientation and sets
+  the point pitching moments are taken about; it does not change the flow,
+  because the solver tilts the air rather than the model. To make positive
+  angles pitch the other way, flip the sign of pitch_axis (e.g. '-Z').
 - Meshing is expensive and does not depend on the flight condition, because
   angle of attack and Mach are applied by the solver. Reuse one mesh_id across
   simulations and sweeps; only remesh when the geometry, domain or mesh

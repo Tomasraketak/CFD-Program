@@ -358,11 +358,20 @@ def test_flow_params_follow_the_sliders(aero_tab):
 
 
 def test_angle_sliders_cannot_leave_the_envelope(aero_tab):
-    """The +/-20 degree limit is enforced by the widget itself."""
-    aero_tab.aoa.setValue(90.0)
-    assert aero_tab.aoa.value() <= 20.0
-    aero_tab.aoa.setValue(-90.0)
-    assert aero_tab.aoa.value() >= -20.0
+    """The +/-90 degree limit is enforced by the widget itself."""
+    aero_tab.aoa.setValue(45.0)
+    assert aero_tab.aoa.value() == pytest.approx(45.0)
+    aero_tab.aoa.setValue(120.0)
+    assert aero_tab.aoa.value() <= 90.0
+    aero_tab.aoa.setValue(-120.0)
+    assert aero_tab.aoa.value() >= -90.0
+
+
+def test_pivot_height_sets_the_moment_origin(aero_tab):
+    """A pivot moved up is where pitching moments are taken about."""
+    assert aero_tab.reference_values().moment_origin is None
+    aero_tab.pivot_height.setValue(0.05)
+    assert aero_tab.reference_values().moment_origin == pytest.approx([0.0, 0.0, 0.05])
 
 
 def test_switching_to_true_airspeed_rescales_the_slider(aero_tab):

@@ -229,8 +229,9 @@ pro krabicové případy a situace blízko země, jako je krabička senzoru.
 |---|---|---|
 | Speed as | mach / tas | Jak se interpretuje hodnota rychlosti |
 | Speed | Mach 0,05–3,5, nebo m/s | |
-| Angle of attack | ±20° | Klopení vůči proudu |
-| Sideslip | ±20° | Vybočení vůči proudu |
+| Angle of attack | ±90° | Klopení vůči proudu |
+| Sideslip | ±90° | Vybočení vůči proudu |
+| Pivot height | m | Osa naklápění nahoru (+) / dolů (−); momenty se berou k ní |
 | Altitude | −610 až 32 000 m | Nastaví tlak, teplotu, hustotu |
 
 **Mach, nebo pravá vzdušná rychlost.** Machovo číslo řídí fyziku —
@@ -239,9 +240,9 @@ rychlost hlásí palubní počítač. Souvisí spolu přes rychlost zvuku, kter�
 závisí na teplotě a tedy na výšce, takže 200 m/s u hladiny moře a v 10 km dává
 různá Machova čísla.
 
-**Mez ±20°** není libovolná. Za ní se proudění kolem štíhlého tělesa masivně
-odtrhává a ustálené RANS řešení přestává mít smysl. Číslo by se stále objevilo;
-nebylo by správné.
+**Za ±20°** se proudění kolem štíhlého tělesa masivně odtrhává a ustálené
+RANS řešení je jen orientační. Úhly do ±90° jsou povolené; výsledek to uvede
+v poznámce.
 
 **Výška** používá standardní atmosféru ISA-1976, ověřenou proti publikovaným
 tabulkám. Alternativně lze zadat tlak a teplotu přímo (v souborech projektu a

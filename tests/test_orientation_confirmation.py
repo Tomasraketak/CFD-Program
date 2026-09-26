@@ -35,7 +35,7 @@ def gated(monkeypatch):
     server.reset_orientation_confirmations()
     server.require_orientation_confirmation(True)
 
-    def fake_render(geometry, output_path, aoa_deg=0.0, sideslip_deg=0.0, caption=""):
+    def fake_render(geometry, output_path, aoa_deg=0.0, sideslip_deg=0.0, caption="", pivot_height_m=0.0):
         path = Path(output_path)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"png")
@@ -205,3 +205,18 @@ def test_the_assistant_ends_its_turn_after_a_preview(mesh_id, store):
     assert second.tool_calls[0].name == "run_aerodynamic_simulation"
     assert second.tool_calls[0].succeeded, second.tool_calls[0].result
     assert second.text == "Done."
+
+
+def test_overlay_moves_the_tilt_axis_with_the_pivot():
+    """The orange rod sits where the pivot is, up along rocket +X."""
+    pytest.importorskip("pyvista")
+    from gui.flow_overlay import build_overlay, describe
+
+    bounds = (-0.05, 0.05, -0.05, 0.05, -1.0, 0.0)
+    level = build_overlay(bounds)
+    raised = build_overlay(bounds, pivot_height_m=0.2)
+    rod_level = [m for m, o in level if o.get("color") == "#f0a030"][0]
+    rod_raised = [m for m, o in raised if o.get("color") == "#f0a030"][0]
+    assert rod_raised.center[0] - rod_level.center[0] == pytest.approx(0.2, abs=1e-6)
+    assert "0.2 m above" in describe(0.0, 0.0, None, 0.2)
+    assert "below" in describe(0.0, 0.0, None, -0.1)

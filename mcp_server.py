@@ -636,6 +636,7 @@ def preview_orientation(
     mesh_id: str | None = None,
     aoa_deg: float = 0.0,
     sideslip_deg: float = 0.0,
+    pivot_height_m: float = 0.0,
 ) -> dict[str, Any]:
     """Show the operator how the air will meet the model, before any solve.
 
@@ -649,6 +650,13 @@ def preview_orientation(
         Preview the geometry an existing mesh was built from instead.
     aoa_deg, sideslip_deg:
         The flow angles to draw.
+    pivot_height_m:
+        Moves the tilt axis (the pivot) up (+) or down (-) from the body
+        axis, in metres, relative to the air at zero angle of attack: "up"
+        is the side a positive angle of attack lifts the model towards
+        (rocket +X). The flow is unchanged -- the solver tilts the air, not
+        the model -- but pitching moments (cm_pitch) are taken about the
+        pivot.
     """
     store = _store()
     if mesh_id:
@@ -688,6 +696,9 @@ def preview_orientation(
         f"{kind}, {front} at the {nose_end} end of the CAD model | tilt about "
         f"{tilt} | alpha {aoa_deg:g} deg, beta {sideslip_deg:g} deg"
     )
+    if pivot_height_m:
+        caption += f" | pivot {pivot_height_m:+g} m"
+
     folder = data_root() / "previews"
     stem = f"orientation-{time.strftime('%Y%m%d-%H%M%S')}"
     destination = folder / f"{stem}.png"
@@ -699,7 +710,8 @@ def preview_orientation(
         from backend.orientation_preview import render_orientation_preview
 
         path = render_orientation_preview(
-            geometry, destination, aoa_deg, sideslip_deg, caption=caption
+            geometry, destination, aoa_deg, sideslip_deg, caption=caption,
+            pivot_height_m=pivot_height_m,
         )
     except Exception as error:  # noqa: BLE001 - reported
         return _error(f"could not draw the preview: {error}")
@@ -713,7 +725,8 @@ def preview_orientation(
         pitch_axis=pitch_label,
         aoa_deg=aoa_deg,
         sideslip_deg=sideslip_deg,
-        shows=describe(aoa_deg, sideslip_deg, pitch_label)
+        pivot_height_m=pivot_height_m,
+        shows=describe(aoa_deg, sideslip_deg, pitch_label, pivot_height_m)
         + " The model is drawn in rocket axes: nose up along +Z.",
         next_step=(
             "Tell the operator what the picture shows and ask whether the air "
@@ -783,6 +796,17 @@ def _hinge_axes(hinge_axes: list[dict[str, Any]] | None) -> list[HingeAxis]:
 
 
 
+def _pivot_origin(
+    moment_origin: list[float] | None, pivot_height_m: float | None
+) -> list[float] | None:
+    """An explicit moment origin wins; otherwise the pivot, if one is set."""
+    if moment_origin is not None or not pivot_height_m:
+        return moment_origin
+    from gui.flow_overlay import pivot_moment_origin
+
+    return pivot_moment_origin(pivot_height_m)
+
+
 @server.tool(
     name="run_aerodynamic_simulation",
     description=(
@@ -810,6 +834,7 @@ def run_aerodynamic_simulation(
     reference_area_m2: float | None = None,
     reference_length_m: float | None = None,
     moment_origin: list[float] | None = None,
+    pivot_height_m: float | None = None,
     mpi_ranks: int = 10,
     max_iterations: int | None = None,
     convergence_residual: float = -5.0,
@@ -830,7 +855,8 @@ def run_aerodynamic_simulation(
     velocity_val:
         Mach number (0.05-3.5) or true airspeed in m/s.
     aoa_deg, sideslip_deg:
-        Angle of attack and sideslip in degrees, each within +/-20.
+        Angle of attack and sideslip in degrees, each within +/-90 (beyond
+        +/-20 the result carries a note that it is only indicative).
     altitude_m:
         Geopotential altitude for the standard atmosphere.
     hinge_axes:
@@ -839,6 +865,19 @@ def run_aerodynamic_simulation(
         along +Z, origin at the nose tip) unless "frame" is "solver". The
         reported torque is the aerodynamic moment about the point, projected
         onto the direction.
+    velocity_type, velocity_val format:
+        Always a plain number plus its unit in velocity_type -- never a
+        string such as "300 m/s" or "M2". Mach 0.8 is velocity_type='mach',
+        velocity_val=0.8; 250 m/s true airspeed is velocity_type='tas',
+        velocity_val=250. km/h and knots must be converted to m/s first
+        (km/h / 3.6, kn * 0.5144).
+    pivot_height_m:
+        Moves the tilt axis (the pivot) up (+) or down (-) from the body
+        axis, in metres, relative to the air at zero angle of attack: "up"
+        is the side a positive angle of attack lifts the model towards
+        (rocket +X). The flow is unchanged -- the solver tilts the air, not
+        the model -- but pitching moments (cm_pitch) are taken about the
+        pivot. Ignored when moment_origin is given.
     reference_area_m2, reference_length_m, moment_origin:
         Override the values measured from the CAD.
     mpi_ranks:
@@ -906,7 +945,7 @@ def run_aerodynamic_simulation(
             reference=ReferenceValues(
                 reference_area_m2=reference_area_m2,
                 reference_length_m=reference_length_m,
-                moment_origin=moment_origin,
+                moment_origin=_pivot_origin(moment_origin, pivot_height_m),
             ),
             hinge_axes=axes,
         )
@@ -1327,6 +1366,7 @@ def run_parametric_sweep_tool(
     hinge_axes: list[dict[str, Any]] | None = None,
     mpi_ranks: int = 10,
     stop_on_error: bool = False,
+    pivot_height_m: float | None = None,
 ) -> dict[str, Any]:
     """Sweep one parameter across a list of values.
 
@@ -1348,6 +1388,13 @@ def run_parametric_sweep_tool(
         MPI ranks per case.
     stop_on_error:
         Abort at the first failure instead of continuing.
+    pivot_height_m:
+        Moves the tilt axis (the pivot) up (+) or down (-) from the body
+        axis, in metres, relative to the air at zero angle of attack: "up"
+        is the side a positive angle of attack lifts the model towards
+        (rocket +X). The flow is unchanged -- the solver tilts the air, not
+        the model -- but pitching moments (cm_pitch) are taken about the
+        pivot.
     """
     store = _store()
     try:
@@ -1378,6 +1425,9 @@ def run_parametric_sweep_tool(
             solver=SolverParams(
                 mpi_ranks=mpi_ranks,
                 max_iterations=int(fixed.get("max_iterations") or _iteration_limit()),
+            ),
+            reference=ReferenceValues(
+                moment_origin=_pivot_origin(None, pivot_height_m)
             ),
             hinge_axes=axes,
         )

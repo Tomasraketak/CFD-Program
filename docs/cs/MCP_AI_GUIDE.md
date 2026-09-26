@@ -178,14 +178,15 @@ Spustí jeden bod RANS simulace.
 |---|---|---|---|
 | `mesh_id` | string | — | **Povinné.** Ze `set_geometry_and_mesh` |
 | `velocity_type` | string | `"mach"` | `mach` nebo `tas` |
-| `velocity_val` | float | 2.0 | Mach 0,05–3,5, nebo m/s |
-| `aoa_deg` | float | 0.0 | ±20 |
-| `sideslip_deg` | float | 0.0 | ±20 |
+| `velocity_val` | float | 2.0 | Holé číslo: Mach 0,05–3,5, nebo m/s. Nikdy `"250 m/s"`; km/h převést (÷ 3,6), uzly (× 0,5144) |
+| `aoa_deg` | float | 0.0 | ±90; nad ±20 jen orientační |
+| `sideslip_deg` | float | 0.0 | ±90; nad ±20 jen orientační |
 | `altitude_m` | float | 0.0 | −610 až 32 000 |
 | `hinge_axes` | list[object] | `[]` | `{"name", "point": [x,y,z], "direction": [u,v,w], "frame": "rocket"}` — osy rakety, pokud `frame` není `"solver"` |
 | `reference_area_m2` | float | null | Přepíše naměřenou hodnotu |
 | `reference_length_m` | float | null | Přepíše naměřenou hodnotu |
 | `moment_origin` | list[3] | null | Přepíše výchozí |
+| `pivot_height_m` | float | null | Posune osu naklápění nahoru (+) / dolů (−) od osy tělesa vůči proudu při nulovém AoA; momenty se berou k ní. I u `preview_orientation` a sweepu |
 | `mpi_ranks` | int | 10 | |
 | `max_iterations` | int | 5000 | |
 | `convergence_residual` | float | −5.0 | log₁₀ RMS hustoty |
@@ -567,9 +568,18 @@ otevřeně, když výsledek ověřený nebyl.
 
 ## 8. Meze a soudnost
 
-**Obálka platnosti.** Mach 0,05–3,5, úhly do ±20°, výška −610 až 32 000 m. Za
+**Obálka platnosti.** Mach 0,05–3,5, úhly do ±90°, výška −610 až 32 000 m. Za
 ±20° se proudění kolem štíhlého tělesa masivně odtrhává a ustálené RANS řešení
-přestává mít smysl — číslo by se stále objevilo a bylo by chybné.
+je jen orientační — výpočet proběhne a poznámky to uvedou.
+
+**Formát rychlosti pro agenty.** Rychlost je vždy `velocity_type` plus holé
+číslo ve `velocity_val`: `"mach"` s `0.8`, nebo `"tas"` s `250` (m/s).
+Řetězce jako `"250 m/s"` nebo `"M0.8"` jsou odmítnuty.
+
+**Pant.** `pivot_height_m` posune osu naklápění nahoru (+) nebo dolů (−) vůči
+proudu při nulovém AoA; „nahoru“ je strana, kam kladný úhel náběhu model
+zvedá. Proudění se nemění — řešič naklání vzduch, ne model — mění se jen bod,
+ke kterému se berou momenty. Obrácení smyslu klopení: otočit znaménko `pitch_axis`.
 
 **Sdružená tepelná větev je méně prověřená** než analytický model. Cesta
 síťování pevné oblasti nebyla spuštěna proti skutečnému vícezónovému výpočtu

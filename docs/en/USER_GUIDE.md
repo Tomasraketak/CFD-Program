@@ -232,8 +232,9 @@ enclosures and ground-proximity cases such as the sensor housing.
 |---|---|---|
 | Speed as | mach / tas | How the speed value is interpreted |
 | Speed | Mach 0.05–3.5, or m/s | |
-| Angle of attack | ±20° | Pitch relative to the flow |
-| Sideslip | ±20° | Yaw relative to the flow |
+| Angle of attack | ±90° | Pitch relative to the flow |
+| Sideslip | ±90° | Yaw relative to the flow |
+| Pivot height | m | Tilt axis up (+) / down (−); moments are taken about it |
 | Altitude | −610 to 32 000 m | Sets pressure, temperature, density |
 
 **Mach or true airspeed.** Mach number is what governs the physics —
@@ -242,9 +243,9 @@ a flight computer reports. The two are related through the speed of sound,
 which depends on temperature and therefore altitude, so specifying 200 m/s at
 sea level and at 10 km gives different Mach numbers.
 
-**The ±20° limit** is not arbitrary. Beyond it, flow over a slender body
-separates massively and a steady RANS solution stops being meaningful. The
-answer would still be a number; it would not be right.
+**Beyond ±20°** flow over a slender body separates massively and a steady
+RANS solution is only indicative. Angles up to ±90° are accepted; the result
+carries a note saying so.
 
 **Altitude** uses the ISA-1976 standard atmosphere, validated against the
 published tables. Alternatively specify pressure and temperature directly

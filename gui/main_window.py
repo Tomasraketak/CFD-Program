@@ -21,6 +21,8 @@ from typing import Any
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from core.models import (
+    ReferenceValues,
+    ANGLE_LIMIT_DEG,
     AeroRunRequest,
     AxisDirection,
     BodyKind,
@@ -527,14 +529,36 @@ class AerodynamicsTab(QtWidgets.QWidget):
         self.velocity = LabelledSlider(0.2, 3.5, 2.0, decimals=2)
         layout.addRow("Speed", self.velocity)
 
-        self.aoa = LabelledSlider(-20.0, 20.0, 0.0, decimals=1, suffix=" deg")
-        self.aoa.setToolTip("Angle of attack, within the +/-20 degree envelope")
+        self.aoa = LabelledSlider(
+            -ANGLE_LIMIT_DEG, ANGLE_LIMIT_DEG, 0.0, decimals=1, suffix=" deg"
+        )
+        self.aoa.setToolTip(
+            "Angle of attack, up to +/-90 degrees; beyond +/-20 a slender body "
+            "separates massively and steady RANS is only indicative"
+        )
         self.aoa.valueChanged.connect(self._update_orientation_preview)
         layout.addRow("Angle of attack", self.aoa)
 
-        self.sideslip = LabelledSlider(-20.0, 20.0, 0.0, decimals=1, suffix=" deg")
+        self.sideslip = LabelledSlider(
+            -ANGLE_LIMIT_DEG, ANGLE_LIMIT_DEG, 0.0, decimals=1, suffix=" deg"
+        )
         self.sideslip.valueChanged.connect(self._update_orientation_preview)
         layout.addRow("Sideslip", self.sideslip)
+
+        # Where the tilt axis sits, up or down from the body axis.
+        self.pivot_height = QtWidgets.QDoubleSpinBox()
+        self.pivot_height.setRange(-100.0, 100.0)
+        self.pivot_height.setDecimals(3)
+        self.pivot_height.setSingleStep(0.01)
+        self.pivot_height.setSuffix(" m")
+        self.pivot_height.setToolTip(
+            "Moves the tilt axis (orange) up (+) or down (-) from the body "
+            "axis; up is the side a positive angle of attack lifts the model "
+            "towards. Pitching moments are taken about it; the flow itself "
+            "does not change, because the solver tilts the air."
+        )
+        self.pivot_height.valueChanged.connect(self._refresh_overlay)
+        layout.addRow("Pivot height", self.pivot_height)
 
         self.altitude = QtWidgets.QDoubleSpinBox()
         self.altitude.setRange(-610.0, 32000.0)
@@ -866,14 +890,21 @@ class AerodynamicsTab(QtWidgets.QWidget):
         try:
             from gui.flow_overlay import build_overlay, describe
 
-            items = build_overlay(bounds, self.aoa.value(), self.sideslip.value())
+            items = build_overlay(
+                bounds,
+                self.aoa.value(),
+                self.sideslip.value(),
+                self.pivot_height.value(),
+            )
         except Exception as error:  # noqa: BLE001 - a picture, not a result
             self.append_log(f"Could not draw the flow arrows: {error}")
             return
         self.viewport.set_overlay(items)
         tilt = self.tilt_axis.currentData() or self._auto_pitch_axis()
         self.overlay_note.setText(
-            describe(self.aoa.value(), self.sideslip.value(), tilt)
+            describe(
+                self.aoa.value(), self.sideslip.value(), tilt, self.pivot_height.value()
+            )
         )
 
     def _check_nose_button(self, nose_points_to: str) -> None:
@@ -1312,6 +1343,15 @@ class AerodynamicsTab(QtWidgets.QWidget):
         self.sweep_button.setEnabled(True)
         self.statusMessage.emit(f"Mesh {self.mesh_id} ready")
 
+    def reference_values(self) -> ReferenceValues:
+        """Moments about the pivot when it has been moved off the axis."""
+        from gui.flow_overlay import pivot_moment_origin
+
+        height = self.pivot_height.value()
+        return ReferenceValues(
+            moment_origin=pivot_moment_origin(height) if height else None
+        )
+
     def run_simulation(self) -> None:
         """Start a single aerodynamic solve."""
         if not self.mesh_id:
@@ -1322,6 +1362,7 @@ class AerodynamicsTab(QtWidgets.QWidget):
                 mesh_id=self.mesh_id,
                 flow=self.flow_params(),
                 solver=self.solver_params(),
+                reference=self.reference_values(),
                 hinge_axes=self.hinge_axes(),
             )
         except Exception as error:
@@ -1470,6 +1511,7 @@ class AerodynamicsTab(QtWidgets.QWidget):
                 mesh_id=self.mesh_id,
                 flow=self.flow_params(),
                 solver=self.solver_params(),
+                reference=self.reference_values(),
                 hinge_axes=self.hinge_axes(),
             ),
             parameter=self.sweep_parameter.currentText(),
