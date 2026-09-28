@@ -274,3 +274,22 @@ class SweepWorker(_BaseWorker):
             self.signals.finished.emit(result)
         except BaseException as error:  # noqa: BLE001 - reported to the UI
             self._fail(error)
+
+
+class TaskWorker(_BaseWorker):
+    """Runs any function off the GUI thread.
+
+    The function receives one argument, a callable that reports a line of
+    progress; whatever it returns is emitted through ``finished``.
+    """
+
+    def __init__(self, function) -> None:
+        super().__init__()
+        self.function = function
+
+    @QtCore.Slot()
+    def run(self) -> None:
+        try:
+            self.signals.finished.emit(self.function(self.signals.progress.emit))
+        except BaseException as error:  # noqa: BLE001 - reported to the UI
+            self._fail(error)

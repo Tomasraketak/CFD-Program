@@ -39,6 +39,7 @@ SUPPORTING_TOOLS = {
     "get_settings",
     "update_settings",
     "preview_orientation",
+    "radiation_shield_study",
 }
 
 EXPECTED_TOOLS = SPECIFIED_TOOLS | SUPPORTING_TOOLS

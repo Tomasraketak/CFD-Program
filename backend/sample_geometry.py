@@ -299,3 +299,86 @@ def create_sensor_enclosure_step(
         gmsh.write(str(output_path))
 
     return output_path
+
+
+def create_radiation_shield_step(
+    output_path: Path | str,
+    size: tuple[float, float, float] = (0.2, 0.2, 0.2),
+    plate_count: int = 6,
+    plate_thickness: float = 0.003,
+    opening_fraction: float = 0.5,
+    post_radius: float = 0.004,
+) -> Path:
+    """Write a STEP file of a multi-plate (Gill-type) radiation shield.
+
+    A stack of square louvre plates: the top one solid, a roof against the
+    sun, the others rings round a central opening where the thermometer
+    sits. Air enters sideways between the plates and leaves through the
+    open bottom. Four corner posts tie the stack into one solid. The model
+    spans ``x, y`` in ``[-size/2, size/2]`` and ``z`` in ``[0, size_z]``.
+
+    Parameters
+    ----------
+    output_path:
+        Destination ``.step`` path.
+    size:
+        Outer dimensions ``(x, y, z)``, metres (20 cm cube by default).
+    plate_count:
+        Number of plates, top plate included.
+    plate_thickness:
+        Plate thickness, metres.
+    opening_fraction:
+        Side of the central opening as a fraction of the plate side.
+    post_radius:
+        Radius of the four corner posts, metres.
+    """
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    length, width, height = size
+    if plate_count < 2:
+        raise ValueError("a shield needs at least two plates")
+    gap = (height - plate_count * plate_thickness) / (plate_count - 1)
+    if gap <= plate_thickness:
+        raise ValueError("the plates do not fit the shield height")
+    if not 0.1 <= opening_fraction <= 0.8:
+        raise ValueError("opening_fraction must be between 0.1 and 0.8")
+
+    with gmsh_session("radiation_shield"):
+        occ = gmsh.model.occ
+        parts: list[tuple[int, int]] = []
+        for index in range(plate_count):
+            z = index * (plate_thickness + gap)
+            plate = occ.addBox(
+                -0.5 * length, -0.5 * width, z, length, width, plate_thickness
+            )
+            if index < plate_count - 1:
+                hole = occ.addBox(
+                    -0.5 * opening_fraction * length,
+                    -0.5 * opening_fraction * width,
+                    z - plate_thickness,
+                    opening_fraction * length,
+                    opening_fraction * width,
+                    3.0 * plate_thickness,
+                )
+                cut, _ = occ.cut([(3, plate)], [(3, hole)])
+                parts.extend(cut)
+            else:
+                parts.append((3, plate))
+        # Posts sit in the middle of the ring, clear of the opening.
+        inset = 0.5 * (0.5 + 0.5 * opening_fraction)
+        for sx in (-1.0, 1.0):
+            for sy in (-1.0, 1.0):
+                parts.append(
+                    (
+                        3,
+                        occ.addCylinder(
+                            sx * inset * length, sy * inset * width, 0.0,
+                            0.0, 0.0, height, post_radius,
+                        ),
+                    )
+                )
+        occ.fuse(parts[:1], parts[1:])
+        occ.synchronize()
+        gmsh.write(str(output_path))
+
+    return output_path

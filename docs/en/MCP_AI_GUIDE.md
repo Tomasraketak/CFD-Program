@@ -20,7 +20,7 @@ reference.
 ## 1. What this is
 
 The Model Context Protocol (MCP) is a standard way for AI assistants to call
-external tools. AeroThermalStudio ships an MCP server exposing **fourteen
+external tools. AeroThermalStudio ships an MCP server exposing **fifteen
 tools** covering everything the desktop program can do: CAD import, meshing,
 aerodynamic and thermal simulation, rendering, parametric sweeps, and project
 and settings management.
@@ -118,7 +118,7 @@ it while the assistant is working.
 
 ## 3. Tool reference
 
-All fourteen tools return a JSON object with an `ok` field. On failure,
+All fifteen tools return a JSON object with an `ok` field. On failure,
 `ok: false` and `error` carries a message intended to be acted on.
 
 ### 3.1 `set_geometry_and_mesh`
@@ -388,6 +388,51 @@ replied**. The assistant ends its turn after a preview; the operator's next
 message counts as the answer, and a corrected setup is previewed again.
 External MCP clients are not gated.
 
+
+### 3.15 `radiation_shield_study`
+
+Radiation-shield (thermometer screen) study after the reference methodology
+(Atmosphere 2026, 17(3), 272, extended to a vehicle roof): a Design of
+Experiments over **inlet wind speed**, **top solar radiation** and **bottom
+radiation**, a **response surface** fitted to the solved points, and a
+**Monte Carlo** analysis run on that surface. The objective is
+`T_monitor - T_inlet` at the thermometer point.
+
+| Parameter | Type | Notes |
+|---|---|---|
+| `action` | string | `analytic` (instant screening model), `prepare_cfd` (mesh the domain, cast radiation rays, write SU2 cases and the Fluent/Workbench package), `solve_cfd` (SU2 on the design points of `study_id`; long), `import` (analyse a CSV solved elsewhere), `export_fluent`, `status` |
+| `study_id` | string | `shield-...`; needed by `solve_cfd`, `export_fluent`, `status` |
+| `setup` | object | Any of: `shield_step_path` (empty = built-in 20 cm multi-plate shield), `scale_to_meters`, `shield_size_m`, `plate_count`, `domain_size_m` (default `[2.0, 2.0, 1.44]`), `thermometer_xyz_m` (relative to the shield centre), `ambient_temp_c`, `wind_speed_ms`, `solar_flux_w_m2` (1000), `bottom_mode` (`ground_flux` or `roof_temperature`), `bottom_flux_w_m2` (300), `bottom_temperature_k` (343 = 70 °C), `roof_emissivity`, `sky_longwave_w_m2`, `ground_albedo`, `shield_solar_absorptivity`, `shield_emissivity`, `shield_conductivity_w_mk`, `ventilation_coefficient` |
+| `variables` | object | Per input (`wind_speed_ms`, `solar_flux_w_m2`, `bottom_flux_w_m2`): `minimum`, `maximum`, `distribution` (`uniform`/`normal`/`triangular`), `mean`, `std`, `mode`, `scale` (`linear`/`log`). Defaults 0.5–5 m/s (log), 800–1200 W/m², 300–800 W/m², uniform |
+| `study` | object | `doe` (`ccd` face-centred, 15 points; `lhs`), `doe_points`, `surrogate` (`quadratic`, `rbf`), `monte_carlo_samples` (10 000), `tolerance_k` (0.5), `seed` |
+| `cfd` | object | `mesh_resolution`, `turbulence_model` (`SST`/`SA`), `buoyancy`, `radiation_passes`, `iterations_first_pass`, `iterations_later_passes`, `radiation_classes`, `rays_per_face`, `mpi_ranks` |
+| `results_csv` | string | For `import`: `design_points.csv` with `delta_t_k` (or `monitor_temp_k`) filled in, or a Workbench design-point export |
+| `max_points` | int | For `solve_cfd`: at most this many points per call |
+
+Returns the design points, the surface fit (`r_squared`,
+`leave_one_out_rmse_k`), and the Monte Carlo summary: mean, spread,
+percentiles, the **worst case with its inputs**, the **reliability**
+P(|dT| ≤ tolerance) and rank-correlation sensitivities.
+
+**How the SU2 path models radiation.** SU2's incompressible solver has no
+DO/S2S model, so the radiation is computed outside it: rays cast from every
+shield facet find which facets the sun reaches (louvres shade each other)
+and how much sky and ground each sees; the absorbed flux minus the facet's
+own emission becomes a wall boundary condition, grouped into a handful of
+markers. The fourth-power emission is linearised about the wall temperature
+(SU2 `MARKER_HEATTRANSFER`, h_r·(T_eq − T_wall)), so SU2 solves it
+implicitly; a second pass re-linearises about the solved temperature and
+usually changes it by under 0.01 K. Shield conduction is not solved (thin
+plastic plates); SU2 has no standard k-ε, so SST is used. The Fluent package
+follows the specification exactly: standard k-ε, DO radiation, conjugate
+solid.
+
+**Solving elsewhere.** `prepare_cfd` writes `run_design_points.bat`/`.sh` to
+solve every point on the computer that runs it, and a `fluent/` folder with
+the placed shield and fluid STEP files, `design_points.csv`, a Fluent journal
+and a README for Workbench, DesignXplorer (CCD, response surface, Six Sigma
+Monte Carlo). Solved points come back through `import`.
+
 ---
 
 ## 4. Worked workflows
@@ -605,7 +650,7 @@ results with that context rather than as measurements.
 
 ## 9. The built-in assistant
 
-The same fourteen tools also back an assistant **inside the program**, on the
+The same fifteen tools also back an assistant **inside the program**, on the
 **AI Assistant** tab. It is for an operator who wants to type a request and
 have it carried out without running an external MCP client at all.
 

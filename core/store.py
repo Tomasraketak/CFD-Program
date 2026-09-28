@@ -20,18 +20,19 @@ from pydantic import BaseModel
 
 from core.platform_env import data_root
 
-RecordKind = Literal["mesh", "aero", "thermal", "sweep"]
+RecordKind = Literal["mesh", "aero", "thermal", "sweep", "shield"]
 
 _METADATA_FILENAME = "record.json"
 # A record id anywhere in text. Older ids end in six random hex digits;
 # current ones have no tail, or -2, -3 ... when two share a second.
-RUN_ID_PATTERN = r"(?:mesh|aero|therm|sweep)-\d{8}-\d{6}(?:-[0-9a-f]{6}|-\d{1,2})?"
+RUN_ID_PATTERN = r"(?:mesh|aero|therm|sweep|shield)-\d{8}-\d{6}(?:-[0-9a-f]{6}|-\d{1,2})?"
 
 _ID_PREFIXES: dict[RecordKind, str] = {
     "mesh": "mesh",
     "aero": "aero",
     "thermal": "therm",
     "sweep": "sweep",
+    "shield": "shield",
 }
 
 

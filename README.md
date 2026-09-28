@@ -7,7 +7,11 @@ A native Windows 11 CFD and thermal simulation platform for two jobs:
    sideslip.
 2. **Sensor microclimate analysis** — what a BMP580 actually reads inside a
    3D-printed enclosure with a ram-air sampling tube, mounted above a
-   solar-irradiated surface such as a tram roof.
+   solar-irradiated surface such as a tram roof — and **radiation-shield
+   studies**: a Design of Experiments over wind, sun and ground/roof
+   radiation, a response surface and a Monte Carlo analysis of the
+   thermometer's error, solved analytically, with SU2, or in ANSYS Fluent
+   from an exported Workbench package.
 
 Every setting is controllable two ways: through the desktop GUI, and
 programmatically by an AI agent over the Model Context Protocol. The same
@@ -497,6 +501,7 @@ regime it is in.
 | `set_geometry_and_mesh` | CAD → aligned, cell-count-targeted mesh |
 | `run_aerodynamic_simulation` | Forces, coefficients, CoP, hinge torques |
 | `run_sensor_thermal_simulation` | BMP580 reading and bias (`analytic_only` for an instant answer) |
+| `radiation_shield_study` | Radiation-shield DoE → response surface → Monte Carlo; SU2 cases and a Fluent/Workbench package |
 | `generate_cfd_visualization` | Surface pressure, Mach slice, streamlines, thermal contours — shown in the Graphics tab |
 | `run_parametric_sweep` | Batch runs with summary curves and peak values |
 | `list_runs` | Rediscover ids from an earlier session |
@@ -509,7 +514,7 @@ out-of-range angle of attack gets a message it can act on.
 
 ### The built-in assistant
 
-`backend/ai_agent.py` drives the same fourteen tools from inside the program
+`backend/ai_agent.py` drives the same fifteen tools from inside the program
 over OpenRouter's OpenAI-compatible API, so no external MCP client is needed.
 Schemas are read from `server.list_tools()` rather than hand-copied, and a
 test asserts the direct-call registry and the registered tool list are

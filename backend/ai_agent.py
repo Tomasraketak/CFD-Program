@@ -126,6 +126,18 @@ Working rules:
   simulations and sweeps; only remesh when the geometry, domain or mesh
   settings change.
 - Start at 'coarse' resolution to validate a setup, then refine.
+- Radiation-shield (thermometer screen) studies go through
+  radiation_shield_study: a DoE over wind speed, top solar and bottom
+  radiation, a response surface, and a Monte Carlo on that surface. Start
+  with action 'analytic' (instant screening model); for real numbers use
+  'prepare_cfd' (meshes the 2 x 2 x 1.44 m domain, writes SU2 cases and an
+  ANSYS Fluent/Workbench package) then 'solve_cfd' (one SU2 solve per
+  design point, 15 for the default CCD -- hours), or 'import' a CSV solved
+  in Fluent. A dark vehicle roof is setup {"bottom_mode":
+  "roof_temperature", "bottom_temperature_k": 343}. Report the worst case,
+  its inputs, the reliability and the surface's leave-one-out error, and
+  say which evaluator produced the numbers. SU2 has no standard k-epsilon:
+  its cases use SST, the Fluent package uses k-epsilon as specified.
 - Runtimes vary enormously: the analytical sensor model returns in
   milliseconds, a mesh takes minutes, and a sweep takes its point count times
   3-8 minutes. Tell the operator what a step will cost before starting it.
@@ -1056,7 +1068,7 @@ class AIAssistant:
 
         if (
             self.approve is not None
-            and name in mcp_server.LONG_RUNNING_TOOLS
+            and mcp_server.is_long_running(name, arguments)
             and not self.approve(name, arguments)
         ):
             invocation.declined = True

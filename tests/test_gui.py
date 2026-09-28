@@ -1035,3 +1035,54 @@ def test_the_convergence_chart_shows_only_while_solving(aero_tab):
     aero_tab.chart.setVisible(True)
     aero_tab._finish()
     assert aero_tab.chart.isHidden()
+
+
+def test_the_sensor_tab_has_the_radiation_shield_study(qt_app, store):
+    """The shield study sits beside the BMP580 model in the sensor tab."""
+    tab = SensorTab(store)
+    titles = [tab.modes.tabText(i) for i in range(tab.modes.count())]
+    assert "Radiation shield study" in titles
+    tab.deleteLater()
+
+
+def test_the_shield_panel_round_trips_every_setting(qt_app, store):
+    """What the form shows is exactly the study it runs, and back."""
+    from core.shield_models import ShieldStudyParams
+    from gui.shield_panel import ShieldStudyPanel
+
+    panel = ShieldStudyPanel(store)
+    wanted = ShieldStudyParams.model_validate(
+        {
+            "setup": {
+                "bottom_mode": "roof_temperature",
+                "bottom_temperature_k": 350.0,
+                "sky_longwave_w_m2": 0.0,
+                "thermometer_xyz_m": [0.0, 0.0, -0.02],
+                "domain_size_m": [2.5, 2.0, 1.44],
+            },
+            "wind_speed_ms": {"minimum": 1.0, "maximum": 4.0, "scale": "linear"},
+            "solar_flux_w_m2": {"minimum": 700, "maximum": 1100, "distribution": "normal", "std": 80},
+            "doe": "lhs",
+            "doe_points": 30,
+            "surrogate": "rbf",
+            "monte_carlo_samples": 5000,
+            "tolerance_k": 0.2,
+            "seed": 9,
+        }
+    )
+    panel.apply_params(wanted)
+    assert panel.study_params() == wanted
+    panel.deleteLater()
+
+
+def test_the_shield_panel_runs_and_lists_a_study(qt_app, store):
+    from gui.shield_panel import ShieldStudyPanel
+
+    panel = ShieldStudyPanel(store)
+    panel.samples.setValue(2000)
+    result = panel.run_analytic_now()
+    assert result is not None
+    assert panel.study_list.currentData() == result.study_id
+    assert panel.points_table.rowCount() == 15
+    assert panel.card_worst.value.text() == f"{result.monte_carlo.abs_max_k:.3f}"
+    panel.deleteLater()

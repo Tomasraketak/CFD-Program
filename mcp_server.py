@@ -1181,6 +1181,208 @@ def run_sensor_thermal_simulation(
 
 
 # ---------------------------------------------------------------------------
+# Tool: radiation-shield study (DoE -> response surface -> Monte Carlo)
+# ---------------------------------------------------------------------------
+
+
+def _shield_params(
+    base: Any,
+    setup: dict[str, Any] | None,
+    variables: dict[str, Any] | None,
+    study: dict[str, Any] | None,
+) -> Any:
+    """Merge partial dictionaries onto a study definition and validate it."""
+    from core.shield_models import ShieldStudyParams
+
+    data = base.model_dump(mode="json") if base is not None else ShieldStudyParams().model_dump(mode="json")
+    data["setup"].update(setup or {})
+    for name, overrides in (variables or {}).items():
+        if name not in ("wind_speed_ms", "solar_flux_w_m2", "bottom_flux_w_m2"):
+            raise ValueError(
+                f"unknown variable '{name}'; use wind_speed_ms, solar_flux_w_m2 "
+                "or bottom_flux_w_m2"
+            )
+        data[name].update(overrides or {})
+    data.update(study or {})
+    return ShieldStudyParams.model_validate(data)
+
+
+def _shield_summary(result: Any) -> dict[str, Any]:
+    """The parts of a study result worth reading, flattened for the assistant."""
+    mc = result.monte_carlo
+    return {
+        "study_id": result.study_id,
+        "evaluator": result.evaluator.value,
+        "design_points": [
+            {
+                "name": p.name,
+                "wind_speed_ms": p.wind_speed_ms,
+                "solar_flux_w_m2": p.solar_flux_w_m2,
+                "bottom_flux_w_m2": p.bottom_flux_w_m2,
+                "delta_t_k": p.delta_t_k,
+            }
+            for p in result.design_points
+        ],
+        "response_surface": {
+            "kind": result.surrogate.kind.value,
+            "points": result.surrogate.points,
+            "r_squared": result.surrogate.r_squared,
+            "leave_one_out_rmse_k": result.surrogate.loo_rmse_k,
+        },
+        "monte_carlo": {
+            "samples": mc.samples,
+            "mean_k": mc.mean_k,
+            "std_k": mc.std_k,
+            "p05_k": mc.p05_k,
+            "p95_k": mc.p95_k,
+            "p99_k": mc.p99_k,
+            "abs_p95_k": mc.abs_p95_k,
+            "worst_case": mc.worst_case,
+            "reliability": mc.reliability,
+            "tolerance_k": mc.tolerance_k,
+            "sensitivities": mc.sensitivities,
+        },
+        "worst_case_rechecked_k": result.worst_case_check_k,
+        "notes": result.notes,
+    }
+
+
+@server.tool(
+    name="radiation_shield_study",
+    description=(
+        "Radiation-shield (thermometer screen) study after the reference "
+        "methodology: a Design of Experiments over inlet wind speed, top solar "
+        "radiation and bottom radiation, a response surface fitted to the "
+        "solved points, and a Monte Carlo analysis on that surface giving the "
+        "spread, the worst case and the reliability of T_monitor - T_inlet. "
+        "action: 'analytic' (instant, analytical model), 'prepare_cfd' (mesh "
+        "the 2 x 2 x 1.44 m domain, SU2 cases, Fluent/Workbench package), "
+        "'solve_cfd' (run SU2 on the design points of study_id -- long), "
+        "'import' (analyse design points solved elsewhere, e.g. Fluent, from "
+        "results_csv), 'export_fluent', 'status'."
+    ),
+)
+def radiation_shield_study(
+    action: str = "analytic",
+    study_id: str | None = None,
+    setup: dict[str, Any] | None = None,
+    variables: dict[str, Any] | None = None,
+    study: dict[str, Any] | None = None,
+    cfd: dict[str, Any] | None = None,
+    results_csv: str | None = None,
+    max_points: int | None = None,
+) -> dict[str, Any]:
+    """Run or continue a radiation-shield study.
+
+    Parameters
+    ----------
+    action:
+        'analytic', 'prepare_cfd', 'solve_cfd', 'import', 'export_fluent'
+        or 'status'.
+    study_id:
+        An existing study ('shield-...'): required for solve_cfd,
+        export_fluent and status; optional for import (its parameters are
+        reused).
+    setup:
+        Overrides of the setup, any of: shield_step_path, scale_to_meters,
+        shield_size_m [x,y,z], plate_count, domain_size_m [length along the
+        wind, width, height] (default [2.0, 2.0, 1.44]), thermometer_xyz_m
+        (monitor point relative to the shield centre), ambient_temp_c,
+        wind_speed_ms, solar_flux_w_m2, bottom_mode ('ground_flux' or
+        'roof_temperature'), bottom_flux_w_m2, bottom_temperature_k (343 K
+        = 70 C roof), roof_emissivity, sky_longwave_w_m2, ground_albedo,
+        shield_solar_absorptivity, shield_emissivity,
+        shield_conductivity_w_mk, ventilation_coefficient.
+    variables:
+        Ranges and distributions of the three inputs, keyed
+        'wind_speed_ms', 'solar_flux_w_m2', 'bottom_flux_w_m2', each
+        {"minimum", "maximum", "distribution": uniform|normal|triangular,
+        "mean", "std", "mode", "scale": linear|log}. Defaults: wind 0.5-5
+        m/s (log), solar 800-1200 W/m2, bottom 300-800 W/m2, all uniform.
+    study:
+        doe ('ccd' face-centred, 15 points; or 'lhs'), doe_points (LHS),
+        surrogate ('quadratic' or 'rbf'), monte_carlo_samples (default
+        10000), tolerance_k (reliability threshold, default 0.5), seed.
+    cfd:
+        SU2 settings for prepare_cfd: mesh_resolution (coarse/medium/fine),
+        turbulence_model (SST/SA; SU2 has no standard k-epsilon, the
+        Fluent package uses it), buoyancy, radiation_passes,
+        iterations_first_pass, iterations_later_passes,
+        radiation_classes, rays_per_face, mpi_ranks.
+    results_csv:
+        For 'import': a CSV of solved design points (this program's
+        design_points.csv with delta_t_k filled in, or a Workbench export).
+    max_points:
+        For 'solve_cfd': solve at most this many points in this call.
+    """
+    from backend import shield_workflow as workflow
+    from core.shield_models import ShieldCfdSettings
+
+    store = _store()
+    action = (action or "").strip().lower()
+    known = ("analytic", "prepare_cfd", "solve_cfd", "import", "export_fluent", "status")
+    if action not in known:
+        return _error(f"unknown action '{action}'; use {', '.join(known)}")
+    try:
+        base = workflow.load_params(store, study_id) if study_id else None
+        params = _shield_params(base, setup, variables, study)
+        settings = ShieldCfdSettings.model_validate(cfd or {})
+    except RecordNotFoundError as error:
+        return _error(str(error))
+    except Exception as error:  # noqa: BLE001 - validation message is the point
+        return _error(f"invalid parameters: {error}")
+
+    try:
+        if action == "analytic":
+            result = workflow.run_analytic(store, params)
+            return _ok(**_shield_summary(result))
+        if action == "import":
+            if not results_csv:
+                return _error("action 'import' needs results_csv")
+            result = workflow.analyse_imported(store, params, results_csv, study_id)
+            return _ok(**_shield_summary(result))
+        if action == "prepare_cfd":
+            prepared = workflow.prepare_cfd(store, params, settings, on_line=_broadcast_line)
+            return _ok(
+                **prepared,
+                next_step=(
+                    "Run action 'solve_cfd' with this study_id to solve the design "
+                    "points here, or run the script on the solving computer; the "
+                    "Fluent package is in fluent_folder."
+                ),
+            )
+        if not study_id:
+            return _error(f"action '{action}' needs study_id")
+        if action == "solve_cfd":
+            summary = workflow.solve_cfd(
+                store, study_id, _runner(), on_line=_broadcast_line, max_points=max_points
+            )
+            _broadcast_finished()
+            result = summary.pop("result")
+            if result is not None:
+                summary.update(_shield_summary(result))
+            return _ok(**summary)
+        if action == "export_fluent":
+            folder = workflow.export_package(store, study_id)
+            return _ok(study_id=study_id, fluent_folder=str(folder))
+        if action == "status":
+            result = workflow.load_result(store, study_id)
+            payload: dict[str, Any] = {"study_id": study_id, "params": params.model_dump(mode="json")}
+            try:
+                points = workflow.cfd_points(store, study_id)
+                payload["cfd_points_solved"] = sum(p.delta_t_k is not None for p in points)
+                payload["cfd_points_total"] = len(points)
+            except Exception:  # noqa: BLE001 - not a CFD study
+                pass
+            if result is not None:
+                payload.update(_shield_summary(result))
+            return _ok(**payload)
+    except Exception as error:  # noqa: BLE001 - reported to the caller
+        return _error(str(error), study_id=study_id)
+    return _error(f"unknown action '{action}'")  # pragma: no cover - listed above
+
+
+# ---------------------------------------------------------------------------
 # Tool 4: visualisation
 # ---------------------------------------------------------------------------
 
@@ -1904,6 +2106,7 @@ TOOL_FUNCTIONS: dict[str, Any] = {
     "preview_orientation": preview_orientation,
     "run_aerodynamic_simulation": run_aerodynamic_simulation,
     "run_sensor_thermal_simulation": run_sensor_thermal_simulation,
+    "radiation_shield_study": radiation_shield_study,
     "generate_cfd_visualization": generate_cfd_visualization,
     "run_parametric_sweep": run_parametric_sweep_tool,
     "list_runs": list_runs,
@@ -1926,6 +2129,21 @@ LONG_RUNNING_TOOLS = frozenset(
         "run_parametric_sweep",
     }
 )
+
+# Actions of a multi-purpose tool that are long, keyed by tool name.
+LONG_RUNNING_ACTIONS: dict[str, frozenset[str]] = {
+    "radiation_shield_study": frozenset({"prepare_cfd", "solve_cfd"}),
+}
+
+
+def is_long_running(name: str, arguments: dict[str, Any] | None = None) -> bool:
+    """Whether a call starts a long computation the operator should approve."""
+    if name in LONG_RUNNING_TOOLS:
+        return True
+    actions = LONG_RUNNING_ACTIONS.get(name)
+    if actions is None:
+        return False
+    return str((arguments or {}).get("action", "")).lower() in actions
 
 
 def call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:

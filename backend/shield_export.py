@@ -1,0 +1,267 @@
+"""Package a radiation-shield study for ANSYS Fluent + Workbench/DesignXplorer.
+
+The same study that runs here can be solved in Fluent: this writes
+
+* ``shield_solid.step`` and ``fluid_domain.step`` -- the shield placed in the
+  centre of the domain, and the air volume with the shield cut out, both in
+  metres with z up and the wind along +x;
+* ``design_points.csv`` -- the DoE, importable into the Workbench Parameter
+  Set (or DesignXplorer's custom DoE) and, once solved, back into this
+  program;
+* ``fluent_setup.jou`` -- a Fluent TUI journal with the models, the named
+  expressions used as Workbench input parameters and the boundary
+  conditions;
+* ``README_FLUENT.md`` -- the step-by-step Workbench/DesignXplorer procedure,
+  including the settings the journal cannot make for you.
+
+Nothing here runs Fluent; the journal is a template to check against the
+Fluent version in use (TUI prompts shift between releases).
+"""
+
+from __future__ import annotations
+
+import json
+import shutil
+from pathlib import Path
+
+from core.shield_models import (
+    STEFAN_BOLTZMANN,
+    VARIABLE_LABELS,
+    BottomMode,
+    ShieldStudyParams,
+)
+
+
+def export_fluent_package(params: ShieldStudyParams, folder: Path | str) -> Path:
+    """Write the Fluent/Workbench package for a study into ``folder``."""
+    from backend.shield_study import design_of_experiments, write_design_points_csv
+
+    folder = Path(folder)
+    folder.mkdir(parents=True, exist_ok=True)
+    setup = params.setup
+    geometry = write_geometry(params, folder)
+    points = design_of_experiments(params)
+    write_design_points_csv(folder / "design_points.csv", setup, points)
+    (folder / "fluent_setup.jou").write_text(fluent_journal(params, geometry), encoding="utf-8")
+    (folder / "README_FLUENT.md").write_text(readme(params, geometry, len(points)), encoding="utf-8")
+    (folder / "study.json").write_text(
+        json.dumps(params.model_dump(mode="json"), indent=2), encoding="utf-8"
+    )
+    return folder
+
+
+def write_geometry(params: ShieldStudyParams, folder: Path) -> dict:
+    """The placed shield and the fluid volume as STEP files, in metres."""
+    import gmsh
+    import numpy as np
+
+    from backend.gmsh_session import gmsh_session
+    from backend.shield_cfd import ShieldCfdError, resolve_shield_step
+
+    setup = params.setup
+    source, scale = resolve_shield_step(setup, folder)
+    length, width, height = setup.domain_size_m
+    with gmsh_session("shield_export"):
+        occ = gmsh.model.occ
+        solids = [e for e in occ.importShapes(str(source)) if e[0] == 3]
+        if not solids:
+            raise ShieldCfdError(f"{source.name} contains no solid")
+        if scale != 1.0:
+            occ.dilate(solids, 0.0, 0.0, 0.0, scale, scale, scale)
+        occ.synchronize()
+        low = np.full(3, np.inf)
+        high = np.full(3, -np.inf)
+        for dim, tag in solids:
+            box = gmsh.model.getBoundingBox(dim, tag)
+            low = np.minimum(low, box[:3])
+            high = np.maximum(high, box[3:])
+        centre = np.array([0.0, 0.0, 0.5 * height])
+        occ.translate(solids, *(centre - 0.5 * (low + high)))
+        occ.synchronize()
+        gmsh.write(str(folder / "shield_solid.step"))
+        box = occ.addBox(-0.5 * length, -0.5 * width, 0.0, length, width, height)
+        occ.cut([(3, box)], solids, removeTool=True)
+        occ.synchronize()
+        gmsh.write(str(folder / "fluid_domain.step"))
+    size = (high - low).tolist()
+    monitor = [c + o for c, o in zip(centre.tolist(), setup.thermometer_xyz_m)]
+    if source.parent == folder and source.name == "radiation_shield.step":
+        source.unlink(missing_ok=True)
+    return {"centre": centre.tolist(), "size": size, "monitor": monitor}
+
+
+def _k(value: float) -> str:
+    return f"{value:.4f}"
+
+
+def fluent_journal(params: ShieldStudyParams, geometry: dict) -> str:
+    """A Fluent TUI journal for the baseline case, parameterised for Workbench."""
+    setup = params.setup
+    ambient = setup.ambient_temp_k()
+    x, y, z = geometry["monitor"]
+    roof = setup.bottom_mode is BottomMode.ROOF_TEMPERATURE
+    lines = [
+        "; AeroThermalStudio -- radiation shield, Fluent setup journal",
+        "; Zones expected (Named Selections in Workbench Meshing):",
+        ";   inlet, outlet, top, bottom, sides, shield (walls), fluid, and",
+        ";   solid-shield if the shield is meshed as a solid (conjugate).",
+        "; Check every prompt against your Fluent version before relying on it.",
+        "",
+        "; ---- Models: pressure-based steady, energy, standard k-epsilon, DO ----",
+        "/define/models/solver/pressure-based yes",
+        "/define/models/steady yes",
+        "/define/models/energy? yes no no no yes",
+        "/define/models/viscous/ke-standard? yes",
+        "/define/models/radiation/do-model? yes",
+        "/define/operating-conditions/gravity yes 0 0 -9.81",
+        f"/define/operating-conditions/operating-temperature {_k(ambient)}",
+        "",
+        "; ---- Workbench input parameters (named expressions) ----",
+        f'/define/named-expressions/add "wind_speed" definition "{setup.wind_speed_ms:g} [m/s]" input-parameter yes quit',
+        f'/define/named-expressions/add "solar_flux" definition "{setup.solar_flux_w_m2:g} [W/m^2]" input-parameter yes quit',
+        f'/define/named-expressions/add "bottom_flux" definition "{setup.baseline_bottom_flux():.2f} [W/m^2]" input-parameter yes quit',
+        f'/define/named-expressions/add "t_inlet" definition "{_k(ambient)} [K]" quit',
+        "",
+        "; ---- Pressure-velocity coupling ----",
+        "/solve/set/p-v-coupling 24",
+        "",
+        "; ---- Thermometer monitor point and the objective ----",
+        f"/surface/point-surface thermometer {x:.5f} {y:.5f} {z:.5f}",
+        '/define/named-expressions/add "delta_t" definition "Average(StaticTemperature,[\'thermometer\'],Weight=\'none\') - t_inlet" output-parameter yes quit',
+        "",
+        "; ---- Boundary conditions (expressions drive the parameters) ----",
+        '/define/boundary-conditions/set/velocity-inlet inlet () vmag yes "wind_speed" temperature no '
+        f"{_k(ambient)} quit",
+        "/define/boundary-conditions/set/pressure-outlet outlet () gauge-pressure no 0 quit",
+        "/define/boundary-conditions/set/symmetry sides () quit",
+        "; TOP: semi-transparent zero-shear wall carrying the direct solar beam",
+        ";      (set in the GUI: Radiation > Direct Irradiation = solar_flux,",
+        ";       beam direction (0, 0, -1); Diffuse Irradiation = sky long-wave).",
+        "; BOTTOM:",
+    ]
+    if roof:
+        lines += [
+            f"/define/boundary-conditions/set/wall bottom () thermal-bc yes temperature "
+            f"temperature no {_k(setup.bottom_temperature_k)} quit",
+            f";   vehicle roof at {setup.bottom_temperature_k:g} K, internal emissivity "
+            f"{setup.roof_emissivity:g} (emits {setup.roof_flux_for(setup.bottom_temperature_k):.0f} W/m2).",
+            ";   In a study drive the temperature from bottom_flux: "
+            f"(bottom_flux/({setup.roof_emissivity:g}*5.670374e-8 [W/m^2/K^4]))^0.25.",
+        ]
+    else:
+        lines += [
+            ";   ground: semi-transparent zero-shear wall with Diffuse Irradiation = bottom_flux",
+            ";   (upward long-wave), adiabatic.",
+        ]
+    lines += [
+        f"; SHIELD walls: emissivity {setup.shield_emissivity:g}, solar absorptivity "
+        f"{setup.shield_solar_absorptivity:g} (set per band in the DO model),",
+        f";   conductivity {setup.shield_conductivity_w_mk:g} W/(m K) for the solid zone.",
+        "",
+        "; ---- Initialise and solve ----",
+        "/solve/initialize/hyb-initialization",
+        "/solve/iterate 1500",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def readme(params: ShieldStudyParams, geometry: dict, point_count: int) -> str:
+    """Step-by-step instructions for Workbench, Fluent and DesignXplorer."""
+    setup = params.setup
+    variables = params.variables()
+    rows = "\n".join(
+        f"| `{name}` | {VARIABLE_LABELS[name]} | {v.minimum:g} | {v.maximum:g} | "
+        f"{v.distribution.value} |"
+        for name, v in variables.items()
+    )
+    fluent_names = {
+        "wind_speed_ms": "wind_speed",
+        "solar_flux_w_m2": "solar_flux",
+        "bottom_flux_w_m2": "bottom_flux",
+    }
+    roof_line = (
+        f"Fixed temperature {setup.bottom_temperature_k:g} K (vehicle roof), emissivity "
+        f"{setup.roof_emissivity:g} -> {setup.roof_flux_for(setup.bottom_temperature_k):.0f} W/m2 upward."
+        if setup.bottom_mode is BottomMode.ROOF_TEMPERATURE
+        else f"Upward long-wave flux {setup.bottom_flux_w_m2:g} W/m2 (ground), adiabatic."
+    )
+    sky = setup.sky_flux_w_m2()
+    x, y, z = geometry["monitor"]
+    return f"""# Radiation shield study -- ANSYS Fluent / Workbench package
+
+Generated by AeroThermalStudio. Coordinates in metres, **z up, wind along +x**.
+
+## Files
+
+| File | Use |
+|---|---|
+| `fluid_domain.step` | Air volume {setup.domain_size_m[0]:g} x {setup.domain_size_m[1]:g} x {setup.domain_size_m[2]:g} m with the shield cut out |
+| `shield_solid.step` | The shield in place (for a conjugate solid zone) |
+| `design_points.csv` | {point_count} design points ({params.doe.value.upper()}), import into the Parameter Set |
+| `fluent_setup.jou` | Fluent TUI journal: models, named expressions, boundary conditions |
+| `study.json` | The full study definition (open it again in AeroThermalStudio) |
+
+## 1. Geometry and mesh (Workbench)
+
+1. Geometry: import both STEP files; share topology between the shield and the air
+   (Workbench SpaceClaim: *Share*), so the walls are conformal interfaces.
+2. Named selections: `inlet` (x = {-0.5 * setup.domain_size_m[0]:g}), `outlet`
+   (x = {0.5 * setup.domain_size_m[0]:g}), `bottom` (z = 0), `top`
+   (z = {setup.domain_size_m[2]:g}), `sides` (y = +/-{0.5 * setup.domain_size_m[1]:g}),
+   `shield` (the shield walls).
+3. Mesh: inflation on `shield` (5-8 layers), face sizing 2-4 mm on the shield,
+   body of influence round the shield and its wake.
+
+## 2. Fluent physics
+
+* Pressure-based, steady, coupled pressure-velocity; gravity (0, 0, -9.81).
+* Energy on; **standard k-epsilon** with enhanced wall treatment.
+* Radiation: **Discrete Ordinates** (or S2S) -- shield emissivity
+  {setup.shield_emissivity:g}, solar absorptivity {setup.shield_solar_absorptivity:g}
+  (two-band DO: solar band / thermal band).
+* Air: ideal gas or Boussinesq at {setup.ambient_temp_c:g} C.
+* Shield solid: conductivity {setup.shield_conductivity_w_mk:g} W/(m K).
+
+## 3. Boundary conditions
+
+| Zone | Setting |
+|---|---|
+| inlet | Velocity inlet, magnitude = `wind_speed`, T = {setup.ambient_temp_k():.2f} K |
+| outlet | Pressure outlet, 0 Pa gauge |
+| sides | Symmetry |
+| top | Zero-shear wall, semi-transparent: direct irradiation = `solar_flux`, beam (0, 0, -1); diffuse irradiation {sky:.0f} W/m2 (sky long-wave; 0 to leave it out) |
+| bottom | {roof_line} |
+| shield | Coupled wall (conjugate) |
+
+## 4. Parameters
+
+Input parameters (Fluent named expressions, *Use as input parameter*):
+
+| This program | Meaning | Min | Max | Distribution |
+|---|---|---|---|---|
+{rows}
+
+Fluent names: {", ".join(f"`{fluent_names[n]}`" for n in variables)}.
+
+Output parameter: `delta_t` = temperature at the point surface `thermometer`
+({x:.4f}, {y:.4f}, {z:.4f}) minus the inlet temperature. Objective: minimise it.
+
+## 5. DesignXplorer
+
+1. **Design of Experiments**: Central Composite Design, face-centred (matches
+   `design_points.csv`), or *Custom* and import `design_points.csv`.
+2. **Response Surface**: Genetic Aggregation or Full 2nd-Order Polynomials; check
+   the goodness of fit and verification points.
+3. **Six Sigma Analysis** (Monte Carlo on the response surface): the distributions
+   above, 10 000+ samples; read the worst case and the probability that
+   |delta_t| <= {params.tolerance_k:g} K.
+
+## 6. Back into AeroThermalStudio
+
+Export the design-point table from Workbench as CSV (columns may be named
+`P1 - wind_speed` etc.; they are recognised), then in the Sensor tab ->
+Radiation shield study -> *Import solved design points*. The program fits its
+own response surface and Monte Carlo to the Fluent numbers, so the two can be
+compared directly.
+"""

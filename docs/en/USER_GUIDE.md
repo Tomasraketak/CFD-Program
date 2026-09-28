@@ -564,6 +564,56 @@ detail the analytical model averages over.
 The analytical model also seeds the CFD run's radiation linearisation, so the
 two work together rather than being alternatives.
 
+
+### Radiation shield study
+
+The second sub-tab, **Radiation shield study**, answers the same question for a
+naturally ventilated radiation shield (a louvred screen round a thermometer):
+how far does the air at the thermometer sit from the true air temperature, and
+how bad can it get? It follows the reference methodology (Atmosphere 2026,
+17(3), 272) and extends it to a vehicle roof.
+
+**Setup.** A shield from a STEP file, or the built-in 20 × 20 × 20 cm
+multi-plate shield, centred in a 2000 × 2000 × 1440 mm air domain (both
+adjustable); the thermometer point relative to the shield centre; the inlet
+air temperature and the baseline condition — wind, top solar radiation
+(1000 W/m²) and the bottom: **ground** emitting a long-wave flux (300 W/m²),
+or a **vehicle roof** at a fixed temperature (343 K = 70 °C, which also heats
+the air flowing over it). Surface properties: shield solar absorptivity and
+emissivity, roof emissivity, sky long-wave (auto: Swinbank), ground albedo.
+
+**Uncertain inputs.** Wind speed (0.5–5 m/s), top solar (800–1200 W/m²) and
+bottom radiation (300–800 W/m²; in roof mode it sets the roof temperature
+through q = ε σ T⁴), each with a distribution (uniform, normal, triangular) and
+a scale (wind is spread logarithmically).
+
+**Workflow.**
+
+1. *Design of experiments* — face-centred central composite (15 points, as
+   DesignXplorer) or a Latin hypercube.
+2. *Solve the design points* — **Run analytic study** solves them with an
+   instant lumped model; **Prepare CFD cases + Fluent package** meshes the
+   domain, casts the radiation rays and writes the SU2 cases plus an ANSYS
+   Fluent/Workbench package; **Solve CFD design points** runs SU2 on them here
+   (one solve per point, minutes to an hour each), or run
+   `run_design_points.bat` on the solving computer; **Import solved design
+   points** reads a CSV solved elsewhere (e.g. a Workbench design-point table).
+3. *Response surface* — full quadratic polynomial or radial basis
+   interpolation; its leave-one-out error is shown, because it is the honest
+   accuracy figure.
+4. *Monte Carlo* — 10 000 (up to 2 000 000) random conditions on the surface:
+   mean, spread, the **worst case and its inputs**, **reliability**
+   (P(|dT| ≤ tolerance)) and the sensitivity to each input. With the analytic
+   evaluator the worst case is also re-solved directly.
+
+**Radiation in SU2.** SU2 has no surface-to-surface radiation, so the program
+computes it by ray casting on the shield surface — which facets the sun
+reaches, how much sky and ground each sees — and applies absorbed minus
+emitted radiation at the walls, the emission linearised about the wall
+temperature so SU2 solves it implicitly (a second pass re-linearises it). SU2 has no standard k-ε; its cases use SST.
+The Fluent package keeps to the specification (standard k-ε, DO radiation,
+conjugate solid).
+
 ---
 
 ## 10. Visualisation
@@ -696,7 +746,7 @@ startup.
 
 The **AI Assistant** tab lets you say what you want in ordinary language and
 have the program do it. The assistant reaches the platform through exactly the
-same fourteen tools the MCP server exposes — it can do what you can do through
+same fifteen tools the MCP server exposes — it can do what you can do through
 the interface, and nothing else.
 
 It runs on a model of your choice through [OpenRouter](https://openrouter.ai),

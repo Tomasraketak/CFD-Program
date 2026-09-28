@@ -556,6 +556,56 @@ analytický model průměruje.
 Analytický model zároveň připravuje linearizaci záření pro CFD výpočet, takže
 spolu spolupracují, nejsou to alternativy.
 
+
+### Studie radiačního štítu
+
+Druhá podzáložka, **Radiation shield study**, řeší stejnou otázku pro přirozeně
+větraný radiační štít (lamelové stínítko kolem teploměru): o kolik se vzduch u
+teploměru liší od skutečné teploty vzduchu a jak špatné to může být? Drží se
+referenční metodiky (Atmosphere 2026, 17(3), 272) a rozšiřuje ji o střechu
+vozidla.
+
+**Nastavení.** Štít ze STEP souboru, nebo vestavěný vícedeskový štít
+20 × 20 × 20 cm, uprostřed vzduchové domény 2000 × 2000 × 1440 mm (obojí lze
+měnit); bod teploměru vůči středu štítu; teplota vzduchu na vstupu a výchozí
+podmínka — vítr, sluneční záření shora (1000 W/m²) a spodek: **země**
+vyzařující dlouhovlnný tok (300 W/m²), nebo **střecha vozidla** s pevnou
+teplotou (343 K = 70 °C, která navíc ohřívá vzduch proudící nad ní). Vlastnosti
+povrchů: sluneční pohltivost a emisivita štítu, emisivita střechy, dlouhovlnné
+záření oblohy (auto: Swinbank), albedo země.
+
+**Nejisté vstupy.** Rychlost větru (0,5–5 m/s), sluneční záření shora
+(800–1200 W/m²) a záření zdola (300–800 W/m²; v režimu střechy určuje její
+teplotu přes q = ε σ T⁴), každý s rozdělením (rovnoměrné, normální,
+trojúhelníkové) a škálou (vítr se rozkládá logaritmicky).
+
+**Postup.**
+
+1. *Design of experiments* — face-centred central composite (15 bodů, jako
+   DesignXplorer), nebo Latin hypercube.
+2. *Spočtení design pointů* — **Run analytic study** je spočte okamžitým
+   zjednodušeným modelem; **Prepare CFD cases + Fluent package** vytvoří síť
+   domény, spočte paprsky pro radiaci a zapíše SU2 případy a balíček pro ANSYS
+   Fluent/Workbench; **Solve CFD design points** je spočte v SU2 zde (jeden
+   výpočet na bod, minuty až hodina), nebo se na výpočetním počítači spustí
+   `run_design_points.bat`; **Import solved design points** načte CSV spočtené
+   jinde (např. tabulku design pointů z Workbenche).
+3. *Response surface* — úplný kvadratický polynom nebo interpolace radiálními
+   bázemi; zobrazuje se chyba leave-one-out, protože to je poctivé číslo
+   přesnosti.
+4. *Monte Carlo* — 10 000 (až 2 000 000) náhodných podmínek na ploše: průměr,
+   rozptyl, **nejhorší případ i s jeho vstupy**, **spolehlivost**
+   (P(|dT| ≤ tolerance)) a citlivost na každý vstup. U analytického modelu se
+   nejhorší případ navíc přepočte přímo.
+
+**Radiace v SU2.** SU2 nemá radiaci povrch–povrch, takže ji program počítá
+vrháním paprsků po povrchu štítu — kam dopadá slunce, kolik oblohy a země
+ploška vidí — a pohlcené mínus vyzářené záření zadá na stěnách; vyzařování je
+linearizované kolem teploty stěny, takže ho SU2 řeší implicitně (druhý průchod
+ho přelinearizuje). SU2 nemá
+standardní k-ε; jeho případy používají SST. Balíček pro Fluent se drží zadání
+(standardní k-ε, DO radiace, pevná zóna štítu).
+
 ---
 
 ## 10. Vizualizace
@@ -687,7 +737,7 @@ spuštění.
 ## 12. AI asistent
 
 Záložka **AI Assistant** umožňuje napsat běžnou větou, co chcete, a nechat to
-program udělat. Asistent sahá na program přesně přes těch čtrnáct nástrojů,
+program udělat. Asistent sahá na program přesně přes těch patnáct nástrojů,
 které vystavuje MCP server — umí tedy to, co umíte vy přes rozhraní, a nic
 víc.
 

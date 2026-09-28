@@ -1644,9 +1644,21 @@ class SensorTab(QtWidgets.QWidget):
         splitter.addWidget(self._build_display())
         splitter.setSizes([420, 900])
 
+        from gui.shield_panel import ShieldStudyPanel
+
+        # Two studies of the same question -- how far a thermometer reads
+        # off true ambient: the BMP580 in its ram-air housing, and a
+        # naturally ventilated radiation shield explored by DoE, response
+        # surface and Monte Carlo.
+        self.shield_panel = ShieldStudyPanel(store)
+        self.shield_panel.statusMessage.connect(self.statusMessage)
+        self.modes = QtWidgets.QTabWidget()
+        self.modes.addTab(splitter, "BMP580 enclosure")
+        self.modes.addTab(self.shield_panel, "Radiation shield study")
+
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(6, 6, 6, 6)
-        layout.addWidget(splitter)
+        layout.addWidget(self.modes)
 
         self.recompute()
 

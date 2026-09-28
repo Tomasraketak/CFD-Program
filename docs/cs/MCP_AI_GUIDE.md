@@ -20,7 +20,7 @@ Jak program ovládat z AI asistenta a kompletní přehled nástrojů.
 
 Model Context Protocol (MCP) je standardní způsob, jak AI asistenti volají
 externí nástroje. AeroThermalStudio obsahuje MCP server, který vystavuje
-**čtrnáct nástrojů** pokrývajících vše, co umí program: import CAD, síťování,
+**patnáct nástrojů** pokrývajících vše, co umí program: import CAD, síťování,
 aerodynamickou i tepelnou simulaci, vykreslování, parametrické studie a správu
 projektů a nastavení.
 
@@ -116,7 +116,7 @@ asistent pracuje.
 
 ## 3. Přehled nástrojů
 
-Všech čtrnáct nástrojů vrací JSON objekt s polem `ok`. Při selhání je
+Všech patnáct nástrojů vrací JSON objekt s polem `ok`. Při selhání je
 `ok: false` a `error` nese zprávu určenou k jednání.
 
 ### 3.1 `set_geometry_and_mesh`
@@ -386,6 +386,50 @@ odmítnou, dokud nebylo ukázáno **a uživatel neodpověděl**. Asistent po
 náhledu ukončí tah; další zpráva uživatele je odpověď a opravené nastavení se
 ukáže znovu. Externí MCP klienti omezeni nejsou.
 
+
+### 3.15 `radiation_shield_study`
+
+Studie radiačního štítu (stínítka teploměru) podle referenční metodiky
+(Atmosphere 2026, 17(3), 272, rozšířené o střechu vozidla): Design of
+Experiments přes **rychlost větru na vstupu**, **sluneční záření shora** a
+**záření zdola**, **response surface** proložená spočtenými body a
+**Monte Carlo** analýza na této ploše. Cílová veličina je
+`T_monitor - T_inlet` v bodě teploměru.
+
+| Parametr | Typ | Poznámka |
+|---|---|---|
+| `action` | string | `analytic` (okamžitý orientační model), `prepare_cfd` (síť domény, paprsky pro radiaci, SU2 případy a balíček pro Fluent/Workbench), `solve_cfd` (SU2 na design pointech studie `study_id`; dlouhé), `import` (analýza CSV spočteného jinde), `export_fluent`, `status` |
+| `study_id` | string | `shield-...`; potřeba pro `solve_cfd`, `export_fluent`, `status` |
+| `setup` | objekt | Cokoli z: `shield_step_path` (prázdné = vestavěný 20cm vícedeskový štít), `scale_to_meters`, `shield_size_m`, `plate_count`, `domain_size_m` (výchozí `[2.0, 2.0, 1.44]`), `thermometer_xyz_m` (vůči středu štítu), `ambient_temp_c`, `wind_speed_ms`, `solar_flux_w_m2` (1000), `bottom_mode` (`ground_flux` nebo `roof_temperature`), `bottom_flux_w_m2` (300), `bottom_temperature_k` (343 = 70 °C), `roof_emissivity`, `sky_longwave_w_m2`, `ground_albedo`, `shield_solar_absorptivity`, `shield_emissivity`, `shield_conductivity_w_mk`, `ventilation_coefficient` |
+| `variables` | objekt | Pro každý vstup (`wind_speed_ms`, `solar_flux_w_m2`, `bottom_flux_w_m2`): `minimum`, `maximum`, `distribution` (`uniform`/`normal`/`triangular`), `mean`, `std`, `mode`, `scale` (`linear`/`log`). Výchozí 0,5–5 m/s (log), 800–1200 W/m², 300–800 W/m², rovnoměrně |
+| `study` | objekt | `doe` (`ccd` face-centred, 15 bodů; `lhs`), `doe_points`, `surrogate` (`quadratic`, `rbf`), `monte_carlo_samples` (10 000), `tolerance_k` (0,5), `seed` |
+| `cfd` | objekt | `mesh_resolution`, `turbulence_model` (`SST`/`SA`), `buoyancy`, `radiation_passes`, `iterations_first_pass`, `iterations_later_passes`, `radiation_classes`, `rays_per_face`, `mpi_ranks` |
+| `results_csv` | string | Pro `import`: `design_points.csv` s vyplněným `delta_t_k` (nebo `monitor_temp_k`), nebo export design pointů z Workbenche |
+| `max_points` | int | Pro `solve_cfd`: nejvýše tolik bodů na jedno volání |
+
+Vrací design pointy, kvalitu plochy (`r_squared`, `leave_one_out_rmse_k`) a
+souhrn Monte Carlo: průměr, rozptyl, percentily, **nejhorší případ i s jeho
+vstupy**, **spolehlivost** P(|dT| ≤ tolerance) a citlivosti (pořadová
+korelace).
+
+**Jak SU2 větev modeluje radiaci.** Nestlačitelný řešič SU2 nemá DO/S2S model,
+takže radiace se počítá mimo něj: paprsky z každé plošky štítu zjistí, kam
+dopadá slunce (lamely se navzájem stíní) a kolik oblohy a země ploška vidí;
+pohlcený tok mínus vlastní vyzařování plošky se zadá jako okrajová podmínka
+stěny, seskupená do několika markerů. Vyzařování (čtvrtá mocnina teploty) se
+linearizuje kolem teploty stěny (SU2 `MARKER_HEATTRANSFER`,
+h_r·(T_eq − T_stěna)), takže ho SU2 řeší implicitně; druhý průchod
+linearizuje kolem spočtené teploty a obvykle ji změní o méně než 0,01 K. Vedení tepla ve štítu se
+neřeší (tenké plastové desky); SU2 nemá standardní k-ε, používá se SST.
+Balíček pro Fluent se drží zadání přesně: standardní k-ε, DO radiace, pevná
+zóna štítu.
+
+**Výpočet jinde.** `prepare_cfd` zapíše `run_design_points.bat`/`.sh`, který
+spočte všechny body na počítači, kde se spustí, a složku `fluent/` s
+umístěným štítem a STEP souborem tekutiny, `design_points.csv`, journalem pro
+Fluent a README pro Workbench a DesignXplorer (CCD, response surface, Six
+Sigma Monte Carlo). Spočtené body se vrací přes `import`.
+
 ---
 
 ## 4. Hotové postupy
@@ -600,7 +644,7 @@ kontextem, ne jako měření.
 
 ## 9. Vestavěný asistent
 
-Těchto čtrnáct nástrojů pohání i asistenta **přímo v programu**, v záložce
+Těchto patnáct nástrojů pohání i asistenta **přímo v programu**, v záložce
 **AI Assistant**. Je pro obsluhu, která chce napsat požadavek a nechat ho
 provést, aniž by vůbec spouštěla externího MCP klienta.
 
