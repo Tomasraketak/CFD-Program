@@ -218,6 +218,18 @@ def test_a_workbench_export_is_understood(tmp_path):
     assert points[1].delta_t_k is None
 
 
+def test_a_monitor_temperature_in_celsius_is_converted(tmp_path):
+    path = tmp_path / "celsius.csv"
+    path.write_text(
+        "Name,P1 - wind_speed [m s^-1],P2 - solar_flux [W m^-2],"
+        "P3 - bottom_flux [W m^-2],P4 - monitor_temperature [C]\n"
+        "1,1.0,1000,300,25.40\n",
+        encoding="utf-8",
+    )
+    points = study.read_design_points_csv(path, ShieldSetup(ambient_temp_c=25.0))
+    assert points[0].delta_t_k == pytest.approx(0.40)
+
+
 def test_a_table_without_inputs_is_refused(tmp_path):
     path = tmp_path / "bad.csv"
     path.write_text("name,delta_t_k\nDP0,0.1\n", encoding="utf-8")

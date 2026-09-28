@@ -17,7 +17,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DOCS = PROJECT_ROOT / "docs"
 
 LANGUAGES = ("en", "cs")
-DOCUMENTS = ("TUTORIAL.md", "USER_GUIDE.md", "MCP_AI_GUIDE.md")
+DOCUMENTS = ("TUTORIAL.md", "USER_GUIDE.md", "MCP_AI_GUIDE.md", "SHIELD_STUDY_GUIDE.md")
 
 
 def read(language: str, name: str) -> str:

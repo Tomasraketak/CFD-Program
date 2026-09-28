@@ -263,6 +263,14 @@ class ShieldStudyPanel(QtWidgets.QWidget):
         form.addRow("Rays per facet", self.rays)
         self.ranks = _int_spin(1, 256, cfd.mpi_ranks)
         form.addRow("MPI ranks", self.ranks)
+        self.solve_limit = _int_spin(0, 500, 0)
+        self.solve_limit.setSpecialValueText("all")
+        self.solve_limit.setToolTip(
+            "How many unsolved design points 'Solve CFD design points' runs "
+            "this time; 1 solves just the centre point (DP0), e.g. to compare "
+            "meshes. 'all' solves every one."
+        )
+        form.addRow("Points to solve now", self.solve_limit)
         layout.addWidget(group)
 
         # --- actions -------------------------------------------------------------
@@ -567,6 +575,8 @@ class ShieldStudyPanel(QtWidgets.QWidget):
         from backend import shield_workflow
         from backend.runner import SU2Runner
 
+        limit = self.solve_limit.value() or None
+
         def done(summary: dict) -> None:
             for failure in summary.get("failures", []):
                 self.append_log(f"FAILED {failure}")
@@ -577,7 +587,9 @@ class ShieldStudyPanel(QtWidgets.QWidget):
                 self.append_log(summary["analysis_pending"])
 
         self._start(
-            lambda progress: shield_workflow.solve_cfd(self.store, study, SU2Runner(), progress),
+            lambda progress: shield_workflow.solve_cfd(
+                self.store, study, SU2Runner(), progress, max_points=limit
+            ),
             done,
             f"Solving the design points of {study} with SU2 ...",
         )

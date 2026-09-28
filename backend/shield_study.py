@@ -649,6 +649,13 @@ def read_design_points_csv(
         raise ShieldStudyError(
             f"{path.name} has neither a delta_t_k nor a monitor_temp_k column"
         )
+    # A monitor temperature exported in Celsius ("[C]", "[degC]", "°C").
+    monitor_offset = 0.0
+    if columns["monitor_temp_k"] is not None:
+        unit = header[columns["monitor_temp_k"]].lower()
+        unit = unit.split("[", 1)[1] if "[" in unit else ""
+        if "c" in unit.replace("k", "") and "k" not in unit:
+            monitor_offset = 273.15
 
     def number(row: list[str], field: str) -> float | None:
         index = columns[field]
@@ -662,7 +669,11 @@ def read_design_points_csv(
             delta = number(row, "delta_t_k")
             if delta is None:
                 monitor = number(row, "monitor_temp_k")
-                delta = None if monitor is None else monitor - setup.ambient_temp_k()
+                delta = (
+                    None
+                    if monitor is None
+                    else monitor + monitor_offset - setup.ambient_temp_k()
+                )
             name_index = columns["name"]
             name = (
                 row[name_index].strip()

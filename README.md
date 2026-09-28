@@ -30,6 +30,7 @@ Full guides are in **[docs/](docs/README.md)**, in English and Czech
 |---|---|---|
 | Step-by-step course | [Tutorial](docs/en/TUTORIAL.md) | [Tutoriál](docs/cs/TUTORIAL.md) |
 | Every setting explained | [User Guide](docs/en/USER_GUIDE.md) | [Uživatelská příručka](docs/cs/USER_GUIDE.md) |
+| Radiation shield study with Ansys Student, from scratch | [Shield Study Guide](docs/en/SHIELD_STUDY_GUIDE.md) | [Studie radiačního štítu](docs/cs/SHIELD_STUDY_GUIDE.md) |
 | AI agent interface | [MCP and AI Guide](docs/en/MCP_AI_GUIDE.md) | [MCP a AI](docs/cs/MCP_AI_GUIDE.md) |
 
 ---

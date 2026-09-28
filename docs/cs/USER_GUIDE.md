@@ -559,6 +559,9 @@ spolu spolupracují, nejsou to alternativy.
 
 ### Studie radiačního štítu
 
+> Podrobný návod pro začátečníky krok za krokem, včetně Ansys Student, je
+> v **[Studii radiačního štítu](SHIELD_STUDY_GUIDE.md)**.
+
 Druhá podzáložka, **Radiation shield study**, řeší stejnou otázku pro přirozeně
 větraný radiační štít (lamelové stínítko kolem teploměru): o kolik se vzduch u
 teploměru liší od skutečné teploty vzduchu a jak špatné to může být? Drží se
@@ -587,7 +590,8 @@ trojúhelníkové) a škálou (vítr se rozkládá logaritmicky).
    zjednodušeným modelem; **Prepare CFD cases + Fluent package** vytvoří síť
    domény, spočte paprsky pro radiaci a zapíše SU2 případy a balíček pro ANSYS
    Fluent/Workbench; **Solve CFD design points** je spočte v SU2 zde (jeden
-   výpočet na bod, minuty až hodina), nebo se na výpočetním počítači spustí
+   výpočet na bod, minuty až hodina; *Points to solve now* omezí jejich počet,
+   např. 1 = jen středový bod pro porovnání sítí), nebo se na výpočetním počítači spustí
    `run_design_points.bat`; **Import solved design points** načte CSV spočtené
    jinde (např. tabulku design pointů z Workbenche).
 3. *Response surface* — úplný kvadratický polynom nebo interpolace radiálními

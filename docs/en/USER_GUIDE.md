@@ -567,6 +567,9 @@ two work together rather than being alternatives.
 
 ### Radiation shield study
 
+> A step-by-step walk-through for beginners, including Ansys Student, is in
+> the **[Radiation Shield Study Guide](SHIELD_STUDY_GUIDE.md)**.
+
 The second sub-tab, **Radiation shield study**, answers the same question for a
 naturally ventilated radiation shield (a louvred screen round a thermometer):
 how far does the air at the thermometer sit from the true air temperature, and
@@ -595,7 +598,8 @@ a scale (wind is spread logarithmically).
    instant lumped model; **Prepare CFD cases + Fluent package** meshes the
    domain, casts the radiation rays and writes the SU2 cases plus an ANSYS
    Fluent/Workbench package; **Solve CFD design points** runs SU2 on them here
-   (one solve per point, minutes to an hour each), or run
+   (one solve per point, minutes to an hour each; *Points to solve now* limits
+   how many, e.g. 1 for just the centre point when comparing meshes), or run
    `run_design_points.bat` on the solving computer; **Import solved design
    points** reads a CSV solved elsewhere (e.g. a Workbench design-point table).
 3. *Response surface* — full quadratic polynomial or radial basis
