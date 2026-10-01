@@ -174,3 +174,28 @@ def test_the_panels_sweep_and_show_the_rows(store):
     housing.sweep_controls.set_values("speed_ms", 5.0, 35.0, 5.0)
     housing._show_sweep(sweeps.sps30_sweep(Sps30Setup(), *housing.sweep_controls.values()))
     assert housing.sweep_view.table.rowCount() == 7
+
+
+def test_a_transcript_picture_opens_in_a_zoomable_viewer(tmp_path):
+    from PySide6 import QtCore
+
+    from gui.ai_panel import IMAGE_SCHEME, ImageViewer
+    from gui.main_window import build_application
+
+    app = build_application([])
+    picture = tmp_path / "p.png"
+    from PySide6 import QtGui
+
+    image = QtGui.QImage(800, 400, QtGui.QImage.Format.Format_RGB32)
+    image.fill(0x336699)
+    image.save(str(picture))
+    viewer = ImageViewer(picture)
+    viewer.show()
+    app.processEvents()
+    viewer.actual_size()
+    assert viewer.label.pixmap().width() == 800
+    viewer.set_zoom(2.0)
+    assert viewer.label.pixmap().width() == 1600
+    viewer.close()
+    url = QtCore.QUrl(IMAGE_SCHEME + ":" + str(picture))
+    assert url.scheme() == IMAGE_SCHEME and url.path() == str(picture)

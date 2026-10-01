@@ -735,7 +735,10 @@ v záložce Aerodynamics, Machův řez z boku a tlak na povrchu se nakreslí
 automaticky.
 
 Obrázky, které vykreslí asistent, se objeví i přímo v jeho konverzaci,
-s odkazem rovnou do záložky Graphics.
+s odkazem rovnou do záložky Graphics. Kliknutím na obrázek (nebo na
+**Enlarge**) se otevře v plné velikosti ve vlastním okně: kolečko myši nebo
++/− přibližuje, tažení posouvá, 0 přizpůsobí oknu, 1 je skutečná velikost,
+dvojklik přepíná; je tam i **Save as…** a **Open externally**.
 
 Samotné soubory jsou v `runs/<sim_id>/renders/` v datové složce.
 

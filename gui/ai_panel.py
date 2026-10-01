@@ -55,6 +55,8 @@ GRAPHICS_SCHEME = "ats-graphics"
 # conversation picked up again.
 RUN_SCHEME = "ats-run"
 PROJECT_SCHEME = "ats-project"
+# A click on a picture in the transcript opens it full size in a viewer.
+IMAGE_SCHEME = "ats-image"
 
 # Width of a rendered image shown inline in the transcript, in pixels.
 TRANSCRIPT_IMAGE_WIDTH = 420
@@ -1090,19 +1092,25 @@ class AITab(QtWidgets.QWidget):
         """
         url = QtCore.QUrl.fromLocalFile(str(path)).toString()
         target = QtCore.QUrl(GRAPHICS_SCHEME + ":" + str(path)).toString()
+        viewer = QtCore.QUrl(IMAGE_SCHEME + ":" + str(path)).toString()
         self._append(
             f'<p style="margin:4px 0 0 14px;">'
-            f'<a href="{html.escape(target)}"><img src="{html.escape(url)}" '
+            f'<a href="{html.escape(viewer)}"><img src="{html.escape(url)}" '
             f'width="{TRANSCRIPT_IMAGE_WIDTH}"></a><br>'
+            f'<a href="{html.escape(viewer)}" style="color:{ACCENT};">'
+            f"Enlarge</a>"
+            f'<span style="color:{TEXT_MUTED};"> (or click the picture) · </span>'
             f'<a href="{html.escape(target)}" style="color:{ACCENT};">'
             f"Open in the Graphics tab</a>"
-            f'<span style="color:{TEXT_MUTED};"> — view full size and export</span>'
             f"</p>"
         )
         self.imageProduced.emit(str(path))
 
     def _on_link(self, url: QtCore.QUrl) -> None:
         """Follow a link clicked in the transcript."""
+        if url.scheme() == IMAGE_SCHEME:
+            self.open_image(url.path())
+            return
         if url.scheme() == GRAPHICS_SCHEME:
             self.showGraphics.emit(url.path())
             return
@@ -1113,6 +1121,18 @@ class AITab(QtWidgets.QWidget):
             self.openProject.emit(url.path())
             return
         QtGui.QDesktopServices.openUrl(url)
+
+    def open_image(self, path: str | Path) -> "ImageViewer | None":
+        """Show a transcript picture full size in its own window."""
+        path = Path(path)
+        if not path.is_file():
+            self._warn(f"The picture is no longer there:\n{path}")
+            return None
+        viewer = ImageViewer(path, self)
+        self._viewers = [v for v in getattr(self, "_viewers", []) if v.isVisible()]
+        self._viewers.append(viewer)
+        viewer.show()
+        return viewer
 
     def _append_note(self, text: str) -> None:
         """Add an italic note."""
@@ -1200,3 +1220,123 @@ def _wrap(layout: QtWidgets.QLayout) -> QtWidgets.QWidget:
     container = QtWidgets.QWidget()
     container.setLayout(layout)
     return container
+
+
+class ImageViewer(QtWidgets.QDialog):
+    """A picture from the transcript, full size: zoom, fit, save, open.
+
+    Mouse wheel (or + / -) zooms, 0 fits the window, 1 is actual size; drag
+    to pan when zoomed in.
+    """
+
+    def __init__(self, path: Path, parent: QtWidgets.QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.path = Path(path)
+        self.setWindowTitle(self.path.name)
+        self.setWindowFlag(QtCore.Qt.WindowType.WindowMaximizeButtonHint, True)
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        self.pixmap = QtGui.QPixmap(str(self.path))
+        self.zoom = 1.0
+        self._fit = True
+
+        self.label = QtWidgets.QLabel()
+        self.label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.scroll = QtWidgets.QScrollArea()
+        self.scroll.setWidget(self.label)
+        self.scroll.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.scroll.viewport().installEventFilter(self)
+        self._drag: QtCore.QPoint | None = None
+
+        bar = QtWidgets.QHBoxLayout()
+        for text, slot in (
+            ("Fit", self.fit), ("100 %", self.actual_size),
+            ("−", lambda: self.set_zoom(self.zoom / 1.25)),
+            ("+", lambda: self.set_zoom(self.zoom * 1.25)),
+            ("Save as…", self.save_as), ("Open externally", self.open_externally),
+        ):
+            button = QtWidgets.QPushButton(text)
+            button.clicked.connect(slot)
+            bar.addWidget(button)
+        bar.addStretch(1)
+        self.zoom_label = QtWidgets.QLabel()
+        bar.addWidget(self.zoom_label)
+
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.addLayout(bar)
+        layout.addWidget(self.scroll, 1)
+        screen = QtGui.QGuiApplication.primaryScreen()
+        available = screen.availableGeometry() if screen else QtCore.QRect(0, 0, 1600, 1000)
+        self.resize(
+            min(self.pixmap.width() + 40, int(available.width() * 0.9)),
+            min(self.pixmap.height() + 80, int(available.height() * 0.9)),
+        )
+        for key, slot in (("+", lambda: self.set_zoom(self.zoom * 1.25)),
+                          ("=", lambda: self.set_zoom(self.zoom * 1.25)),
+                          ("-", lambda: self.set_zoom(self.zoom / 1.25)),
+                          ("0", self.fit), ("1", self.actual_size)):
+            QtGui.QShortcut(QtGui.QKeySequence(key), self, activated=slot)
+        QtCore.QTimer.singleShot(0, self.fit)
+
+    def fit(self) -> None:
+        if self.pixmap.isNull():
+            return
+        area = self.scroll.viewport().size()
+        scale = min(area.width() / self.pixmap.width(), area.height() / self.pixmap.height())
+        self._fit = True
+        self._apply(max(0.05, min(scale, 1.0)))
+
+    def actual_size(self) -> None:
+        self._fit = False
+        self._apply(1.0)
+
+    def set_zoom(self, zoom: float) -> None:
+        self._fit = False
+        self._apply(max(0.05, min(zoom, 8.0)))
+
+    def _apply(self, zoom: float) -> None:
+        self.zoom = zoom
+        size = self.pixmap.size() * zoom
+        self.label.setPixmap(self.pixmap.scaled(
+            size, QtCore.Qt.AspectRatioMode.KeepAspectRatio,
+            QtCore.Qt.TransformationMode.SmoothTransformation,
+        ))
+        self.label.resize(self.label.pixmap().size())
+        self.zoom_label.setText(f"{zoom * 100:.0f} %")
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt override
+        super().resizeEvent(event)
+        if self._fit:
+            self.fit()
+
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802 - Qt override
+        kind = event.type()
+        if kind == QtCore.QEvent.Type.Wheel:
+            step = 1.15 if event.angleDelta().y() > 0 else 1 / 1.15
+            self.set_zoom(self.zoom * step)
+            return True
+        if kind == QtCore.QEvent.Type.MouseButtonPress:
+            self._drag = event.position().toPoint()
+        elif kind == QtCore.QEvent.Type.MouseMove and self._drag is not None:
+            delta = event.position().toPoint() - self._drag
+            self._drag = event.position().toPoint()
+            for bar, d in ((self.scroll.horizontalScrollBar(), delta.x()),
+                           (self.scroll.verticalScrollBar(), delta.y())):
+                bar.setValue(bar.value() - d)
+        elif kind == QtCore.QEvent.Type.MouseButtonRelease:
+            self._drag = None
+        elif kind == QtCore.QEvent.Type.MouseButtonDblClick:
+            self.actual_size() if self._fit else self.fit()
+            return True
+        return super().eventFilter(watched, event)
+
+    def save_as(self) -> None:
+        target, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, "Save picture", str(Path.home() / self.path.name), "PNG image (*.png)"
+        )
+        if target:
+            import shutil
+
+            shutil.copyfile(self.path, target)
+
+    def open_externally(self) -> None:
+        QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(self.path)))

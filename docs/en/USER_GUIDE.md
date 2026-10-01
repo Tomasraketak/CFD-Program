@@ -744,7 +744,10 @@ Aerodynamics tab, a Mach slice from the side and the surface pressure are
 drawn automatically.
 
 Images the assistant renders also appear inline in its conversation, with a
-link straight to the Graphics tab.
+link straight to the Graphics tab. Click a picture (or **Enlarge**) to open
+it full size in its own window: mouse wheel or +/− zooms, drag pans, 0 fits,
+1 is actual size, double-click toggles; **Save as…** and **Open externally**
+are there too.
 
 The files themselves are in `runs/<sim_id>/renders/` under the data folder.
 
