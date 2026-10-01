@@ -43,6 +43,17 @@ The SPS30 measures dust by drawing air in with a weak fan. It needs:
 - **no water** — a droplet inside ruins it,
 - **fresh air** — so it does not measure stale air trapped in the housing.
 
+![The built-in SPS30 housing from outside and cut open](../images/sps30_housing_example.png)
+
+*Left: the built-in 120 × 70 × 80 mm housing from outside, with the oncoming
+air (here 20 m/s, yaw 10°) and one of the two side slits. Right: cut open
+lengthwise — air comes in through the slit, drops through the plenum, has
+to turn over the baffle, and only then reaches the sensor chamber and the
+SPS30 intake (green); the purple arrow is the SPS30's own fan sucking air
+in; water that gets in leaves through the weep hole. The tab draws the same
+for your own STEP (**3D geometry**, button **Draw 3D geometry**), and so
+does the assistant.*
+
 The housing does this with three tricks:
 
 1. **Static slits on the sides** instead of a forward scoop. The side of a
@@ -147,6 +158,15 @@ a 4 mm weep hole in the floor.
 
 The lumped model is **indicative** — it shows trends (when the face velocity
 rises, which droplets get through), not final numbers.
+
+### 5.1 One input at fixed steps (sweep)
+
+**Sweep one input** steps one input (speed, yaw or droplet size) from *From*
+to *To* in *Step*, with the others at the baseline values, and computes every
+point directly with the lumped model — a chart and a table on the **Sweep**
+tab, saved as `sweep.csv`. For the assistant: *"SPS30 sweep, droplets
+10–200 µm every 10"* (action `sweep`). Don't read such tables off the
+response surface — that is a fit, not the model.
 
 ---
 

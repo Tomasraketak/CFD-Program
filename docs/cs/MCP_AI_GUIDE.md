@@ -398,7 +398,7 @@ Experiments přes **rychlost větru na vstupu**, **sluneční záření shora** 
 
 | Parametr | Typ | Poznámka |
 |---|---|---|
-| `action` | string | `analytic` (okamžitý orientační model), `prepare_cfd` (síť domény, paprsky pro radiaci, SU2 případy a balíček pro Fluent/Workbench), `solve_cfd` (SU2 na design pointech studie `study_id`; dlouhé), `import` (analýza CSV spočteného jinde), `export_fluent`, `status` |
+| `action` | string | `analytic` (okamžitý orientační model), `sweep` (model spočtený přímo po pevných krocích jednoho vstupu), `preview` (obrázek štítu, zatížení a domény), `prepare_cfd` (síť domény, paprsky pro radiaci, SU2 případy a balíček pro Fluent/Workbench), `solve_cfd` (SU2 na design pointech studie `study_id`; dlouhé), `import` (analýza CSV spočteného jinde), `export_fluent`, `status` |
 | `study_id` | string | `shield-...`; potřeba pro `solve_cfd`, `export_fluent`, `status` |
 | `setup` | objekt | Cokoli z: `shield_step_path` (prázdné = vestavěný 20cm vícedeskový štít), `scale_to_meters`, `shield_size_m`, `plate_count`, `domain_size_m` (výchozí `[2.0, 2.0, 1.44]`), `thermometer_xyz_m` (vůči středu štítu), `ambient_temp_c`, `wind_speed_ms`, `solar_flux_w_m2` (1000), `bottom_mode` (`ground_flux` nebo `roof_temperature`), `bottom_flux_w_m2` (300), `bottom_temperature_k` (343 = 70 °C), `roof_emissivity`, `sky_longwave_w_m2`, `ground_albedo`, `shield_solar_absorptivity`, `shield_emissivity`, `shield_conductivity_w_mk`, `ventilation_coefficient` |
 | `variables` | objekt | Pro každý vstup (`wind_speed_ms`, `solar_flux_w_m2`, `bottom_flux_w_m2`): `minimum`, `maximum`, `distribution` (`uniform`/`normal`/`triangular`), `mean`, `std`, `mode`, `scale` (`linear`/`log`). Výchozí 0,5–5 m/s (log), 800–1200 W/m², 300–800 W/m², rovnoměrně |
@@ -406,6 +406,7 @@ Experiments přes **rychlost větru na vstupu**, **sluneční záření shora** 
 | `cfd` | objekt | `mesh_resolution`, `turbulence_model` (`SST`/`SA`), `buoyancy`, `radiation_passes`, `iterations_first_pass`, `iterations_later_passes`, `radiation_classes`, `rays_per_face`, `mpi_ranks` |
 | `results_csv` | string | Pro `import`: `design_points.csv` s vyplněným `delta_t_k` (nebo `monitor_temp_k`), nebo export design pointů z Workbenche |
 | `max_points` | int | Pro `solve_cfd`: nejvýše tolik bodů na jedno volání |
+| `sweep_variable`, `sweep_start`, `sweep_stop`, `sweep_step` | string, čísla | Pro `sweep`: `wind_speed_ms`, `solar_flux_w_m2` nebo `bottom_flux_w_m2`, od, do a krok (např. 0,2; 5; 0,2). Ostatní vstupy zůstanou na výchozích hodnotách `setup` |
 
 Vrací design pointy, kvalitu plochy (`r_squared`, `leave_one_out_rmse_k`) a
 souhrn Monte Carlo: průměr, rozptyl, percentily, **nejhorší případ i s jeho
@@ -423,6 +424,14 @@ linearizuje kolem spočtené teploty a obvykle ji změní o méně než 0,01 K. 
 neřeší (tenké plastové desky); SU2 nemá standardní k-ε, používá se SST.
 Balíček pro Fluent se drží zadání přesně: standardní k-ε, DO radiace, pevná
 zóna štítu.
+
+**Sweepy a obrázky.** `sweep` odpovídá na otázku „co dělá jeden vstup“ po
+zadaných krocích: každý řádek je přímo analytický model, vrací se jako
+`rows` a ukládá jako `sweep.csv` s grafem (`image_path`). Tabulku po pevných
+krocích nikdy nečtěte z response surface — kvadratická plocha proložená 15
+body si vymýšlí minima a mimo svůj rozsah nic neznamená. `preview` (a také
+`analytic`/`sweep` jako `geometry_image_path`) nakreslí geometrii; panel
+asistenta ukáže oba obrázky.
 
 **Výpočet jinde.** `prepare_cfd` zapíše `run_design_points.bat`/`.sh`, který
 spočte všechny body na počítači, kde se spustí, a složku `fluent/` s
@@ -444,7 +453,7 @@ dostaly do krytu a doletěly na čelo senzoru, cíl 0) a `exchange_flow_lpm`
 
 | Parametr | Typ | Poznámka |
 |---|---|---|
-| `action` | string | `analytic`, `prepare_cfd`, `solve_cfd`, `import`, `export_fluent`, `status` |
+| `action` | string | `analytic`, `sweep`, `preview`, `prepare_cfd`, `solve_cfd`, `import`, `export_fluent`, `status` |
 | `study_id` | string | `sps30-...` |
 | `setup` | objekt | `housing_step_path` (prázdné = vestavěný kryt 120 × 70 × 80 mm), `scale_to_meters`, `sensor_face_center_m`, `sensor_face_normal`, `sensor_face_size_m`, `chamber_plane_x_m`, `fan_enabled`, `fan_flow_lpm`, `forward_axis`, `domain_multipliers`, `ambient_temp_c`, `water_density_kg_m3`, výchozí `speed_ms`/`yaw_deg`/`droplet_um`, rozměry pro zjednodušený model (`port_area_m2`, `port_width_m`, `plenum_area_m2`, `baffle_gap_m`, `chamber_area_m2`, `chamber_fraction`), cíle `max_face_velocity_ms`, `max_penetration`, `min_exchange_flow_lpm` |
 | `variables` | objekt | `speed_ms` (5–35), `yaw_deg` (−20..20), `droplet_um` (10–2000, log): `minimum`, `maximum`, `distribution`, `mean`, `std`, `mode`, `log` |
@@ -452,10 +461,15 @@ dostaly do krytu a doletěly na čelo senzoru, cíl 0) a `exchange_flow_lpm`
 | `cfd` | objekt | `mesh_resolution`, `iterations`, `mpi_ranks`, `droplets`, `random_walk`, `seed` |
 | `results_csv` | string | Pro `import` — vyplněný `design_points.csv`, nebo export z Workbenche (`speed`, `yaw`, `droplet_diameter`, `face_velocity`, `sensor_trap_count`, `injected`, `ux_integral`) |
 | `max_points` | int | Pro `solve_cfd` |
+| `sweep_variable`, `sweep_start`, `sweep_stop`, `sweep_step` | string, čísla | Pro `sweep`: `speed_ms`, `yaw_deg` nebo `droplet_um`, od, do a krok |
 
 Vrací spolehlivost (podíl náhodných podmínek, které splní všechny cíle),
 podíl pro každý cíl, nejhorší nevyhovující podmínku a pro každý výstup
 statistiky, nejhorší případ, citlivosti a chybu leave-one-out.
+
+`sweep` a `preview` fungují jako u štítu; `preview` ukáže kryt zvenku a v
+řezu (štěrbiny, plenum, přepážka, komora senzoru, sání SPS30 s
+ventilátorem, odvodňovací otvor).
 
 **Jak SU2 větev řeší kapky.** SU2 nemá model diskrétní fáze. Vzduch se spočte
 s SST k-ω (podle zadání); program pak kapky sleduje v tomto poli sám —

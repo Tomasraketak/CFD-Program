@@ -40,6 +40,15 @@ thermometer.
 
 The shield is not perfect either:
 
+![The built-in shield cut open along the wind, and in its domain](../images/radiation_shield_example.png)
+
+*Left: the built-in 20 cm shield cut open along the wind — six louvre plates
+on four posts, the thermometer (red) in the middle, the sun (yellow) from
+above, long-wave radiation (orange) from below, the wind (blue) from the
+left. Right: the shield in the middle of the 2 × 2 × 1.44 m air domain. The
+tab draws the same picture for your own STEP in **3D geometry** (button
+**Draw 3D geometry**), and the assistant shows it too.*
+
 - **Sun from above** heats the top plate; the warm plate heats the air
   flowing past it towards the thermometer.
 - **Radiation from below** — long-wave (thermal) radiation from the ground,
@@ -188,6 +197,23 @@ Within a second you get result cards, a histogram and a plot of ΔT against
 wind. The analytic model is **simplified** (one temperature for the whole
 shield) — good for understanding trends and quickly comparing variants (what
 a darker finish does, say), **not** for the final number.
+
+### 5.1 One input at fixed steps (sweep)
+
+To see how ΔT changes with **one** input — wind from 0.2 to 5 m/s every
+0.2 m/s, say — use the box **Sweep one input**: choose the input, *From*,
+*To* and *Step*, and press **Run sweep**. The other inputs stay at the
+*Baseline condition* values. The **Sweep** tab shows a chart and a table of
+every point, saved as `sweep.csv` (and `sweep.png`) in the program's
+`sweeps` folder. For the assistant: *"radiation shield sweep, wind 0.2–5 m/s
+every 0.2"* (action `sweep`).
+
+Every point of a sweep is computed **directly** by the model. Never read
+such a table off the response surface: a quadratic surface fitted on 15
+points on 0.5–5 m/s gives 0.62 K at 0.2 m/s instead of 1.14 K and invents a
+minimum and negative values around 3.6 m/s.
+
+![Wind sweep, sun 1000 W/m², bottom 550 W/m²](../images/radiation_shield_wind_sweep.png)
 
 ---
 

@@ -148,6 +148,17 @@ Working rules:
   field (drag, gravity, random walk); the Fluent package uses DPM. Say
   plainly that fine mist cannot be stopped by inertia alone when the
   results show it.
+- For both sensor studies, when the operator asks for values at given
+  steps or over a range of one input ("wind 0.2-5 m/s every 0.2"), use
+  action 'sweep' with sweep_variable, sweep_start, sweep_stop and
+  sweep_step as plain numbers; the other inputs stay at the setup baseline
+  (change it through setup, e.g. {"bottom_flux_w_m2": 550}). Present the
+  returned rows as the table. Never build such a table by reading or
+  extrapolating a response surface: a quadratic fitted on 15 points
+  invents minima and sign changes and is meaningless outside its range.
+- When the operator wants to see what a shield or housing looks like, use
+  action 'preview'; 'analytic' and 'sweep' also return the picture
+  (geometry_image_path), which the panel shows.
 - Runtimes vary enormously: the analytical sensor model returns in
   milliseconds, a mesh takes minutes, and a sweep takes its point count times
   3-8 minutes. Tell the operator what a step will cost before starting it.

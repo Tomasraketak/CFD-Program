@@ -273,6 +273,21 @@ class ShieldStudyPanel(QtWidgets.QWidget):
         form.addRow("Points to solve now", self.solve_limit)
         layout.addWidget(group)
 
+        # --- sweep -------------------------------------------------------------
+        from gui.study_extras import SweepControls
+
+        self.sweep_controls = SweepControls(
+            {name: VARIABLE_LABELS[name] for name in VARIABLE_NAMES},
+            {
+                "wind_speed_ms": (0.2, 5.0, 0.2),
+                "solar_flux_w_m2": (0.0, 1200.0, 100.0),
+                "bottom_flux_w_m2": (300.0, 800.0, 50.0),
+            },
+        )
+        self.sweep_controls.run_button.clicked.connect(self.run_sweep)
+        self.sweep_controls.preview_button.clicked.connect(self.draw_geometry)
+        layout.addWidget(self.sweep_controls)
+
         # --- actions -------------------------------------------------------------
         self.run_button = QtWidgets.QPushButton("Run analytic study")
         self.run_button.setObjectName("primary")
@@ -351,7 +366,10 @@ class ShieldStudyPanel(QtWidgets.QWidget):
             ["Point", "Wind [m/s]", "Solar [W/m2]", "Bottom [W/m2]", "dT [K]"]
         )
         self.points_table.horizontalHeader().setStretchLastSection(True)
-        layout.addWidget(self.points_table, 1)
+        from gui.study_extras import results_tabs
+
+        self.result_tabs, self.sweep_view, self.geometry_view = results_tabs(self.points_table)
+        layout.addWidget(self.result_tabs, 2)
 
         self.log = QtWidgets.QPlainTextEdit()
         self.log.setReadOnly(True)
@@ -522,6 +540,56 @@ class ShieldStudyPanel(QtWidgets.QWidget):
             lambda progress: shield_workflow.run_analytic(self.store, params),
             self._show_result,
             "Running the analytic study ...",
+        )
+
+    def run_sweep(self) -> None:
+        """Step one input with the analytical model and show every point."""
+        params = self._params_or_warn()
+        if params is None:
+            return
+        from backend import parameter_sweep as sweeps
+        from core.platform_env import data_root
+
+        variable, start, stop, step = self.sweep_controls.values()
+        try:
+            sweeps.sweep_values(start, stop, step)
+        except sweeps.SweepError as error:
+            QtWidgets.QMessageBox.warning(self, "Sweep", str(error))
+            return
+        self._start(
+            lambda progress: sweeps.save_sweep(
+                sweeps.shield_sweep(params.setup, variable, start, stop, step),
+                data_root() / "sweeps",
+            ),
+            self._show_sweep,
+            f"Sweeping {variable} from {start:g} to {stop:g} in steps of {step:g} ...",
+        )
+
+    def _show_sweep(self, result) -> None:
+        self.sweep_view.show_result(result)
+        self.result_tabs.setCurrentWidget(self.sweep_view)
+        for note in result.notes:
+            self.append_log(note)
+        self.statusMessage.emit(f"Sweep: {len(result.rows)} points solved")
+
+    def draw_geometry(self) -> None:
+        """Draw the shield the study meshes, with the sun, bottom and wind."""
+        params = self._params_or_warn()
+        if params is None:
+            return
+        self._draw_geometry_for(params.setup, switch=True)
+
+    def _draw_geometry_for(self, setup, switch: bool = False) -> None:
+        from backend.study_preview import cached_preview
+        from gui.study_extras import run_in_background
+
+        def done(path) -> None:
+            self.geometry_view.show_image(path)
+            if switch:
+                self.result_tabs.setCurrentWidget(self.geometry_view)
+
+        run_in_background(
+            self, lambda: cached_preview("shield", setup), done, "Drawing the shield geometry ..."
         )
 
     def run_analytic_now(self) -> ShieldStudyResult | None:
@@ -700,6 +768,8 @@ class ShieldStudyPanel(QtWidgets.QWidget):
             for column, value in enumerate(values):
                 self.points_table.setItem(row, column, QtWidgets.QTableWidgetItem(value))
         self._draw_charts(result)
+        if self.geometry_view.path is None and self.isVisible():
+            self._draw_geometry_for(result.params.setup)
         if refresh and result.study_id:
             self.refresh_studies(select=result.study_id)
         self.statusMessage.emit(

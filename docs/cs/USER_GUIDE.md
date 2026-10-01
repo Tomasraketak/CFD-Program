@@ -610,6 +610,16 @@ ho přelinearizuje). SU2 nemá
 standardní k-ε; jeho případy používají SST. Balíček pro Fluent se drží zadání
 (standardní k-ε, DO radiace, pevná zóna štítu).
 
+**Sweep a obrázek.** *Sweep one input* projde jeden vstup od *From* do *To*
+po *Step* (např. vítr 0,2–5 m/s po 0,2) s ostatními na výchozích hodnotách a
+každý bod spočítá přímo analytickým modelem; záložka **Sweep** pod grafy
+ukáže graf a všechny řádky, uložené i jako `sweep.csv` ve složce `sweeps`.
+**Draw 3D geometry** (spustí se i samo s první studií) ukáže na záložce
+**3D geometry** štít v řezu s teploměrem, sluncem, zářením zespodu a větrem,
+a štít ve výpočetní doméně.
+
+![Náhled radiačního štítu](../images/radiation_shield_example.png)
+
 
 ### Studie krytu SPS30
 
@@ -629,6 +639,13 @@ model.
 
 **Vstupy.** Rychlost platformy (5–35 m/s), stočení/yaw (−20..20°, boční vítr)
 a průměr kapek (10–2000 µm, logaritmicky), každý s rozdělením.
+
+**Sweep a obrázek.** Stejně jako u štítu: *Sweep one input* (rychlost, yaw
+nebo velikost kapek po pevných krocích, počítáno přímo) a **Draw 3D
+geometry** — kryt zvenku a v řezu se štěrbinami, plenem, přepážkou, komorou
+senzoru, sáním SPS30 s ventilátorem a odvodňovacím otvorem.
+
+![Náhled krytu SPS30](../images/sps30_housing_example.png)
 
 **Postup** — jako u studie radiačního štítu: **Run analytic study**
 (zjednodušený model, okamžitě), **Prepare CFD cases + Fluent package**,

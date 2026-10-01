@@ -1185,6 +1185,66 @@ def run_sensor_thermal_simulation(
 # ---------------------------------------------------------------------------
 
 
+def _geometry_image(kind: str, setup: Any) -> dict[str, Any]:
+    """A picture of the study geometry for a reply, or nothing if it fails.
+
+    Best effort: a study result is worth returning even when the drawing
+    cannot be made (no OpenGL, an unreadable STEP).
+    """
+    try:
+        from backend.study_preview import cached_preview
+
+        return {"geometry_image_path": str(cached_preview(kind, setup))}
+    except Exception as error:  # noqa: BLE001 - optional extra
+        return {"geometry_image_note": f"geometry picture unavailable: {error}"}
+
+
+def _study_preview(kind: str, setup: Any) -> dict[str, Any]:
+    """Draw the study geometry with its loads."""
+    try:
+        from backend.study_preview import cached_preview
+
+        path = cached_preview(kind, setup)
+    except Exception as error:  # noqa: BLE001 - reported
+        return _error(f"could not draw the geometry: {error}")
+    shows = (
+        "The radiation shield cut open along the wind (louvre plates, the "
+        "thermometer point in red, sun from above, long-wave or hot roof from "
+        "below, wind from the left) and the shield in its fluid domain."
+        if kind == "shield"
+        else "The SPS30 housing from outside with the oncoming air, and cut "
+        "open lengthwise: side slit, plenum, baffle, sensor chamber, the SPS30 "
+        "intake (green) with the fan suction, the weep hole and the air's path."
+    )
+    return _ok(image_path=str(path), shows=shows)
+
+
+def _study_sweep(
+    kind: str,
+    setup: Any,
+    variable: str | None,
+    start: float | None,
+    stop: float | None,
+    step: float | None,
+) -> dict[str, Any]:
+    """Solve the analytical model at fixed steps of one input."""
+    from backend import parameter_sweep as sweeps
+
+    if not variable or start is None or stop is None or step is None:
+        return _error(
+            "action 'sweep' needs sweep_variable, sweep_start, sweep_stop and sweep_step"
+        )
+    run = sweeps.shield_sweep if kind == "shield" else sweeps.sps30_sweep
+    try:
+        result = run(setup, variable.strip(), float(start), float(stop), float(step))
+        sweeps.save_sweep(result, data_root() / "sweeps")
+    except sweeps.SweepError as error:
+        return _error(str(error))
+    payload = sweeps.as_dict(result)
+    payload.update(_geometry_image(kind, setup))
+    return _ok(**payload)
+
+
 def _shield_params(
     base: Any,
     setup: dict[str, Any] | None,
@@ -1255,7 +1315,11 @@ def _shield_summary(result: Any) -> dict[str, Any]:
         "radiation and bottom radiation, a response surface fitted to the "
         "solved points, and a Monte Carlo analysis on that surface giving the "
         "spread, the worst case and the reliability of T_monitor - T_inlet. "
-        "action: 'analytic' (instant, analytical model), 'prepare_cfd' (mesh "
+        "action: 'analytic' (instant, analytical model), 'sweep' (the "
+        "analytical model solved directly at fixed steps of one input, e.g. "
+        "wind 0.2-5 m/s every 0.2: sweep_variable, sweep_start, sweep_stop, "
+        "sweep_step), 'preview' (a picture of the shield and its loads), "
+        "'prepare_cfd' (mesh "
         "the 2 x 2 x 1.44 m domain, SU2 cases, Fluent/Workbench package), "
         "'solve_cfd' (run SU2 on the design points of study_id -- long), "
         "'import' (analyse design points solved elsewhere, e.g. Fluent, from "
@@ -1271,14 +1335,28 @@ def radiation_shield_study(
     cfd: dict[str, Any] | None = None,
     results_csv: str | None = None,
     max_points: int | None = None,
+    sweep_variable: str | None = None,
+    sweep_start: float | None = None,
+    sweep_stop: float | None = None,
+    sweep_step: float | None = None,
 ) -> dict[str, Any]:
     """Run or continue a radiation-shield study.
 
     Parameters
     ----------
     action:
-        'analytic', 'prepare_cfd', 'solve_cfd', 'import', 'export_fluent'
-        or 'status'.
+        'analytic', 'sweep', 'preview', 'prepare_cfd', 'solve_cfd',
+        'import', 'export_fluent' or 'status'.
+        'sweep' solves the analytical model directly at every value of ONE
+        input from sweep_start to sweep_stop in steps of sweep_step (e.g.
+        wind 0.2-5 m/s every 0.2) with the other inputs at the setup's
+        baseline (setup.wind_speed_ms / solar_flux_w_m2 / bottom_flux_w_m2,
+        defaults 1 m/s, 1000, 300 W/m2) and returns every row as a table.
+        Use it whenever the operator asks for values at given steps -- never
+        read such a table off the response surface. 'preview' draws the
+        shield geometry with the sun, bottom flux, wind, thermometer and
+        domain (image_path); 'analytic' and 'sweep' also return it as
+        geometry_image_path.
     study_id:
         An existing study ('shield-...'): required for solve_cfd,
         export_fluent and status; optional for import (its parameters are
@@ -1314,13 +1392,20 @@ def radiation_shield_study(
         design_points.csv with delta_t_k filled in, or a Workbench export).
     max_points:
         For 'solve_cfd': solve at most this many points in this call.
+    sweep_variable, sweep_start, sweep_stop, sweep_step:
+        For 'sweep': 'wind_speed_ms', 'solar_flux_w_m2' or
+        'bottom_flux_w_m2', and its first value, last value and increment
+        (plain numbers in m/s or W/m2).
     """
     from backend import shield_workflow as workflow
     from core.shield_models import ShieldCfdSettings
 
     store = _store()
     action = (action or "").strip().lower()
-    known = ("analytic", "prepare_cfd", "solve_cfd", "import", "export_fluent", "status")
+    known = (
+        "analytic", "sweep", "preview", "prepare_cfd", "solve_cfd", "import",
+        "export_fluent", "status",
+    )
     if action not in known:
         return _error(f"unknown action '{action}'; use {', '.join(known)}")
     try:
@@ -1333,9 +1418,15 @@ def radiation_shield_study(
         return _error(f"invalid parameters: {error}")
 
     try:
+        if action == "sweep":
+            return _study_sweep(
+                "shield", params.setup, sweep_variable, sweep_start, sweep_stop, sweep_step
+            )
+        if action == "preview":
+            return _study_preview("shield", params.setup)
         if action == "analytic":
             result = workflow.run_analytic(store, params)
-            return _ok(**_shield_summary(result))
+            return _ok(**_shield_summary(result), **_geometry_image("shield", params.setup))
         if action == "import":
             if not results_csv:
                 return _error("action 'import' needs results_csv")
@@ -1415,7 +1506,10 @@ def _sps30_summary(result: Any) -> dict[str, Any]:
         "(crosswind) and droplet diameter, response surfaces and a Monte Carlo "
         "give the maximum air velocity at the sensor face (goal < 1 m/s), the "
         "share of droplets reaching the face (goal 0) and the chamber exchange "
-        "flow. action: 'analytic' (instant lumped model), 'prepare_cfd' (mesh, "
+        "flow. action: 'analytic' (instant lumped model), 'sweep' (the lumped "
+        "model solved directly at fixed steps of one input: sweep_variable, "
+        "sweep_start, sweep_stop, sweep_step), 'preview' (a picture of the "
+        "housing outside and cut open, with the fan), 'prepare_cfd' (mesh, "
         "SU2 cases, Fluent/Workbench package), 'solve_cfd' (SU2 SST air flow "
         "plus droplet tracking per design point -- long), 'import' (points "
         "solved in Fluent, from results_csv), 'export_fluent', 'status'."
@@ -1430,13 +1524,27 @@ def sps30_housing_study(
     cfd: dict[str, Any] | None = None,
     results_csv: str | None = None,
     max_points: int | None = None,
+    sweep_variable: str | None = None,
+    sweep_start: float | None = None,
+    sweep_stop: float | None = None,
+    sweep_step: float | None = None,
 ) -> dict[str, Any]:
     """Run or continue an SPS30 housing study.
 
     Parameters
     ----------
     action:
-        'analytic', 'prepare_cfd', 'solve_cfd', 'import', 'export_fluent', 'status'.
+        'analytic', 'sweep', 'preview', 'prepare_cfd', 'solve_cfd', 'import',
+        'export_fluent', 'status'.
+        'sweep' solves the analytical model directly at every value of ONE
+        input from sweep_start to sweep_stop in steps of sweep_step, the
+        other inputs at the setup's baseline (setup.speed_ms 20 m/s,
+        yaw_deg 0, droplet_um 100), and returns every row as a table. Use it
+        whenever the operator asks for values at given steps -- never read
+        such a table off the response surface. 'preview' draws the housing
+        outside and cut open (slits, plenum, baffle, sensor chamber, SPS30
+        intake with the fan, weep hole) as image_path; 'analytic' and
+        'sweep' also return it as geometry_image_path.
     study_id:
         An existing 'sps30-...' study (solve_cfd, export_fluent, status; optional for import).
     setup:
@@ -1464,13 +1572,20 @@ def sps30_housing_study(
         For 'import': design_points.csv filled in, or a Workbench export.
     max_points:
         For 'solve_cfd': solve at most this many points in this call.
+    sweep_variable, sweep_start, sweep_stop, sweep_step:
+        For 'sweep': 'speed_ms', 'yaw_deg' or 'droplet_um', and its first
+        value, last value and increment (plain numbers in m/s, degrees or
+        micrometres).
     """
     from backend import sps30_workflow as workflow
     from core.sps30_models import Sps30CfdSettings, Sps30StudyParams
 
     store = _store()
     action = (action or "").strip().lower()
-    known = ("analytic", "prepare_cfd", "solve_cfd", "import", "export_fluent", "status")
+    known = (
+        "analytic", "sweep", "preview", "prepare_cfd", "solve_cfd", "import",
+        "export_fluent", "status",
+    )
     if action not in known:
         return _error(f"unknown action '{action}'; use {', '.join(known)}")
     try:
@@ -1489,8 +1604,17 @@ def sps30_housing_study(
     except Exception as error:  # noqa: BLE001
         return _error(f"invalid parameters: {error}")
     try:
+        if action == "sweep":
+            return _study_sweep(
+                "sps30", params.setup, sweep_variable, sweep_start, sweep_stop, sweep_step
+            )
+        if action == "preview":
+            return _study_preview("sps30", params.setup)
         if action == "analytic":
-            return _ok(**_sps30_summary(workflow.run_analytic(store, params)))
+            return _ok(
+                **_sps30_summary(workflow.run_analytic(store, params)),
+                **_geometry_image("sps30", params.setup),
+            )
         if action == "import":
             if not results_csv:
                 return _error("action 'import' needs results_csv")

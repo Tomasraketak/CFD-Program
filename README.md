@@ -495,6 +495,39 @@ dropping it to 5 mm puts it inside that layer and roughly triples the error.
 A lighter housing finish roughly halves the bias. The model reports which
 regime it is in.
 
+### Radiation shield and SPS30 housing studies
+
+Two sensor-housing studies run as DoE → response surface → Monte Carlo, with
+an instant analytical model, SU2 cases and an Ansys Fluent/Workbench package
+(step by step in the [Shield Study Guide](docs/en/SHIELD_STUDY_GUIDE.md) and
+the [SPS30 Study Guide](docs/en/SPS30_STUDY_GUIDE.md)). Both draw the
+geometry they mesh, with what acts on it, on their tab (**3D geometry**) and
+for the assistant (`action: "preview"`).
+
+**Radiation shield.** A 20 cm louvre stack in a 2 × 2 × 1.44 m domain:
+the sun from above, long-wave from the ground (or a 70 °C vehicle roof)
+from below, wind from the inlet; the thermometer is the red point inside.
+
+![Built-in radiation shield, cut open, and in its domain](docs/images/radiation_shield_example.png)
+
+**SPS30 housing.** A 120 × 70 × 80 mm box. Air enters through the two side
+slits (static ports), drops through the plenum, has to turn over the baffle,
+and reaches the SPS30 intake (green) only in the sensor chamber; the purple
+arrow is the sensor's own fan. Water that gets in drains through the weep
+hole.
+
+![Built-in SPS30 housing, outside and cut open](docs/images/sps30_housing_example.png)
+
+**Sweeps.** To see one input's effect at fixed steps — wind 0.2 to 5 m/s
+every 0.2 m/s, say — use the tab's *Sweep one input* box or the tools'
+`action: "sweep"`. Every point is solved directly with the analytical model;
+nothing is read off a response surface. That matters: a quadratic surface
+fitted to 15 design points on 0.5–5 m/s and read at 0.2 m/s gives 0.62 K
+where the model gives 1.14 K, and invents a minimum and negative values near
+3.6 m/s that the physics does not have.
+
+![Wind sweep of the shield error](docs/images/radiation_shield_wind_sweep.png)
+
 ---
 
 ## MCP tools
@@ -504,8 +537,8 @@ regime it is in.
 | `set_geometry_and_mesh` | CAD → aligned, cell-count-targeted mesh |
 | `run_aerodynamic_simulation` | Forces, coefficients, CoP, hinge torques |
 | `run_sensor_thermal_simulation` | BMP580 reading and bias (`analytic_only` for an instant answer) |
-| `radiation_shield_study` | Radiation-shield DoE → response surface → Monte Carlo; SU2 cases and a Fluent/Workbench package |
-| `sps30_housing_study` | SPS30 housing: face velocity, droplet penetration and air exchange over speed, yaw and droplet size; SU2 + droplet tracking, or Fluent DPM |
+| `radiation_shield_study` | Radiation-shield DoE → response surface → Monte Carlo, one-input sweeps and a geometry picture; SU2 cases and a Fluent/Workbench package |
+| `sps30_housing_study` | SPS30 housing: face velocity, droplet penetration and air exchange over speed, yaw and droplet size, one-input sweeps and a geometry picture; SU2 + droplet tracking, or Fluent DPM |
 | `generate_cfd_visualization` | Surface pressure, Mach slice, streamlines, thermal contours — shown in the Graphics tab |
 | `run_parametric_sweep` | Batch runs with summary curves and peak values |
 | `list_runs` | Rediscover ids from an earlier session |

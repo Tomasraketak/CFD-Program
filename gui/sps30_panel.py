@@ -226,6 +226,20 @@ class Sps30StudyPanel(QtWidgets.QWidget):
         form.addRow("Points to solve now", self.solve_limit)
         layout.addWidget(group)
 
+        from gui.study_extras import SweepControls
+
+        self.sweep_controls = SweepControls(
+            {name: SPS30_LABELS[name] for name in SPS30_VARIABLES},
+            {
+                "speed_ms": (5.0, 35.0, 2.5),
+                "yaw_deg": (-20.0, 20.0, 5.0),
+                "droplet_um": (10.0, 200.0, 10.0),
+            },
+        )
+        self.sweep_controls.run_button.clicked.connect(self.run_sweep)
+        self.sweep_controls.preview_button.clicked.connect(self.draw_geometry)
+        layout.addWidget(self.sweep_controls)
+
         self.run_button = QtWidgets.QPushButton("Run analytic study")
         self.run_button.setObjectName("primary")
         self.run_button.clicked.connect(self.run_analytic)
@@ -290,7 +304,10 @@ class Sps30StudyPanel(QtWidgets.QWidget):
             ["Point", "Speed [m/s]", "Yaw [deg]", "Droplet [um]", "Face v [m/s]", "Penetration", "Exchange [L/min]"]
         )
         self.points_table.horizontalHeader().setStretchLastSection(True)
-        layout.addWidget(self.points_table, 1)
+        from gui.study_extras import results_tabs
+
+        self.result_tabs, self.sweep_view, self.geometry_view = results_tabs(self.points_table)
+        layout.addWidget(self.result_tabs, 2)
         self.log = QtWidgets.QPlainTextEdit()
         self.log.setReadOnly(True)
         self.log.setMaximumBlockCount(4000)
@@ -443,6 +460,56 @@ class Sps30StudyPanel(QtWidgets.QWidget):
 
         self._start(lambda _p: sps30_workflow.run_analytic(self.store, params), self._show, "Running the analytic study ...")
 
+    def run_sweep(self) -> None:
+        """Step one input with the analytical model and show every point."""
+        params = self._params_or_warn()
+        if params is None:
+            return
+        from backend import parameter_sweep as sweeps
+        from core.platform_env import data_root
+
+        variable, start, stop, step = self.sweep_controls.values()
+        try:
+            sweeps.sweep_values(start, stop, step)
+        except sweeps.SweepError as error:
+            QtWidgets.QMessageBox.warning(self, "Sweep", str(error))
+            return
+        self._start(
+            lambda progress: sweeps.save_sweep(
+                sweeps.sps30_sweep(params.setup, variable, start, stop, step),
+                data_root() / "sweeps",
+            ),
+            self._show_sweep,
+            f"Sweeping {variable} from {start:g} to {stop:g} in steps of {step:g} ...",
+        )
+
+    def _show_sweep(self, result) -> None:
+        self.sweep_view.show_result(result)
+        self.result_tabs.setCurrentWidget(self.sweep_view)
+        for note in result.notes:
+            self.append_log(note)
+        self.statusMessage.emit(f"Sweep: {len(result.rows)} points solved")
+
+    def draw_geometry(self) -> None:
+        """Draw the housing outside and cut open, with the air and the fan."""
+        params = self._params_or_warn()
+        if params is None:
+            return
+        self._draw_geometry_for(params.setup, switch=True)
+
+    def _draw_geometry_for(self, setup, switch: bool = False) -> None:
+        from backend.study_preview import cached_preview
+        from gui.study_extras import run_in_background
+
+        def done(path) -> None:
+            self.geometry_view.show_image(path)
+            if switch:
+                self.result_tabs.setCurrentWidget(self.geometry_view)
+
+        run_in_background(
+            self, lambda: cached_preview("sps30", setup), done, "Drawing the housing geometry ..."
+        )
+
     def run_analytic_now(self) -> Sps30Result | None:
         params = self._params_or_warn()
         if params is None:
@@ -581,6 +648,8 @@ class Sps30StudyPanel(QtWidgets.QWidget):
             for c, v in enumerate(values):
                 self.points_table.setItem(r, c, QtWidgets.QTableWidgetItem(v))
         self._draw()
+        if self.geometry_view.path is None and self.isVisible():
+            self._draw_geometry_for(result.params.setup)
         if refresh and result.study_id:
             self.refresh_studies(select=result.study_id)
         self.statusMessage.emit(f"SPS30 study: reliability {100 * result.reliability:.1f} %")

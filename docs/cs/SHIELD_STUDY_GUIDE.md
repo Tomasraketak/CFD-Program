@@ -43,6 +43,15 @@ proudit vzduch, ale slunce se k teploměru nedostane.
 
 Ani štít ale není dokonalý:
 
+![Vestavěný štít rozříznutý podél větru a ve výpočetní doméně](../images/radiation_shield_example.png)
+
+*Vlevo: vestavěný 20cm štít rozříznutý podél větru — šest lamel na čtyřech
+sloupcích, teploměr (červeně) uprostřed, slunce (žlutě) shora, dlouhovlnné
+záření (oranžově) zespodu, vítr (modře) zleva. Vpravo: štít uprostřed
+vzduchové domény 2 × 2 × 1,44 m. Stejný obrázek pro váš vlastní STEP nakreslí
+záložka v **3D geometry** (tlačítko **Draw 3D geometry**) a ukáže ho i
+asistent.*
+
 - **Slunce shora** ohřívá horní desku; teplá deska ohřívá vzduch, který kolem
   ní proudí k teploměru.
 - **Záření zdola** — dlouhovlnné (tepelné) záření země, nebo mnohem silnější
@@ -191,6 +200,23 @@ Za sekundu uvidíte karty s výsledky, histogram a graf ΔT proti větru.
 Analytický model je **zjednodušený** (jedna teplota celého štítu) — hodí se
 k pochopení trendů a k rychlému srovnání variant (např. co udělá tmavší
 barva), **ne** jako finální číslo.
+
+### 5.1 Jeden vstup po pevných krocích (sweep)
+
+Chcete-li vidět, jak se ΔT mění s **jedním** vstupem — např. vítr od 0,2 do
+5 m/s po 0,2 m/s — použijte rámeček **Sweep one input**: vyberte vstup,
+*From*, *To* a *Step* a stiskněte **Run sweep**. Ostatní vstupy zůstanou na
+hodnotách z *Baseline condition*. Záložka **Sweep** ukáže graf a tabulku
+všech bodů; uloží se i jako `sweep.csv` (a `sweep.png`) ve složce `sweeps`
+programu. Asistentovi stačí napsat *„radiation shield sweep, vítr 0,2–5 m/s
+po 0,2“* (akce `sweep`).
+
+Každý bod sweepu se počítá **přímo** modelem. Takovou tabulku nikdy
+nečtěte z response surface: kvadratická plocha proložená 15 body na
+0,5–5 m/s dá při 0,2 m/s 0,62 K místo 1,14 K a vymyslí si minimum a záporné
+hodnoty kolem 3,6 m/s.
+
+![Sweep větru, slunce 1000 W/m², spodek 550 W/m²](../images/radiation_shield_wind_sweep.png)
 
 ---
 

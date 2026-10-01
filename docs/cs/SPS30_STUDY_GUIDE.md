@@ -40,6 +40,17 @@ SPS30 měří prach tak, že si slabým ventilátorem nasává vzduch. Potřebuj
 - **žádnou vodu** — kapka v senzoru ho zničí nebo zkreslí,
 - **čerstvý vzduch** — aby neměřil zatuchlý vzduch v krytu.
 
+![Vestavěný kryt SPS30 zvenku a v řezu](../images/sps30_housing_example.png)
+
+*Vlevo: vestavěný kryt 120 × 70 × 80 mm zvenku s přicházejícím vzduchem
+(zde 20 m/s, yaw 10°) a jednou ze dvou bočních štěrbin. Vpravo: podélný řez —
+vzduch vejde štěrbinou, klesne plenem, musí se otočit přes přepážku (baffle)
+a teprve pak se dostane do komory senzoru k sání SPS30 (zeleně); fialová
+šipka je vlastní ventilátor SPS30, který vzduch nasává; voda, která se
+dostane dovnitř, odteče odvodňovacím otvorem (weep hole). Stejný obrázek pro
+váš vlastní STEP nakreslí záložka (**3D geometry**, tlačítko **Draw 3D
+geometry**) i asistent.*
+
 Kryt to řeší třemi triky:
 
 1. **Statické štěrbiny po stranách** místo nasávání dopředu. Na boku jedoucí
@@ -145,6 +156,15 @@ senzoru 20 × 20 mm se středem (107; 0; 30) mm hledící na −x, odtokový otv
 
 Zjednodušený model je **orientační** — ukáže trendy (kdy roste rychlost u
 čela, které kapky projdou), ne finální čísla.
+
+### 5.1 Jeden vstup po pevných krocích (sweep)
+
+**Sweep one input** projde jeden vstup (rychlost, yaw nebo velikost kapek)
+od *From* do *To* po *Step*, ostatní nechá na výchozích hodnotách, a každý
+bod spočítá přímo zjednodušeným modelem — graf a tabulka na záložce
+**Sweep**, uloženo i jako `sweep.csv`. Asistentovi: *„SPS30 sweep, kapky
+10–200 µm po 10“* (akce `sweep`). Takové tabulky nečtěte z response
+surface — to je proložení, ne model.
 
 ---
 

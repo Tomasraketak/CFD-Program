@@ -400,7 +400,7 @@ radiation**, a **response surface** fitted to the solved points, and a
 
 | Parameter | Type | Notes |
 |---|---|---|
-| `action` | string | `analytic` (instant screening model), `prepare_cfd` (mesh the domain, cast radiation rays, write SU2 cases and the Fluent/Workbench package), `solve_cfd` (SU2 on the design points of `study_id`; long), `import` (analyse a CSV solved elsewhere), `export_fluent`, `status` |
+| `action` | string | `analytic` (instant screening model), `sweep` (the model solved directly at fixed steps of one input), `preview` (a picture of the shield, its loads and the domain), `prepare_cfd` (mesh the domain, cast radiation rays, write SU2 cases and the Fluent/Workbench package), `solve_cfd` (SU2 on the design points of `study_id`; long), `import` (analyse a CSV solved elsewhere), `export_fluent`, `status` |
 | `study_id` | string | `shield-...`; needed by `solve_cfd`, `export_fluent`, `status` |
 | `setup` | object | Any of: `shield_step_path` (empty = built-in 20 cm multi-plate shield), `scale_to_meters`, `shield_size_m`, `plate_count`, `domain_size_m` (default `[2.0, 2.0, 1.44]`), `thermometer_xyz_m` (relative to the shield centre), `ambient_temp_c`, `wind_speed_ms`, `solar_flux_w_m2` (1000), `bottom_mode` (`ground_flux` or `roof_temperature`), `bottom_flux_w_m2` (300), `bottom_temperature_k` (343 = 70 °C), `roof_emissivity`, `sky_longwave_w_m2`, `ground_albedo`, `shield_solar_absorptivity`, `shield_emissivity`, `shield_conductivity_w_mk`, `ventilation_coefficient` |
 | `variables` | object | Per input (`wind_speed_ms`, `solar_flux_w_m2`, `bottom_flux_w_m2`): `minimum`, `maximum`, `distribution` (`uniform`/`normal`/`triangular`), `mean`, `std`, `mode`, `scale` (`linear`/`log`). Defaults 0.5–5 m/s (log), 800–1200 W/m², 300–800 W/m², uniform |
@@ -408,6 +408,7 @@ radiation**, a **response surface** fitted to the solved points, and a
 | `cfd` | object | `mesh_resolution`, `turbulence_model` (`SST`/`SA`), `buoyancy`, `radiation_passes`, `iterations_first_pass`, `iterations_later_passes`, `radiation_classes`, `rays_per_face`, `mpi_ranks` |
 | `results_csv` | string | For `import`: `design_points.csv` with `delta_t_k` (or `monitor_temp_k`) filled in, or a Workbench design-point export |
 | `max_points` | int | For `solve_cfd`: at most this many points per call |
+| `sweep_variable`, `sweep_start`, `sweep_stop`, `sweep_step` | string, numbers | For `sweep`: `wind_speed_ms`, `solar_flux_w_m2` or `bottom_flux_w_m2`, from, to and step (e.g. 0.2, 5, 0.2). The other inputs stay at the `setup` baseline |
 
 Returns the design points, the surface fit (`r_squared`,
 `leave_one_out_rmse_k`), and the Monte Carlo summary: mean, spread,
@@ -426,6 +427,14 @@ usually changes it by under 0.01 K. Shield conduction is not solved (thin
 plastic plates); SU2 has no standard k-ε, so SST is used. The Fluent package
 follows the specification exactly: standard k-ε, DO radiation, conjugate
 solid.
+
+**Sweeps and pictures.** `sweep` answers "what does one input do" at the
+steps asked for: every row is the analytical model itself, returned as
+`rows` and saved as `sweep.csv` with a chart (`image_path`). A table at fixed
+steps must never be read off the response surface — a quadratic fitted on 15
+points invents minima and is meaningless outside its range. `preview` (and
+`analytic`/`sweep`, as `geometry_image_path`) draws the geometry; the
+assistant panel shows both pictures.
 
 **Solving elsewhere.** `prepare_cfd` writes `run_design_points.bat`/`.sh` to
 solve every point on the computer that runs it, and a `fluent/` folder with
@@ -447,7 +456,7 @@ exchanged through the sensor chamber).
 
 | Parameter | Type | Notes |
 |---|---|---|
-| `action` | string | `analytic`, `prepare_cfd`, `solve_cfd`, `import`, `export_fluent`, `status` |
+| `action` | string | `analytic`, `sweep`, `preview`, `prepare_cfd`, `solve_cfd`, `import`, `export_fluent`, `status` |
 | `study_id` | string | `sps30-...` |
 | `setup` | object | `housing_step_path` (empty = built-in 120 × 70 × 80 mm housing), `scale_to_meters`, `sensor_face_center_m`, `sensor_face_normal`, `sensor_face_size_m`, `chamber_plane_x_m`, `fan_enabled`, `fan_flow_lpm`, `forward_axis`, `domain_multipliers`, `ambient_temp_c`, `water_density_kg_m3`, baseline `speed_ms`/`yaw_deg`/`droplet_um`, lumped dimensions (`port_area_m2`, `port_width_m`, `plenum_area_m2`, `baffle_gap_m`, `chamber_area_m2`, `chamber_fraction`), goals `max_face_velocity_ms`, `max_penetration`, `min_exchange_flow_lpm` |
 | `variables` | object | `speed_ms` (5–35), `yaw_deg` (−20..20), `droplet_um` (10–2000, log): `minimum`, `maximum`, `distribution`, `mean`, `std`, `mode`, `log` |
@@ -455,10 +464,15 @@ exchanged through the sensor chamber).
 | `cfd` | object | `mesh_resolution`, `iterations`, `mpi_ranks`, `droplets`, `random_walk`, `seed` |
 | `results_csv` | string | For `import` — `design_points.csv` filled in, or a Workbench export (`speed`, `yaw`, `droplet_diameter`, `face_velocity`, `sensor_trap_count`, `injected`, `ux_integral`) |
 | `max_points` | int | For `solve_cfd` |
+| `sweep_variable`, `sweep_start`, `sweep_stop`, `sweep_step` | string, numbers | For `sweep`: `speed_ms`, `yaw_deg` or `droplet_um`, from, to and step |
 
 Returns the reliability (share of random conditions meeting every goal), the
 share per goal, the worst failing condition and, per output, statistics,
 worst case, sensitivities and the surface's leave-one-out error.
+
+`sweep` and `preview` work as for the shield; `preview` shows the housing
+from outside and cut open (slits, plenum, baffle, sensor chamber, the SPS30
+intake with the fan, the weep hole).
 
 **How the SU2 path handles droplets.** SU2 has no discrete phase model. The
 air is solved with SST k-ω (as specified); the program then tracks droplets

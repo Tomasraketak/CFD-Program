@@ -618,6 +618,17 @@ temperature so SU2 solves it implicitly (a second pass re-linearises it). SU2 ha
 The Fluent package keeps to the specification (standard k-ε, DO radiation,
 conjugate solid).
 
+**Sweep and picture.** *Sweep one input* steps one input from *From* to *To*
+in *Step* (wind 0.2–5 m/s every 0.2, say) with the others at the baseline
+values, solving every point directly with the analytical model; the
+**Sweep** tab under the charts shows a chart and every row, saved as
+`sweep.csv` in the program's `sweeps` folder. **Draw 3D geometry** (also run
+automatically with the first study) shows the shield cut open with the
+thermometer, the sun, the bottom radiation and the wind, and the shield in
+its domain, on the **3D geometry** tab.
+
+![Radiation shield preview](../images/radiation_shield_example.png)
+
 
 ### SPS30 housing study
 
@@ -638,6 +649,13 @@ dimensions the lumped model uses.
 
 **Inputs.** Platform speed (5–35 m/s), yaw (−20..20°, crosswind) and droplet
 diameter (10–2000 µm, logarithmic), each with a distribution.
+
+**Sweep and picture.** As on the shield tab: *Sweep one input* (speed, yaw
+or droplet size at fixed steps, solved directly) and **Draw 3D geometry** —
+the housing from outside and cut open, with the slits, plenum, baffle,
+sensor chamber, the SPS30 intake and its fan, and the weep hole.
+
+![SPS30 housing preview](../images/sps30_housing_example.png)
 
 **Workflow** — as in the radiation-shield study: **Run analytic study**
 (lumped model, instant), **Prepare CFD cases + Fluent package**, **Solve

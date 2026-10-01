@@ -865,9 +865,9 @@ class AITab(QtWidgets.QWidget):
                 f"{html.escape(detail)}</p>"
             )
             self._begin_step(f"Waiting for {self.selected_model()}")
-            image = _image_path(getattr(event, "result", None))
-            if image is not None and not event.failed:
-                self._append_image(image)
+            if not event.failed:
+                for image in _image_paths(getattr(event, "result", None)):
+                    self._append_image(image)
         elif kind == EVENT_RETRY:
             self._append_note(event.message)
         elif kind == EVENT_LIMIT:
@@ -1133,15 +1133,20 @@ class AITab(QtWidgets.QWidget):
         QtWidgets.QMessageBox.warning(self, "AI assistant", message)
 
 
-def _image_path(result: Any) -> Path | None:
-    """The image a tool reply points at, if it is one that exists."""
+IMAGE_KEYS = ("image_path", "geometry_image_path")
+
+
+def _image_paths(result: Any) -> list[Path]:
+    """The images a tool reply points at (a chart, a geometry picture) that exist."""
     if not isinstance(result, dict) or not result.get("ok"):
-        return None
-    path = result.get("image_path")
-    if not path:
-        return None
-    candidate = Path(str(path))
-    return candidate if candidate.is_file() else None
+        return []
+    found = []
+    for key in IMAGE_KEYS:
+        path = result.get(key)
+        if path and Path(str(path)).is_file():
+            found.append(Path(str(path)))
+    return found
+
 
 
 def _ask_on_gui_thread(parent: QtWidgets.QWidget, title: str, text: str) -> bool:
