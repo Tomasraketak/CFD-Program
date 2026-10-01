@@ -119,17 +119,38 @@ points → D comparison in the program.
 - **Ansys Student**: see the [Radiation Shield Study Guide, 4.2](SHIELD_STUDY_GUIDE.md#42-ansys-student-part-c-only)
   (installation, the ~1 million cell limit).
 
-**The housing CAD** (or leave the field empty for the built-in housing):
+**The housing CAD** (or leave the field empty for the built-in housing).
+What the program does with your file: it reads every **solid**, scales it
+to metres, **turns it about z** so the travel direction you give
+(*Travel direction*) points to −x, puts a wind tunnel round it (sized in
+housing lengths) and solves the air **everywhere there is no material —
+outside and inside the housing**. It does not move the model: the sensor
+face is found at the coordinates you enter, **in the CAD's own coordinates**
+(converted to metres).
 
-- STEP, one **solid** with every internal space **cut out**: the slits, the
-  plenum, the passage round the baffle, the sensor chamber and the weep
-  hole. The program solves the air wherever there is no material.
-- **The sensor face must be a separate flat face** (e.g. the front of a
-  small block standing for the SPS30 intake). The program finds it from the
-  centre, direction and size you enter.
-- No screws, lettering or fillets under ~0.5 mm.
-- Note: which way the platform travels in the CAD (e.g. −x), the centre of
-  the sensor face, which way the face looks (into the chamber) and its size.
+| Requirement | Why | What happens otherwise |
+|---|---|---|
+| STEP exported as a **solid** | only solids are cut out of the air | *"contains no solid"* |
+| **Up is +z**; travel along ±x or ±y (enter it in *Travel direction*) | the program only turns the model about z; gravity (droplets settling, the weep hole) acts along −z | droplets "fall" sideways — wrong penetration |
+| The housing as **one solid** with every internal space **cut out of it** (Boolean subtract): the slits, the plenum, the passage round the baffle, the sensor chamber, the weep hole | the air inside is the empty space in the solid | — |
+| Every internal space **connected to the outside** (through the slits or the weep hole) — no sealed pocket, no closed electronics box | the air must be one connected volume | *"left N air volumes"* — fill such pockets in the CAD |
+| **The SPS30 intake as its own flat face**, perpendicular to x, y or z (e.g. the front of a small block standing for the sensor) | it gets its own boundary condition (fan suction, droplet "trap" = failure) | *"no housing face matches the sensor face"* |
+| That face lies **entirely within the square** *Sensor face size* round *Sensor face centre*, and its plane is within 0.5 mm of the centre | that is how the program recognises it | the same error, or the face counted as an ordinary wall |
+| *Sensor face looks*: the direction from the face **into the chamber** (into the air, away from the sensor body) | sets the fan's direction | the fan blows instead of sucking |
+| *Chamber plane x*: an x (CAD coordinates, metres) where a plane cuts **across the sensor chamber** between the baffle and the sensor | the exchange flow is measured there | a meaningless exchange flow |
+| Slits and gaps **≥ 2 mm** (mesh near the housing 2 mm coarse, 1 mm fine), no details under ~0.5 mm (screws, lettering, fillets, PCB components) | a gap needs several cells across | poor mesh, unreliable face velocity; use *medium*/*fine* for narrow slits |
+| Wall thickness ≥ ~1.5 mm | thin walls are fine for the air but are hard to mesh | mesh failure |
+| Units read from the file; if wrong, set *Scale to metres* (0.001 = mm) | | a tunnel 1000× too big or small |
+
+**The lumped dimensions** (port area and width, plenum and chamber area,
+baffle gap) are not read from the STEP — the analytic model (Part A) and the
+sweep use what you enter; set them to your housing's numbers.
+
+**Check it before you mesh:** **Draw 3D geometry** (or the assistant's
+*preview*) shows your housing from outside with the oncoming air, and cut
+open through the sensor face with the intake in **green** and the fan
+arrow. If the green face is missing or in the wrong place, the sensor face
+centre/size/direction is wrong.
 
 The built-in housing: 120 × 70 × 80 mm, travelling towards −x, 20 × 3 mm side
 slits near the front, a baffle 58–61 mm from the front (15 mm gap at the

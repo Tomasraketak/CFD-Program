@@ -150,18 +150,51 @@ je v menu **Help → Check environment** (SU2 i MPI musí být nalezeny).
 ### 4.3 CAD model štítu
 
 Buď použijete **vestavěný štít** (20 × 20 × 20 cm, 6 desek, 4 sloupky —
-nechte pole *Shield STEP* prázdné), nebo vlastní model. Pro vlastní model:
+nechte pole *Shield STEP* prázdné), nebo vlastní model. Co program s vaším
+souborem dělá, abyste věděli, co potřebuje:
 
-- **Formát STEP** (`.step` / `.stp`), exportovaný jako **těleso** (*solid*),
-  ne jako plochy.
-- Celý štít jako **jedno těleso**, nebo několik těles, která se nepřekrývají.
-- **Bez teploměru** uvnitř (teploměr je jen bod, ve kterém se měří teplota
-  vzduchu), bez šroubků, nápisů a zaoblení menších než ~1 mm — drobnosti
-  nezlepší přesnost, jen zhorší síť.
-- Orientace: v programu je **vítr podél osy +x a nahoru je osa +z**. Pokud
-  máte model nakreslený jinak, otočte ho v CAD před exportem.
-- Jednotky: program je z STEP souboru přečte sám; kdyby velikost nesedala,
-  nastavte *Scale to metres* (0,001 pro milimetry).
+1. načte ze STEP všechna **tělesa** (*solid*; plochy a křivky ignoruje),
+2. převede je na metry,
+3. **posune je tak, aby střed jejich obalového kvádru byl uprostřed domény**
+   (na počátku souřadnic v CAD tedy nezáleží),
+4. vyřízne je ze vzduchového kvádru 2 × 2 × 1,44 m a vysíťuje vzduch kolem,
+5. z každé plošky vrhá paprsky pro radiaci.
+
+Model **neotáčí** — použije orientaci ze souboru tak, jak je.
+
+**Kontrolní seznam pro STEP soubor**
+
+| Požadavek | Proč | Co se stane jinak |
+|---|---|---|
+| Formát `.step` / `.stp`, export jako **těleso** (body/solid), ne plochy/skořepina | ze vzduchu se vyřezávají jen tělesa | *„contains no solid“* |
+| **Vítr podél +x, nahoru je +z** | vstup je na min. x, slunce svítí ve směru −z, země je na min. z | slunce svítí z boku, vítr fouká z druhé strany — špatná čísla bez chybové hlášky |
+| Desky a sloupky **spojené do jednoho tělesa**, nebo samostatná tělesa, která se **dotýkají nebo nepřekrývají** (žádná dvě tělesa ve stejném objemu) | překryv dá zdvojené plochy a rozbitou síť | selže síťování |
+| **Žádná uzavřená dutina** — každý vzdušný prostor musí být spojený s okolím (dutý zaslepený sloupek nebo uzavřená krabička uvnitř nejde; sloupky udělejte plné) | vzduch musí být jeden souvislý objem | *„left N air volumes“* |
+| **Bez teploměru, držáku a kabelu** v modelu (pokud je nechcete zkoumat) | teploměr je jen bod, kde se čte teplota vzduchu | — |
+| Štít **menší než polovina domény** v každém směru (tj. < 1 × 1 × 0,72 m) | místo pro proudění kolem | *„too large for the domain — check the CAD units“* |
+| Jednotky: program je přečte ze souboru a zkontroluje podle velikosti; když se splete, nastavte *Scale to metres* (0,001 = milimetry, 0,01 = cm) | | 200mm štít přečtený jako 200 m → chyba výše |
+| Desky aspoň ~1,5 mm tlusté, mezery mezi deskami **≥ 5 mm**, žádné detaily pod ~1 mm (šroubky, nápisy, malá zaoblení, zacvakávací háčky) | síť u štítu má 6 mm (coarse) až 2,5 mm (fine); 2mm mezera by měla přes sebe jednu buňku | velmi špatná nebo selhávající síť; pro úzké mezery použijte *medium*/*fine* |
+| Pro Ansys Student pod ~1 milion buněk — držte model jednoduchý | limit studentské licence | Fluent síť odmítne |
+
+**Dvě pole musí odpovídat vašemu modelu**, protože je analytický model a
+bod teploměru ze souboru nečtou:
+
+- *Shield size* — vnější rozměr v metrech (x, y, z) — a *Plates*: používá je
+  analytický model (část A) a sweep; CFD počítá se skutečnou geometrií.
+- *Thermometer* — poloha čidla **vůči středu obalového kvádru štítu**
+  (x po větru, z nahoru), v metrech. U štítu, který není nahoře a dole
+  souměrný, nemusí být střed kvádru tam, kde je čidlo — změřte si to v CAD.
+
+**Zkontrolujte to před síťováním:** stiskněte **Draw 3D geometry** (nebo
+požádejte asistenta o *preview*). Obrázek ukáže váš štít v řezu s
+teploměrem (červený bod), sluncem shora a větrem zleva — pokud desky stojí
+na boku nebo je červený bod v desce, opravte to dřív, než strávíte hodiny
+výpočtem.
+
+Tipy pro dobrý model: jedno těleso spojené v CAD přes *Combine/Union*;
+desky jako jednoduché ploché (nebo mírně kuželové) prstence; horní deska
+plná; tloušťka materiálu jako u skutečného štítu (ve Fluentu se počítá
+vedení tepla).
 
 ---
 

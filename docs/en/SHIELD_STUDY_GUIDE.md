@@ -148,17 +148,52 @@ also needs **SU2 and MS-MPI** — `Setup.bat` installs them; check with
 ### 4.3 The shield CAD
 
 Either use the **built-in shield** (20 × 20 × 20 cm, 6 plates, 4 posts —
-leave *Shield STEP* empty), or your own model. For your own:
+leave *Shield STEP* empty), or your own model. What the program does with
+your file, so you know what it needs:
 
-- **STEP format** (`.step` / `.stp`), exported as a **solid**, not surfaces.
-- The shield as **one solid**, or several solids that do not overlap.
-- **No thermometer** inside (the thermometer is just a point where the air
-  temperature is read), no screws, lettering or fillets under ~1 mm — details
-  do not add accuracy, they only make the mesh worse.
-- Orientation: in the program the **wind is along +x and up is +z**. If your
-  model is drawn otherwise, rotate it in CAD before exporting.
-- Units: the program reads them from the STEP file; if the size looks wrong,
-  set *Scale to metres* (0.001 for millimetres).
+1. it reads every **solid** from the STEP (surfaces and curves are ignored),
+2. scales it to metres,
+3. **moves it so its bounding-box centre sits in the middle of the domain**
+   (the CAD origin does not matter),
+4. cuts it out of the 2 × 2 × 1.44 m air box and meshes the air around it,
+5. casts radiation rays from every face of it.
+
+It does **not** rotate the model — the orientation in the file is used as is.
+
+**Checklist for your STEP file**
+
+| Requirement | Why | What happens otherwise |
+|---|---|---|
+| Format `.step` / `.stp`, exported as a **solid** (body), not surfaces/a shell | only solids are cut out of the air | *"contains no solid"* |
+| **Wind along +x, up along +z** | the inlet is at x min, the sun comes along −z, the ground is at z min | the sun shines on the side, the wind blows from the wrong side — wrong numbers, no error |
+| The plates and posts **joined into one solid**, or separate solids that **touch or do not overlap** (no two bodies sharing the same volume) | overlapping bodies give double faces and a broken mesh | mesh failure |
+| **No closed cavity** — every air space must connect to the outside air (a hollow, sealed post or a closed box inside is not allowed; make posts solid) | the air must be one connected volume | *"left N air volumes"* |
+| **No thermometer, holder or cable** in the model (unless you want to study it) | the thermometer is only a point where the air temperature is read | — |
+| Shield **smaller than half the domain** in every direction (i.e. < 1 × 1 × 0.72 m) | room for the flow round it | *"too large for the domain — check the CAD units"* |
+| Units: the program reads them from the file and checks them against the size; if it gets it wrong, set *Scale to metres* (0.001 = millimetres, 0.01 = cm) | | a 200 mm shield read as 200 m → the error above |
+| Plates at least ~1.5 mm thick, gaps between plates **≥ 5 mm**, no details under ~1 mm (screws, lettering, small fillets, snap hooks) | the mesh near the shield is 6 mm (coarse) to 2.5 mm (fine); a 2 mm gap would have one cell across it | a very poor or failing mesh; for narrow gaps use *medium*/*fine* |
+| Under ~1 million cells for Ansys Student — keep the model simple | Student licence limit | Fluent refuses the mesh |
+
+**Two fields must match your model**, because the analytic model and the
+monitor point do not read them from the file:
+
+- *Shield size* — the outer size in metres (x, y, z) — and *Plates*: the
+  analytic model (Part A) and the sweep use them; the CFD uses the real
+  geometry.
+- *Thermometer* — the sensor position **relative to the centre of the
+  shield's bounding box** (x along the wind, z up), in metres. With a shield
+  whose plates are not symmetric top to bottom, the centre of the box is not
+  necessarily where the sensor sits — measure it in CAD.
+
+**Check it before you mesh:** press **Draw 3D geometry** (or ask the
+assistant for a *preview*). The picture shows your shield cut open with the
+thermometer (red point), the sun from above and the wind from the left —
+if the plates stand on their side or the red point is in a plate, fix it
+before spending hours on CFD.
+
+Tips for a good model: one body made with *Combine/Union* in CAD; plates as
+simple flat (or slightly conical) rings; the top plate solid; a material
+thickness true to the real shield (it matters for conduction in Fluent).
 
 ---
 

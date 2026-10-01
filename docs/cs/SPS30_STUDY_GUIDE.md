@@ -116,17 +116,36 @@ bodech → D porovnání v programu.
 - **Ansys Student**: viz [Studie radiačního štítu, 4.2](SHIELD_STUDY_GUIDE.md#42-ansys-student-jen-pro-část-c)
   (instalace, limit ~1 milionu buněk).
 
-**CAD krytu** (nebo nechte pole prázdné = vestavěný kryt):
+**CAD krytu** (nebo nechte pole prázdné = vestavěný kryt). Co program s
+vaším souborem dělá: načte všechna **tělesa**, převede je na metry,
+**otočí kolem osy z** tak, aby zadaný směr jízdy (*Travel direction*)
+mířil na −x, postaví kolem aerodynamický tunel (velikost v délkách krytu) a
+počítá vzduch **všude, kde není materiál — venku i uvnitř krytu**. Model
+neposouvá: čelo senzoru hledá na souřadnicích, které zadáte, **v
+souřadnicích vašeho CAD** (převedených na metry).
 
-- STEP, jedno **těleso** (solid), ve kterém jsou **vyříznuté** všechny vnitřní
-  prostory: štěrbiny, plenum, průchod kolem přepážky, komora senzoru a
-  odtokový otvor. Vzduch se v programu počítá všude, kde není materiál.
-- **Čelo senzoru musí být samostatná rovná plocha** (např. čelo malého
-  kvádru, který představuje sací hrdlo SPS30). Program ji najde podle
-  středu, směru a velikosti, které zadáte.
-- Bez šroubků, textů a zaoblení pod ~0,5 mm.
-- Zapište si: kterým směrem platforma v CAD jede (např. −x), střed čela
-  senzoru, kam čelo hledí (do komory) a jeho rozměr.
+| Požadavek | Proč | Co se stane jinak |
+|---|---|---|
+| STEP exportovaný jako **těleso** (solid) | ze vzduchu se vyřezávají jen tělesa | *„contains no solid“* |
+| **Nahoru je +z**; jízda podél ±x nebo ±y (zadejte v *Travel direction*) | program model otáčí jen kolem z; gravitace (usazování kapek, odtokový otvor) působí ve směru −z | kapky „padají“ do boku — špatný průnik |
+| Kryt jako **jedno těleso**, ze kterého jsou **vyříznuté** (booleovské odečtení) všechny vnitřní prostory: štěrbiny, plenum, průchod kolem přepážky, komora senzoru, odtokový otvor | vzduch uvnitř je prázdné místo v tělese | — |
+| Každý vnitřní prostor **spojený s okolím** (přes štěrbiny nebo odtokový otvor) — žádná zaslepená kapsa, žádná uzavřená krabička elektroniky | vzduch musí být jeden souvislý objem | *„left N air volumes“* — takové kapsy v CAD vyplňte |
+| **Sání SPS30 jako samostatná rovná plocha** kolmá na x, y nebo z (např. čelo malého kvádru, který představuje senzor) | dostane vlastní okrajovou podmínku (sání ventilátoru, „trap“ kapek = selhání) | *„no housing face matches the sensor face“* |
+| Ta plocha leží **celá uvnitř čtverce** *Sensor face size* kolem *Sensor face centre* a její rovina je do 0,5 mm od středu | tak ji program pozná | stejná chyba, nebo se plocha počítá jako obyčejná stěna |
+| *Sensor face looks*: směr od plochy **do komory** (do vzduchu, pryč od těla senzoru) | určuje směr ventilátoru | ventilátor fouká místo nasávání |
+| *Chamber plane x*: souřadnice x (CAD, v metrech), kde rovina **protne komoru senzoru** mezi přepážkou a senzorem | tam se měří výměna vzduchu | nesmyslná výměna vzduchu |
+| Štěrbiny a mezery **≥ 2 mm** (síť u krytu 2 mm coarse, 1 mm fine), žádné detaily pod ~0,5 mm (šroubky, nápisy, zaoblení, součástky na DPS) | mezera potřebuje přes sebe několik buněk | špatná síť, nespolehlivá rychlost u čela; pro úzké štěrbiny *medium*/*fine* |
+| Tloušťka stěn ≥ ~1,5 mm | tenké stěny vzduchu nevadí, ale špatně se síťují | selže síťování |
+| Jednotky se čtou ze souboru; když nesedí, nastavte *Scale to metres* (0,001 = mm) | | tunel 1000× větší nebo menší |
+
+**Rozměry pro zjednodušený model** (plocha a šířka štěrbiny, plocha plena a
+komory, mezera u přepážky) se ze STEP nečtou — analytický model (část A) a
+sweep používají to, co zadáte; nastavte je podle svého krytu.
+
+**Zkontrolujte to před síťováním:** **Draw 3D geometry** (nebo *preview*
+od asistenta) ukáže kryt zvenku s přicházejícím vzduchem a v řezu přes čelo
+senzoru se sáním **zeleně** a šipkou ventilátoru. Pokud zelená plocha chybí
+nebo je jinde, je špatně střed/velikost/směr čela senzoru.
 
 Vestavěný kryt: 120 × 70 × 80 mm, jede směrem −x, štěrbiny 20 × 3 mm po
 stranách u přídě, přepážka 58–61 mm od přídě (nahoře mezera 15 mm), čelo
