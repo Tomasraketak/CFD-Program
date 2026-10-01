@@ -1655,6 +1655,12 @@ class SensorTab(QtWidgets.QWidget):
         self.modes = QtWidgets.QTabWidget()
         self.modes.addTab(splitter, "BMP580 enclosure")
         self.modes.addTab(self.shield_panel, "Radiation shield study")
+        from gui.sps30_panel import Sps30StudyPanel
+
+        # Dust sensor housing: static ports, plenum and a water impactor.
+        self.sps30_panel = Sps30StudyPanel(store)
+        self.sps30_panel.statusMessage.connect(self.statusMessage)
+        self.modes.addTab(self.sps30_panel, "SPS30 housing study")
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(6, 6, 6, 6)

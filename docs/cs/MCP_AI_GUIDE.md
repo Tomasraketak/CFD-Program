@@ -20,7 +20,7 @@ Jak program ovládat z AI asistenta a kompletní přehled nástrojů.
 
 Model Context Protocol (MCP) je standardní způsob, jak AI asistenti volají
 externí nástroje. AeroThermalStudio obsahuje MCP server, který vystavuje
-**patnáct nástrojů** pokrývajících vše, co umí program: import CAD, síťování,
+**šestnáct nástrojů** pokrývajících vše, co umí program: import CAD, síťování,
 aerodynamickou i tepelnou simulaci, vykreslování, parametrické studie a správu
 projektů a nastavení.
 
@@ -116,7 +116,7 @@ asistent pracuje.
 
 ## 3. Přehled nástrojů
 
-Všech patnáct nástrojů vrací JSON objekt s polem `ok`. Při selhání je
+Všech šestnáct nástrojů vrací JSON objekt s polem `ok`. Při selhání je
 `ok: false` a `error` nese zprávu určenou k jednání.
 
 ### 3.1 `set_geometry_and_mesh`
@@ -430,6 +430,39 @@ umístěným štítem a STEP souborem tekutiny, `design_points.csv`, journalem p
 Fluent a README pro Workbench a DesignXplorer (CCD, response surface, Six
 Sigma Monte Carlo). Spočtené body se vrací přes `import`.
 
+
+### 3.16 `sps30_housing_study`
+
+Studie krytu prachového senzoru SPS30: zapuštěné statické štěrbiny po obou
+stranách, plenum, které vzduch zpomalí, a přepážka, kolem které vzduch
+zatočí, ale kapky vody do ní narazí. DoE přes **rychlost platformy**,
+**stočení (yaw, boční vítr)** a **průměr kapek**, response surface pro každý
+výstup a Monte Carlo. Výstupy: `face_velocity_ms` (největší rychlost vzduchu
+2 mm před čelem senzoru, cíl < 1 m/s), `penetration` (podíl kapek, které se
+dostaly do krytu a doletěly na čelo senzoru, cíl 0) a `exchange_flow_lpm`
+(výměna vzduchu přes komoru senzoru).
+
+| Parametr | Typ | Poznámka |
+|---|---|---|
+| `action` | string | `analytic`, `prepare_cfd`, `solve_cfd`, `import`, `export_fluent`, `status` |
+| `study_id` | string | `sps30-...` |
+| `setup` | objekt | `housing_step_path` (prázdné = vestavěný kryt 120 × 70 × 80 mm), `scale_to_meters`, `sensor_face_center_m`, `sensor_face_normal`, `sensor_face_size_m`, `chamber_plane_x_m`, `fan_enabled`, `fan_flow_lpm`, `forward_axis`, `domain_multipliers`, `ambient_temp_c`, `water_density_kg_m3`, výchozí `speed_ms`/`yaw_deg`/`droplet_um`, rozměry pro zjednodušený model (`port_area_m2`, `port_width_m`, `plenum_area_m2`, `baffle_gap_m`, `chamber_area_m2`, `chamber_fraction`), cíle `max_face_velocity_ms`, `max_penetration`, `min_exchange_flow_lpm` |
+| `variables` | objekt | `speed_ms` (5–35), `yaw_deg` (−20..20), `droplet_um` (10–2000, log): `minimum`, `maximum`, `distribution`, `mean`, `std`, `mode`, `log` |
+| `study` | objekt | `doe` (`ccd`/`lhs`), `doe_points`, `surrogate` (`rbf`/`quadratic`), `monte_carlo_samples`, `seed` |
+| `cfd` | objekt | `mesh_resolution`, `iterations`, `mpi_ranks`, `droplets`, `random_walk`, `seed` |
+| `results_csv` | string | Pro `import` — vyplněný `design_points.csv`, nebo export z Workbenche (`speed`, `yaw`, `droplet_diameter`, `face_velocity`, `sensor_trap_count`, `injected`, `ux_integral`) |
+| `max_points` | int | Pro `solve_cfd` |
+
+Vrací spolehlivost (podíl náhodných podmínek, které splní všechny cíle),
+podíl pro každý cíl, nejhorší nevyhovující podmínku a pro každý výstup
+statistiky, nejhorší případ, citlivosti a chybu leave-one-out.
+
+**Jak SU2 větev řeší kapky.** SU2 nemá model diskrétní fáze. Vzduch se spočte
+s SST k-ω (podle zadání); program pak kapky sleduje v tomto poli sám —
+odpor Schiller–Naumann, gravitace a náhodná procházka (random walk) z k a ω —
+a každou zastaví na stěně, na kterou narazí („trap“). Balíček pro Fluent
+používá DPM Fluentu se stejnými podmínkami na stěnách.
+
 ---
 
 ## 4. Hotové postupy
@@ -644,7 +677,7 @@ kontextem, ne jako měření.
 
 ## 9. Vestavěný asistent
 
-Těchto patnáct nástrojů pohání i asistenta **přímo v programu**, v záložce
+Těchto šestnáct nástrojů pohání i asistenta **přímo v programu**, v záložce
 **AI Assistant**. Je pro obsluhu, která chce napsat požadavek a nechat ho
 provést, aniž by vůbec spouštěla externího MCP klienta.
 

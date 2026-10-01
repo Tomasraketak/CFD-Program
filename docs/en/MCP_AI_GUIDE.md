@@ -20,7 +20,7 @@ reference.
 ## 1. What this is
 
 The Model Context Protocol (MCP) is a standard way for AI assistants to call
-external tools. AeroThermalStudio ships an MCP server exposing **fifteen
+external tools. AeroThermalStudio ships an MCP server exposing **sixteen
 tools** covering everything the desktop program can do: CAD import, meshing,
 aerodynamic and thermal simulation, rendering, parametric sweeps, and project
 and settings management.
@@ -118,7 +118,7 @@ it while the assistant is working.
 
 ## 3. Tool reference
 
-All fifteen tools return a JSON object with an `ok` field. On failure,
+All sixteen tools return a JSON object with an `ok` field. On failure,
 `ok: false` and `error` carries a message intended to be acted on.
 
 ### 3.1 `set_geometry_and_mesh`
@@ -433,6 +433,39 @@ the placed shield and fluid STEP files, `design_points.csv`, a Fluent journal
 and a README for Workbench, DesignXplorer (CCD, response surface, Six Sigma
 Monte Carlo). Solved points come back through `import`.
 
+
+### 3.16 `sps30_housing_study`
+
+SPS30 particulate-sensor housing study: flush static slits on both sides, a
+plenum that slows the air, and a baffle the air turns round but water
+droplets hit. A DoE over **platform speed**, **yaw** (crosswind) and
+**droplet diameter**, a response surface per output and a Monte Carlo on
+them. Outputs: `face_velocity_ms` (maximum air speed 2 mm in front of the
+sensor face, goal < 1 m/s), `penetration` (share of droplets that got inside
+the housing and reached the face, goal 0) and `exchange_flow_lpm` (air
+exchanged through the sensor chamber).
+
+| Parameter | Type | Notes |
+|---|---|---|
+| `action` | string | `analytic`, `prepare_cfd`, `solve_cfd`, `import`, `export_fluent`, `status` |
+| `study_id` | string | `sps30-...` |
+| `setup` | object | `housing_step_path` (empty = built-in 120 × 70 × 80 mm housing), `scale_to_meters`, `sensor_face_center_m`, `sensor_face_normal`, `sensor_face_size_m`, `chamber_plane_x_m`, `fan_enabled`, `fan_flow_lpm`, `forward_axis`, `domain_multipliers`, `ambient_temp_c`, `water_density_kg_m3`, baseline `speed_ms`/`yaw_deg`/`droplet_um`, lumped dimensions (`port_area_m2`, `port_width_m`, `plenum_area_m2`, `baffle_gap_m`, `chamber_area_m2`, `chamber_fraction`), goals `max_face_velocity_ms`, `max_penetration`, `min_exchange_flow_lpm` |
+| `variables` | object | `speed_ms` (5–35), `yaw_deg` (−20..20), `droplet_um` (10–2000, log): `minimum`, `maximum`, `distribution`, `mean`, `std`, `mode`, `log` |
+| `study` | object | `doe` (`ccd`/`lhs`), `doe_points`, `surrogate` (`rbf`/`quadratic`), `monte_carlo_samples`, `seed` |
+| `cfd` | object | `mesh_resolution`, `iterations`, `mpi_ranks`, `droplets`, `random_walk`, `seed` |
+| `results_csv` | string | For `import` — `design_points.csv` filled in, or a Workbench export (`speed`, `yaw`, `droplet_diameter`, `face_velocity`, `sensor_trap_count`, `injected`, `ux_integral`) |
+| `max_points` | int | For `solve_cfd` |
+
+Returns the reliability (share of random conditions meeting every goal), the
+share per goal, the worst failing condition and, per output, statistics,
+worst case, sensitivities and the surface's leave-one-out error.
+
+**How the SU2 path handles droplets.** SU2 has no discrete phase model. The
+air is solved with SST k-ω (as specified); the program then tracks droplets
+through that field itself — Schiller–Naumann drag, gravity and a discrete
+random walk from k and ω — and stops each at the wall it meets ("trap"). The
+Fluent package uses Fluent's DPM with the same boundary fates.
+
 ---
 
 ## 4. Worked workflows
@@ -650,7 +683,7 @@ results with that context rather than as measurements.
 
 ## 9. The built-in assistant
 
-The same fifteen tools also back an assistant **inside the program**, on the
+The same sixteen tools also back an assistant **inside the program**, on the
 **AI Assistant** tab. It is for an operator who wants to type a request and
 have it carried out without running an external MCP client at all.
 

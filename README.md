@@ -11,7 +11,8 @@ A native Windows 11 CFD and thermal simulation platform for two jobs:
    studies**: a Design of Experiments over wind, sun and ground/roof
    radiation, a response surface and a Monte Carlo analysis of the
    thermometer's error, solved analytically, with SU2, or in ANSYS Fluent
-   from an exported Workbench package.
+   from an exported Workbench package — and **SPS30 dust-sensor housing
+   studies** (static ports, plenum, water impactor) with droplet tracking.
 
 Every setting is controllable two ways: through the desktop GUI, and
 programmatically by an AI agent over the Model Context Protocol. The same
@@ -31,6 +32,7 @@ Full guides are in **[docs/](docs/README.md)**, in English and Czech
 | Step-by-step course | [Tutorial](docs/en/TUTORIAL.md) | [Tutoriál](docs/cs/TUTORIAL.md) |
 | Every setting explained | [User Guide](docs/en/USER_GUIDE.md) | [Uživatelská příručka](docs/cs/USER_GUIDE.md) |
 | Radiation shield study with Ansys Student, from scratch | [Shield Study Guide](docs/en/SHIELD_STUDY_GUIDE.md) | [Studie radiačního štítu](docs/cs/SHIELD_STUDY_GUIDE.md) |
+| SPS30 housing study with Ansys Student, from scratch | [SPS30 Study Guide](docs/en/SPS30_STUDY_GUIDE.md) | [Studie krytu SPS30](docs/cs/SPS30_STUDY_GUIDE.md) |
 | AI agent interface | [MCP and AI Guide](docs/en/MCP_AI_GUIDE.md) | [MCP a AI](docs/cs/MCP_AI_GUIDE.md) |
 
 ---
@@ -503,6 +505,7 @@ regime it is in.
 | `run_aerodynamic_simulation` | Forces, coefficients, CoP, hinge torques |
 | `run_sensor_thermal_simulation` | BMP580 reading and bias (`analytic_only` for an instant answer) |
 | `radiation_shield_study` | Radiation-shield DoE → response surface → Monte Carlo; SU2 cases and a Fluent/Workbench package |
+| `sps30_housing_study` | SPS30 housing: face velocity, droplet penetration and air exchange over speed, yaw and droplet size; SU2 + droplet tracking, or Fluent DPM |
 | `generate_cfd_visualization` | Surface pressure, Mach slice, streamlines, thermal contours — shown in the Graphics tab |
 | `run_parametric_sweep` | Batch runs with summary curves and peak values |
 | `list_runs` | Rediscover ids from an earlier session |
@@ -515,7 +518,7 @@ out-of-range angle of attack gets a message it can act on.
 
 ### The built-in assistant
 
-`backend/ai_agent.py` drives the same fifteen tools from inside the program
+`backend/ai_agent.py` drives the same sixteen tools from inside the program
 over OpenRouter's OpenAI-compatible API, so no external MCP client is needed.
 Schemas are read from `server.list_tools()` rather than hand-copied, and a
 test asserts the direct-call registry and the registered tool list are

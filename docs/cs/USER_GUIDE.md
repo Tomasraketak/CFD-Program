@@ -610,6 +610,48 @@ ho přelinearizuje). SU2 nemá
 standardní k-ε; jeho případy používají SST. Balíček pro Fluent se drží zadání
 (standardní k-ε, DO radiace, pevná zóna štítu).
 
+
+### Studie krytu SPS30
+
+Třetí podzáložka, **SPS30 housing study**, prověřuje kryt prachového senzoru
+SPS30 na pohybující se platformě: zapuštěné statické štěrbiny po obou
+stranách (statický tlak, ne náporový), plenum, které vzduch zpomalí, a
+přepážku, kolem které vzduch zatočí, ale kapky vody ne. Tři cíle: vzduch u
+čela senzoru pomalejší než 1 m/s, žádná kapka na čele a dostatečná výměna
+vzduchu v komoře senzoru.
+
+**Nastavení.** STEP krytu (nebo vestavěný kryt 120 × 70 × 80 mm), směr, kam
+platforma v CAD jede (*Travel direction*), čelo senzoru (*střed*, kam *hledí*
+a *velikost*), rovina, na které se měří výměna vzduchu, ventilátor SPS30
+(modelovaný jako malé odsávání na čele; průtok je odhad — nastavte ho podle
+měření), velikost tunelu v délkách krytu, cíle a rozměry pro zjednodušený
+model.
+
+**Vstupy.** Rychlost platformy (5–35 m/s), stočení/yaw (−20..20°, boční vítr)
+a průměr kapek (10–2000 µm, logaritmicky), každý s rozdělením.
+
+**Postup** — jako u studie radiačního štítu: **Run analytic study**
+(zjednodušený model, okamžitě), **Prepare CFD cases + Fluent package**,
+**Solve CFD design points (SU2 + droplets)** (*Points to solve now* omezí
+počet), nebo **Import solved design points (CSV)** z Fluentu. Výsledky:
+nejhorší rychlost u čela, nejhorší průnik kapek, nejmenší výměna vzduchu a
+spolehlivost (všechny cíle splněny), podíl pro každý cíl, nejhorší
+nevyhovující podmínka, histogram každého výstupu a tabulka design pointů.
+
+**Kapky v SU2.** SU2 nemá model diskrétní fáze; vzduch se spočte s SST k-ω a
+program v něm kapky sleduje sám (odpor, gravitace, náhodná procházka) a
+každou zastaví na stěně, na kterou narazí. Průnik (penetration) je podíl
+kapek, které se dostaly do krytu a doletěly na čelo.
+
+> **Co čekat od fyziky.** Setrvačná separace funguje, když je Stokesovo
+> číslo kapky u přepážky kolem ~0,6 nebo víc. Jemná mlha (10–20 µm) v
+> pomalém vzduchu uvnitř má Stokesovo číslo mnohem menší a vzduch poslušně
+> následuje — to žádná ostřejší zatáčka nespraví; pomůže hydrofobní
+> membrána nebo filtr.
+
+Podrobný návod pro začátečníky krok za krokem, včetně Ansys Student s
+modelem diskrétní fáze (DPM), je ve **[Studii krytu SPS30](SPS30_STUDY_GUIDE.md)**.
+
 ---
 
 ## 10. Vizualizace
@@ -741,7 +783,7 @@ spuštění.
 ## 12. AI asistent
 
 Záložka **AI Assistant** umožňuje napsat běžnou větou, co chcete, a nechat to
-program udělat. Asistent sahá na program přesně přes těch patnáct nástrojů,
+program udělat. Asistent sahá na program přesně přes těch šestnáct nástrojů,
 které vystavuje MCP server — umí tedy to, co umíte vy přes rozhraní, a nic
 víc.
 

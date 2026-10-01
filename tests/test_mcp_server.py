@@ -40,6 +40,7 @@ SUPPORTING_TOOLS = {
     "update_settings",
     "preview_orientation",
     "radiation_shield_study",
+    "sps30_housing_study",
 }
 
 EXPECTED_TOOLS = SPECIFIED_TOOLS | SUPPORTING_TOOLS

@@ -618,6 +618,48 @@ temperature so SU2 solves it implicitly (a second pass re-linearises it). SU2 ha
 The Fluent package keeps to the specification (standard k-ε, DO radiation,
 conjugate solid).
 
+
+### SPS30 housing study
+
+The third sub-tab, **SPS30 housing study**, checks a housing for an SPS30
+particulate sensor on a moving platform: flush static slits on both sides
+(static pressure, not ram pressure), a plenum that slows the air, and a
+baffle round which the air turns but water droplets cannot. Three goals:
+air at the sensor face slower than 1 m/s, no droplet reaching the face,
+and enough air exchange through the sensor chamber.
+
+**Setup.** The housing STEP (or the built-in 120 × 70 × 80 mm housing), the
+direction the platform travels in the CAD (*Travel direction*), the sensor
+face (*centre*, the direction it *looks* and its *size*), the plane the
+chamber exchange flow is measured on, the SPS30 fan (modelled as a small
+extraction at the face; the flow is an estimate — set it from a
+measurement), the wind-tunnel size in housing lengths, the goals, and the
+dimensions the lumped model uses.
+
+**Inputs.** Platform speed (5–35 m/s), yaw (−20..20°, crosswind) and droplet
+diameter (10–2000 µm, logarithmic), each with a distribution.
+
+**Workflow** — as in the radiation-shield study: **Run analytic study**
+(lumped model, instant), **Prepare CFD cases + Fluent package**, **Solve
+CFD design points (SU2 + droplets)** (*Points to solve now* limits how many),
+or **Import solved design points (CSV)** from Fluent. Results: the worst
+face velocity, worst penetration, lowest exchange flow and the reliability
+(all goals met), the share per goal, the worst failing condition, a
+histogram per output and the design-point table.
+
+**Droplets in SU2.** SU2 has no discrete phase model; the air is solved with
+SST k-ω and the program tracks the droplets through it (drag, gravity,
+discrete random walk), trapping each at the wall it meets. Penetration is
+the share of the droplets that got inside the housing and reached the face.
+
+> **Physics to expect.** Inertial separation works when the droplet's
+> Stokes number at the baffle is near or above ~0.6. Fine mist (10–20 µm)
+> in slow internal air has a Stokes number far below that and follows the
+> air — no sharper turn fixes that; a hydrophobic membrane or filter does.
+
+A step-by-step beginner's walk-through, including Ansys Student with the
+Discrete Phase Model, is in the **[SPS30 Study Guide](SPS30_STUDY_GUIDE.md)**.
+
 ---
 
 ## 10. Visualisation
@@ -750,7 +792,7 @@ startup.
 
 The **AI Assistant** tab lets you say what you want in ordinary language and
 have the program do it. The assistant reaches the platform through exactly the
-same fifteen tools the MCP server exposes — it can do what you can do through
+same sixteen tools the MCP server exposes — it can do what you can do through
 the interface, and nothing else.
 
 It runs on a model of your choice through [OpenRouter](https://openrouter.ai),

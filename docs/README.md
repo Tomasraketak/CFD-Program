@@ -12,7 +12,8 @@ Dokumentace je k dispozici anglicky a česky.
 | **[Tutorial](en/TUTORIAL.md)** | Step-by-step course: installation, your first simulation, fin hinge torque, sweeps, visualisation, the BMP580 sensor case, projects, the built-in AI assistant, and AI control. **Start here.** |
 | **[User Guide](en/USER_GUIDE.md)** | Reference for every setting: what it does, how to choose a value, and the physics behind it — including the AI assistant and its API key. |
 | **[Radiation Shield Study Guide](en/SHIELD_STUDY_GUIDE.md)** | A thermometer radiation shield from scratch, for someone who has never done CFD: this program (analytic and SU2) and Ansys Student (Fluent, Workbench, DesignXplorer) step by step, and how to get the most accurate data. |
-| **[MCP and AI Guide](en/MCP_AI_GUIDE.md)** | Driving the platform from an AI assistant: setup, all fifteen tools, worked workflows, agent guidance and how the built-in assistant uses the same tools. |
+| **[SPS30 Housing Study Guide](en/SPS30_STUDY_GUIDE.md)** | A dust-sensor housing with static ports and a water impactor, from scratch: this program (analytic, SU2 + droplet tracking) and Ansys Student (Fluent with DPM, Workbench, DesignXplorer). |
+| **[MCP and AI Guide](en/MCP_AI_GUIDE.md)** | Driving the platform from an AI assistant: setup, all sixteen tools, worked workflows, agent guidance and how the built-in assistant uses the same tools. |
 | **[README](../README.md)** | Architecture, implementation notes and measured results. |
 
 ### Quick start
@@ -32,7 +33,8 @@ AeroThermalStudio.bat     start the program
 | **[Tutoriál](cs/TUTORIAL.md)** | Návod krok za krokem: instalace, první simulace, moment na závěsu křidélka, parametrické studie, vizualizace, případ senzoru BMP580, projekty, vestavěný AI asistent a ovládání pomocí AI. **Začněte zde.** |
 | **[Uživatelská příručka](cs/USER_GUIDE.md)** | Přehled všech nastavení: co dělají, jak volit hodnoty a fyzika za nimi — včetně AI asistenta a jeho API klíče. |
 | **[Studie radiačního štítu](cs/SHIELD_STUDY_GUIDE.md)** | Radiační štít teploměru od nuly, pro člověka, který nikdy nedělal CFD: tento program (analyticky i SU2) a Ansys Student (Fluent, Workbench, DesignXplorer) krok za krokem, a jak získat co nejpřesnější data. |
-| **[MCP a AI](cs/MCP_AI_GUIDE.md)** | Ovládání z AI asistenta: nastavení, všech patnáct nástrojů, hotové postupy, rady pro agenty a jak tytéž nástroje používá vestavěný asistent. |
+| **[Studie krytu SPS30](cs/SPS30_STUDY_GUIDE.md)** | Kryt prachového senzoru se statickými štěrbinami a odlučovačem vody od nuly: tento program (analyticky, SU2 + sledování kapek) a Ansys Student (Fluent s DPM, Workbench, DesignXplorer). |
+| **[MCP a AI](cs/MCP_AI_GUIDE.md)** | Ovládání z AI asistenta: nastavení, všech šestnáct nástrojů, hotové postupy, rady pro agenty a jak tytéž nástroje používá vestavěný asistent. |
 | **[README](../README.md)** | Architektura, poznámky k implementaci a naměřené výsledky (anglicky). |
 
 ### Rychlý start

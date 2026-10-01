@@ -1383,6 +1383,141 @@ def radiation_shield_study(
 
 
 # ---------------------------------------------------------------------------
+# Tool: SPS30 housing study (static ports, plenum, water impactor)
+# ---------------------------------------------------------------------------
+
+
+def _sps30_summary(result: Any) -> dict[str, Any]:
+    return {
+        "study_id": result.study_id,
+        "evaluator": result.evaluator.value,
+        "design_points": [p.model_dump(mode="json") for p in result.points],
+        "reliability": result.reliability,
+        "reliability_by_goal": result.reliability_by_goal,
+        "worst_failing_condition": result.first_failure,
+        "outputs": {
+            name: {
+                "mean": o.mean, "p05": o.p05, "p95": o.p95, "min": o.minimum, "max": o.maximum,
+                "worst_case": o.worst_case, "sensitivities": o.sensitivities,
+                "r_squared": o.r_squared, "leave_one_out_rmse": o.loo_rmse,
+            }
+            for name, o in result.outputs.items()
+        },
+        "notes": result.notes,
+    }
+
+
+@server.tool(
+    name="sps30_housing_study",
+    description=(
+        "SPS30 particulate-sensor housing study: static side ports, a plenum and "
+        "a baffle that stops water droplets. A DoE over platform speed, yaw "
+        "(crosswind) and droplet diameter, response surfaces and a Monte Carlo "
+        "give the maximum air velocity at the sensor face (goal < 1 m/s), the "
+        "share of droplets reaching the face (goal 0) and the chamber exchange "
+        "flow. action: 'analytic' (instant lumped model), 'prepare_cfd' (mesh, "
+        "SU2 cases, Fluent/Workbench package), 'solve_cfd' (SU2 SST air flow "
+        "plus droplet tracking per design point -- long), 'import' (points "
+        "solved in Fluent, from results_csv), 'export_fluent', 'status'."
+    ),
+)
+def sps30_housing_study(
+    action: str = "analytic",
+    study_id: str | None = None,
+    setup: dict[str, Any] | None = None,
+    variables: dict[str, Any] | None = None,
+    study: dict[str, Any] | None = None,
+    cfd: dict[str, Any] | None = None,
+    results_csv: str | None = None,
+    max_points: int | None = None,
+) -> dict[str, Any]:
+    """Run or continue an SPS30 housing study.
+
+    Parameters
+    ----------
+    action:
+        'analytic', 'prepare_cfd', 'solve_cfd', 'import', 'export_fluent', 'status'.
+    study_id:
+        An existing 'sps30-...' study (solve_cfd, export_fluent, status; optional for import).
+    setup:
+        Overrides of: housing_step_path (empty = built-in housing),
+        scale_to_meters, sensor_face_center_m, sensor_face_normal ('-x'...),
+        sensor_face_size_m [a, b], chamber_plane_x_m, fan_enabled,
+        fan_flow_lpm, forward_axis (travel direction in the CAD, '+x', '-x',
+        '+y', '-y'), domain_multipliers {upstream, downstream, lateral,
+        vertical}, ambient_temp_c, water_density_kg_m3, speed_ms, yaw_deg,
+        droplet_um, port_area_m2, port_width_m, plenum_area_m2,
+        baffle_gap_m, chamber_area_m2, chamber_fraction,
+        max_face_velocity_ms (goal, 1.0), max_penetration (goal, 0),
+        min_exchange_flow_lpm (goal, 0 = off).
+    variables:
+        Ranges keyed 'speed_ms' (default 5-35), 'yaw_deg' (-20..20),
+        'droplet_um' (10-2000, log), each {"minimum", "maximum",
+        "distribution": uniform|normal|triangular, "mean", "std", "mode", "log"}.
+    study:
+        doe ('ccd' 15 points or 'lhs'), doe_points, surrogate ('rbf' or
+        'quadratic'), monte_carlo_samples, seed.
+    cfd:
+        mesh_resolution, iterations, mpi_ranks, droplets (per point),
+        random_walk, seed.
+    results_csv:
+        For 'import': design_points.csv filled in, or a Workbench export.
+    max_points:
+        For 'solve_cfd': solve at most this many points in this call.
+    """
+    from backend import sps30_workflow as workflow
+    from core.sps30_models import Sps30CfdSettings, Sps30StudyParams
+
+    store = _store()
+    action = (action or "").strip().lower()
+    known = ("analytic", "prepare_cfd", "solve_cfd", "import", "export_fluent", "status")
+    if action not in known:
+        return _error(f"unknown action '{action}'; use {', '.join(known)}")
+    try:
+        base = workflow.load_params(store, study_id) if study_id else Sps30StudyParams()
+        data = base.model_dump(mode="json")
+        data["setup"].update(setup or {})
+        for name, overrides in (variables or {}).items():
+            if name not in ("speed_ms", "yaw_deg", "droplet_um"):
+                raise ValueError(f"unknown variable '{name}'; use speed_ms, yaw_deg or droplet_um")
+            data[name].update(overrides or {})
+        data.update(study or {})
+        params = Sps30StudyParams.model_validate(data)
+        settings = Sps30CfdSettings.model_validate(cfd or {})
+    except RecordNotFoundError as error:
+        return _error(str(error))
+    except Exception as error:  # noqa: BLE001
+        return _error(f"invalid parameters: {error}")
+    try:
+        if action == "analytic":
+            return _ok(**_sps30_summary(workflow.run_analytic(store, params)))
+        if action == "import":
+            if not results_csv:
+                return _error("action 'import' needs results_csv")
+            return _ok(**_sps30_summary(workflow.analyse_imported(store, params, results_csv, study_id)))
+        if action == "prepare_cfd":
+            return _ok(**workflow.prepare_cfd(store, params, settings, on_line=_broadcast_line))
+        if not study_id:
+            return _error(f"action '{action}' needs study_id")
+        if action == "solve_cfd":
+            summary = workflow.solve_cfd(store, study_id, _runner(), _broadcast_line, max_points)
+            _broadcast_finished()
+            result = summary.pop("result")
+            if result is not None:
+                summary.update(_sps30_summary(result))
+            return _ok(**summary)
+        if action == "export_fluent":
+            return _ok(study_id=study_id, fluent_folder=str(workflow.export_package(store, study_id)))
+        payload: dict[str, Any] = {"study_id": study_id, "params": params.model_dump(mode="json")}
+        result = workflow.load_result(store, study_id)
+        if result is not None:
+            payload.update(_sps30_summary(result))
+        return _ok(**payload)
+    except Exception as error:  # noqa: BLE001
+        return _error(str(error), study_id=study_id)
+
+
+# ---------------------------------------------------------------------------
 # Tool 4: visualisation
 # ---------------------------------------------------------------------------
 
@@ -2107,6 +2242,7 @@ TOOL_FUNCTIONS: dict[str, Any] = {
     "run_aerodynamic_simulation": run_aerodynamic_simulation,
     "run_sensor_thermal_simulation": run_sensor_thermal_simulation,
     "radiation_shield_study": radiation_shield_study,
+    "sps30_housing_study": sps30_housing_study,
     "generate_cfd_visualization": generate_cfd_visualization,
     "run_parametric_sweep": run_parametric_sweep_tool,
     "list_runs": list_runs,
@@ -2133,6 +2269,7 @@ LONG_RUNNING_TOOLS = frozenset(
 # Actions of a multi-purpose tool that are long, keyed by tool name.
 LONG_RUNNING_ACTIONS: dict[str, frozenset[str]] = {
     "radiation_shield_study": frozenset({"prepare_cfd", "solve_cfd"}),
+    "sps30_housing_study": frozenset({"prepare_cfd", "solve_cfd"}),
 }
 
 

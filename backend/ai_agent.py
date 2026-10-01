@@ -138,6 +138,16 @@ Working rules:
   its inputs, the reliability and the surface's leave-one-out error, and
   say which evaluator produced the numbers. SU2 has no standard k-epsilon:
   its cases use SST, the Fluent package uses k-epsilon as specified.
+- SPS30 dust-sensor housing studies (static side ports, plenum, baffle
+  against water) go through sps30_housing_study, with the same actions:
+  inputs are platform speed (5-35 m/s), yaw (-20..20 deg) and droplet
+  diameter (10-2000 um); outputs the maximum air velocity at the sensor
+  face (goal < 1 m/s), the share of droplets that got inside and reached
+  the face (goal 0) and the chamber exchange flow. SU2 has no discrete
+  phase model: the program tracks droplets itself in the solved SST air
+  field (drag, gravity, random walk); the Fluent package uses DPM. Say
+  plainly that fine mist cannot be stopped by inertia alone when the
+  results show it.
 - Runtimes vary enormously: the analytical sensor model returns in
   milliseconds, a mesh takes minutes, and a sweep takes its point count times
   3-8 minutes. Tell the operator what a step will cost before starting it.
