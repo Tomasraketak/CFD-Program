@@ -174,6 +174,22 @@ It does **not** rotate the model — the orientation in the file is used as is.
 | Plates at least ~1.5 mm thick, air gaps **≥ ~3 mm**, no details under ~1 mm (screws, lettering, small fillets, snap hooks) | the program measures the narrowest air gap and sizes the cells near the shield to put 3 (coarse), 4 (medium) or 6 (fine) cells across it, and at least 20/30/45 along the shield — the log says what set the size. A smaller gap means many more cells | very narrow gaps → a huge mesh (over the Ansys Student limit) or a failing one |
 | Under ~1 million cells for Ansys Student — keep the model simple | Student licence limit | Fluent refuses the mesh |
 
+**Two-sided plates.** A plate can have different surfaces on its two sides
+— shiny aluminium facing the sun and black paint underneath, say. Set
+*Top side absorptivity / emissivity* (faces that look up) and *Bottom side
+absorptivity / emissivity* (faces that look down); left at *auto* they use
+the *Shield* values. Edges take the mean. The analytic model, the SU2 ray
+casting and the Fluent package (README: how to split the shield wall by
+face direction) all use them. For shiny aluminium use about 0.15 / 0.1, for
+black paint about 0.95 / 0.9.
+
+**The assistant uses the shield you have open.** Whatever this tab shows —
+your STEP, the optics, the ranges — is what the assistant's study tool
+starts from when you do not name a study; every reply says so
+(`setup_source`) and lists what it actually used (`applied_setup`,
+`applied_optics`). So "run the analytic study on my shield" means this
+shield, and its picture is your model, not the built-in one.
+
 **Two fields must match your model**, because the analytic model and the
 monitor point do not read them from the file:
 

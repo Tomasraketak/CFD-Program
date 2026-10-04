@@ -747,7 +747,9 @@ Images the assistant renders also appear inline in its conversation, with a
 link straight to the Graphics tab. Click a picture (or **Enlarge**) to open
 it full size in its own window: mouse wheel or +/− zooms, drag pans, 0 fits,
 1 is actual size, double-click toggles; **Save as…** and **Open externally**
-are there too.
+are there too. Right-click a picture for the same actions. The Graphics tab
+also lists geometry previews and sweep charts, so "Open in the Graphics tab"
+always finds the picture.
 
 The files themselves are in `runs/<sim_id>/renders/` under the data folder.
 

@@ -428,6 +428,17 @@ plastic plates); SU2 has no standard k-ε, so SST is used. The Fluent package
 follows the specification exactly: standard k-ε, DO radiation, conjugate
 solid.
 
+**What a call starts from, and what it used.** `setup`, `variables`,
+`study` and `cfd` are typed objects listing every field (JSON text is also
+accepted); pass only what changes. Without `study_id` the base is what the
+operator has open on the study tab, otherwise the defaults. Every reply
+carries `setup_source`, `applied_setup`, `applied_optics`,
+`applied_variables` and `applied_study`. Two-sided plates:
+`top_side_solar_absorptivity`, `top_side_emissivity`,
+`bottom_side_solar_absorptivity`, `bottom_side_emissivity` (faces looking
+up / down; unset = the shield values). The built-in assistant does not run
+an identical call twice in one request (status and solve_cfd excepted).
+
 **Sweeps and pictures.** `sweep` answers "what does one input do" at the
 steps asked for: every row is the analytical model itself, returned as
 `rows` and saved as `sweep.csv` with a chart (`image_path`). A table at fixed

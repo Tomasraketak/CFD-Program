@@ -2090,6 +2090,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.aero_tab.simulationFinished.connect(self.graphics_tab.render_standard)
         self.ai_tab.imageProduced.connect(self.graphics_tab.select_image)
         self.ai_tab.showGraphics.connect(self.show_graphics)
+        self.ai_tab.studyChanged.connect(self._study_from_assistant)
         self.ai_tab.openRun.connect(self.open_run)
         self.ai_tab.openProject.connect(lambda path: self.open_project(path))
 
@@ -2110,6 +2111,14 @@ class MainWindow(QtWidgets.QMainWindow):
             ]
             if images:
                 self.graphics_tab.select_image(images[0].path)
+
+    def _study_from_assistant(self, kind: str, study_id: str) -> None:
+        """Show a study the assistant just ran on its tab."""
+        panel = self.sensor_tab.shield_panel if kind == "shield" else self.sensor_tab.sps30_panel
+        try:
+            panel.refresh_studies(select=study_id)
+        except Exception:  # noqa: BLE001 - a display nicety must not break the chat
+            pass
 
     def show_graphics(self, path: str = "") -> None:
         """Switch to the Graphics tab, with an image selected if given."""

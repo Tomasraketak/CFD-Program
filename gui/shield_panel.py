@@ -113,6 +113,9 @@ class ShieldStudyPanel(QtWidgets.QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(splitter)
         self.refresh_studies()
+        from gui.study_extras import publish_study_state
+
+        self._publish_timer = publish_study_state(self, "shield")
 
     # ------------------------------------------------------------------ controls
 
@@ -181,6 +184,26 @@ class ShieldStudyPanel(QtWidgets.QWidget):
         form.addRow("Shield solar absorptivity", self.absorptivity)
         self.emissivity = _spin(0.0, 1.0, setup.shield_emissivity, 2, 0.05)
         form.addRow("Shield emissivity", self.emissivity)
+        # Two-sided plates (shiny top, black bottom): 'auto' = the values above.
+        self.top_absorptivity = _optional_spin(1.0, 2)
+        self.top_emissivity = _optional_spin(1.0, 2)
+        self.bottom_absorptivity = _optional_spin(1.0, 2)
+        self.bottom_emissivity = _optional_spin(1.0, 2)
+        for box in (self.top_absorptivity, self.top_emissivity,
+                    self.bottom_absorptivity, self.bottom_emissivity):
+            # One step below 0 reads 'auto'; the first step up is 0.00.
+            box.setRange(-0.05, 1.0)
+            box.setValue(-0.05)
+            box.setSingleStep(0.05)
+            box.setToolTip(
+                "Faces looking up (top side) or down (bottom side); 'auto' "
+                "uses the shield value above. E.g. shiny aluminium top 0.15 / "
+                "0.1, black bottom 0.95 / 0.9."
+            )
+        form.addRow("Top side absorptivity", self.top_absorptivity)
+        form.addRow("Top side emissivity", self.top_emissivity)
+        form.addRow("Bottom side absorptivity", self.bottom_absorptivity)
+        form.addRow("Bottom side emissivity", self.bottom_emissivity)
         self.conductivity = _spin(0.01, 500.0, setup.shield_conductivity_w_mk, 3, 0.05, " W/(m K)")
         form.addRow("Shield conductivity", self.conductivity)
         self.ventilation = _spin(0.01, 1.0, setup.ventilation_coefficient, 2, 0.05)
@@ -448,6 +471,10 @@ class ShieldStudyPanel(QtWidgets.QWidget):
             ground_albedo=self.albedo.value(),
             shield_solar_absorptivity=self.absorptivity.value(),
             shield_emissivity=self.emissivity.value(),
+            top_side_solar_absorptivity=_optional(self.top_absorptivity),
+            top_side_emissivity=_optional(self.top_emissivity),
+            bottom_side_solar_absorptivity=_optional(self.bottom_absorptivity),
+            bottom_side_emissivity=_optional(self.bottom_emissivity),
             shield_conductivity_w_mk=self.conductivity.value(),
             ventilation_coefficient=self.ventilation.value(),
         )
@@ -507,6 +534,10 @@ class ShieldStudyPanel(QtWidgets.QWidget):
         self.albedo.setValue(setup.ground_albedo)
         self.absorptivity.setValue(setup.shield_solar_absorptivity)
         self.emissivity.setValue(setup.shield_emissivity)
+        _set_optional(self.top_absorptivity, setup.top_side_solar_absorptivity)
+        _set_optional(self.top_emissivity, setup.top_side_emissivity)
+        _set_optional(self.bottom_absorptivity, setup.bottom_side_solar_absorptivity)
+        _set_optional(self.bottom_emissivity, setup.bottom_side_emissivity)
         self.conductivity.setValue(setup.shield_conductivity_w_mk)
         self.ventilation.setValue(setup.ventilation_coefficient)
         for name, widgets in self._variable_widgets.items():

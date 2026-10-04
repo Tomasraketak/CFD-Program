@@ -24,7 +24,7 @@ from enum import Enum
 
 from pydantic import Field, model_validator
 
-from core.models import StrictModel, Vector3
+from core.models import StrictModel, Vector3, partial_model
 
 SPS30_VARIABLES = ("speed_ms", "yaw_deg", "droplet_um")
 SPS30_LABELS = {
@@ -218,3 +218,29 @@ class Sps30Result(StrictModel):
         default=None, description="The failing sample furthest from its goals, if any."
     )
     notes: list[str] = Field(default_factory=list)
+
+
+# Overrides the assistant's tool takes (every field optional, all listed).
+Sps30SetupOverrides = partial_model(Sps30Setup, "Sps30SetupOverrides")
+Sps30VariableOverrides = partial_model(Sps30Variable, "Sps30VariableOverrides")
+
+
+class Sps30VariablesOverrides(StrictModel):
+    """Ranges of the three inputs (only those being changed)."""
+
+    speed_ms: Sps30VariableOverrides | None = None  # type: ignore[valid-type]
+    yaw_deg: Sps30VariableOverrides | None = None  # type: ignore[valid-type]
+    droplet_um: Sps30VariableOverrides | None = None  # type: ignore[valid-type]
+
+
+class Sps30StudyOverrides(StrictModel):
+    """How to explore the inputs (only what is being changed)."""
+
+    doe: str | None = Field(default=None, description="'ccd' (15 points) or 'lhs'.")
+    doe_points: int | None = None
+    surrogate: str | None = Field(default=None, description="'rbf' or 'quadratic'.")
+    monte_carlo_samples: int | None = None
+    seed: int | None = None
+
+
+Sps30CfdOverrides = partial_model(Sps30CfdSettings, "Sps30CfdOverrides")

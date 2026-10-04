@@ -738,7 +738,9 @@ Obrázky, které vykreslí asistent, se objeví i přímo v jeho konverzaci,
 s odkazem rovnou do záložky Graphics. Kliknutím na obrázek (nebo na
 **Enlarge**) se otevře v plné velikosti ve vlastním okně: kolečko myši nebo
 +/− přibližuje, tažení posouvá, 0 přizpůsobí oknu, 1 je skutečná velikost,
-dvojklik přepíná; je tam i **Save as…** a **Open externally**.
+dvojklik přepíná; je tam i **Save as…** a **Open externally**. Totéž nabídne
+pravé tlačítko na obrázku. Záložka Graphics nově ukazuje i náhledy geometrie
+a grafy sweepů, takže „Open in the Graphics tab“ obrázek vždy najde.
 
 Samotné soubory jsou v `runs/<sim_id>/renders/` v datové složce.
 

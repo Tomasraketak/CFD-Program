@@ -425,6 +425,17 @@ neřeší (tenké plastové desky); SU2 nemá standardní k-ε, používá se SS
 Balíček pro Fluent se drží zadání přesně: standardní k-ε, DO radiace, pevná
 zóna štítu.
 
+**Z čeho volání vychází a co použilo.** `setup`, `variables`, `study` a
+`cfd` jsou typované objekty se všemi poli (přijme se i JSON text); stačí
+předat, co se mění. Bez `study_id` je základem to, co má operátor otevřené
+na záložce studie, jinak výchozí hodnoty. Každá odpověď obsahuje
+`setup_source`, `applied_setup`, `applied_optics`, `applied_variables` a
+`applied_study`. Oboustranné desky: `top_side_solar_absorptivity`,
+`top_side_emissivity`, `bottom_side_solar_absorptivity`,
+`bottom_side_emissivity` (plochy hledící nahoru / dolů; nezadané = hodnoty
+štítu). Vestavěný asistent nespustí v jednom požadavku dvakrát stejné
+volání (kromě status a solve_cfd).
+
 **Sweepy a obrázky.** `sweep` odpovídá na otázku „co dělá jeden vstup“ po
 zadaných krocích: každý řádek je přímo analytický model, vrací se jako
 `rows` a ukládá jako `sweep.csv` s grafem (`image_path`). Tabulku po pevných

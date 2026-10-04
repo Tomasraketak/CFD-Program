@@ -61,20 +61,40 @@ class RenderedImage:
         return self.path.stem.replace("_", " ")
 
 
-def find_rendered_images(store: RunStore) -> list[RenderedImage]:
-    """Every PNG in every run's ``renders`` folder, newest first."""
+# Pictures that belong to no run: geometry previews and sweep charts. They
+# sit beside the runs folder and are listed under these names.
+EXTRA_IMAGE_FOLDERS = (("previews", "*.png", "previews"), ("sweeps", "*/sweep.png", "sweeps"))
+
+
+def find_rendered_images(
+    store: RunStore, extra: tuple[Path | str, ...] = ()
+) -> list[RenderedImage]:
+    """Every PNG in every run's ``renders`` folder, newest first.
+
+    Also the geometry previews and sweep charts, and any ``extra`` files --
+    a picture shown in the assistant's conversation must be findable here,
+    wherever it was saved.
+    """
     images: list[RenderedImage] = []
     runs = store.runs_dir
-    if not runs.is_dir():
-        return images
-    for path in runs.glob("*/renders/*.png"):
+    found: list[tuple[Path, str]] = []
+    if runs.is_dir():
+        found += [(path, path.parent.parent.name) for path in runs.glob("*/renders/*.png")]
+    base = runs.parent
+    for folder, pattern, label in EXTRA_IMAGE_FOLDERS:
+        if (base / folder).is_dir():
+            found += [(path, label) for path in (base / folder).glob(pattern)]
+    known = {path.resolve() for path, _ in found if path.exists()}
+    for item in extra:
+        path = Path(item)
+        if path.is_file() and path.resolve() not in known:
+            found.append((path, "other"))
+    for path, label in found:
         try:
             modified = path.stat().st_mtime
         except OSError:  # pragma: no cover - removed while scanning
             continue
-        images.append(
-            RenderedImage(path=path, sim_id=path.parent.parent.name, modified=modified)
-        )
+        images.append(RenderedImage(path=path, sim_id=label, modified=modified))
     return sorted(images, key=lambda image: image.modified, reverse=True)
 
 
@@ -168,6 +188,8 @@ class GraphicsTab(QtWidgets.QWidget):
         self._images: list[RenderedImage] = []
         self._signature: tuple = ()
         self._pending_selection: str | None = None
+        # Pictures asked for by path that live outside the scanned folders.
+        self._extra_images: list[str] = []
         self._rendering = 0
 
         splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
@@ -367,7 +389,7 @@ class GraphicsTab(QtWidgets.QWidget):
 
     def refresh(self, force: bool = False) -> None:
         """Rescan the registry, redrawing only when something changed."""
-        images = find_rendered_images(self.store)
+        images = find_rendered_images(self.store, tuple(self._extra_images))
         signature = tuple((str(image.path), image.modified) for image in images)
         self._refresh_runs()
         if signature == self._signature and not force:
@@ -453,6 +475,11 @@ class GraphicsTab(QtWidgets.QWidget):
     def select_image(self, path: Path | str) -> None:
         """Show a particular image, rescanning first if it is new."""
         self._pending_selection = str(Path(path))
+        if Path(path).is_file() and str(Path(path)) not in self._extra_images:
+            self._extra_images.append(str(Path(path)))
+        # Showing every run: a run filter would hide the picture asked for.
+        if self.filter_combo.currentIndex() > 0:
+            self.filter_combo.setCurrentIndex(0)
         self.refresh(force=True)
 
     def selected_path(self) -> str | None:

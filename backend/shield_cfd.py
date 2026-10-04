@@ -590,10 +590,24 @@ class RadiationFacets:
     sky_view: np.ndarray   # (F,) view factor to the sky
     ground_view: np.ndarray  # (F,) view factor to the ground / roof
 
+    def optics(self, setup: ShieldSetup) -> tuple[np.ndarray, np.ndarray]:
+        """Per-facet (solar absorptivity, emissivity) from which way it faces.
+
+        Facets looking up (n_z > 0.3) take the top-side optics, those looking
+        down (n_z < -0.3) the bottom side's, the rest the mean.
+        """
+        sides = setup.side_optics()
+        nz = self.normals[:, 2]
+        alpha = np.full(len(nz), sides["side"][0])
+        emissivity = np.full(len(nz), sides["side"][1])
+        up, down = nz > 0.3, nz < -0.3
+        alpha[up], emissivity[up] = sides["top"]
+        alpha[down], emissivity[down] = sides["bottom"]
+        return alpha, emissivity
+
     def absorbed(self, setup: ShieldSetup, solar: float, bottom: float) -> np.ndarray:
         """Absorbed flux per facet, W/m^2, for one condition."""
-        alpha = setup.shield_solar_absorptivity
-        emissivity = setup.shield_emissivity
+        alpha, emissivity = self.optics(setup)
         cosine = np.clip(self.normals[:, 2], 0.0, None)
         return (
             alpha * solar * cosine * self.sunlit
@@ -605,7 +619,7 @@ class RadiationFacets:
     def emitted(self, setup: ShieldSetup, wall_temp_k: np.ndarray) -> np.ndarray:
         """Emission lost to the surroundings per facet, W/m^2."""
         return (
-            setup.shield_emissivity
+            self.optics(setup)[1]
             * STEFAN_BOLTZMANN
             * wall_temp_k**4
             * (self.sky_view + self.ground_view)
@@ -1065,7 +1079,7 @@ def _marker_fluxes(
     """
     facets = prepared.facets
     view = facets.sky_view + facets.ground_view
-    h_r = 4.0 * setup.shield_emissivity * STEFAN_BOLTZMANN * view * wall**3
+    h_r = 4.0 * facets.optics(setup)[1] * STEFAN_BOLTZMANN * view * wall**3
     net = absorbed - facets.emitted(setup, wall)
     conditions: dict[str, float | tuple[float, float]] = {}
     for label in range(prepared.class_count):

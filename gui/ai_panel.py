@@ -154,6 +154,8 @@ class AITab(QtWidgets.QWidget):
     statusMessage = QtCore.Signal(str)
     # The assistant rendered an image; carries its path.
     imageProduced = QtCore.Signal(str)
+    # The assistant created or updated a sensor study: (kind, study_id).
+    studyChanged = QtCore.Signal(str, str)
     # The operator clicked through to the Graphics tab from the transcript.
     showGraphics = QtCore.Signal(str)
     # Open a stored mesh or simulation, or a saved project, in the program.
@@ -391,6 +393,9 @@ class AITab(QtWidgets.QWidget):
         # try to navigate to them: an image link opens the Graphics tab.
         self.transcript.setOpenLinks(False)
         self.transcript.anchorClicked.connect(self._on_link)
+        self.transcript.viewport().installEventFilter(self)
+        self.transcript.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
+        self.transcript.customContextMenuRequested.connect(self._transcript_menu)
         layout.addWidget(self.transcript, 1)
 
         # The live convergence chart, shown while a solve the assistant
@@ -870,6 +875,10 @@ class AITab(QtWidgets.QWidget):
             if not event.failed:
                 for image in _image_paths(getattr(event, "result", None)):
                     self._append_image(image)
+            result = getattr(event, "result", None)
+            kind = STUDY_TOOLS.get(getattr(event, "tool", ""))
+            if kind and isinstance(result, dict) and result.get("study_id"):
+                self.studyChanged.emit(kind, str(result["study_id"]))
         elif kind == EVENT_RETRY:
             self._append_note(event.message)
         elif kind == EVENT_LIMIT:
@@ -974,6 +983,7 @@ class AITab(QtWidgets.QWidget):
         self.solve_chart.setVisible(False)
         self._chart_active = False
         self.transcript.setHtml(conversation.transcript_html)
+        self._rebuild_image_index()
         self._append_related_work(conversation)
         self.refresh_history()
         self.statusMessage.emit(f"Continuing: {conversation.title}")
@@ -1088,31 +1098,75 @@ class AITab(QtWidgets.QWidget):
 
         The picture itself, not only its path: a path at the end of a long
         reply is how an operator came to have "no idea where the graphics
-        are".
+        are". The links carry a number, not the path: a Windows path with
+        a drive letter, backslashes and spaces does not survive a round
+        trip through a URL reliably.
         """
+        number = self._register_image(path)
         url = QtCore.QUrl.fromLocalFile(str(path)).toString()
-        target = QtCore.QUrl(GRAPHICS_SCHEME + ":" + str(path)).toString()
-        viewer = QtCore.QUrl(IMAGE_SCHEME + ":" + str(path)).toString()
+        viewer = f"{IMAGE_SCHEME}:{number}"
+        target = f"{GRAPHICS_SCHEME}:{number}"
         self._append(
             f'<p style="margin:4px 0 0 14px;">'
-            f'<a href="{html.escape(viewer)}"><img src="{html.escape(url)}" '
+            f'<a href="{viewer}"><img src="{html.escape(url)}" '
             f'width="{TRANSCRIPT_IMAGE_WIDTH}"></a><br>'
-            f'<a href="{html.escape(viewer)}" style="color:{ACCENT};">'
-            f"Enlarge</a>"
-            f'<span style="color:{TEXT_MUTED};"> (or click the picture) · </span>'
-            f'<a href="{html.escape(target)}" style="color:{ACCENT};">'
-            f"Open in the Graphics tab</a>"
+            f'<a href="{viewer}" style="color:{ACCENT};">Enlarge</a>'
+            f'<span style="color:{TEXT_MUTED};"> (or click the picture; right-click for more) · </span>'
+            f'<a href="{target}" style="color:{ACCENT};">Open in the Graphics tab</a>'
             f"</p>"
         )
         self.imageProduced.emit(str(path))
 
+    def _register_image(self, path: Path | str) -> int:
+        images = self.__dict__.setdefault("_transcript_images", [])
+        text = str(path)
+        if text in images:
+            return images.index(text)
+        images.append(text)
+        return len(images) - 1
+
+    def _rebuild_image_index(self) -> None:
+        """Recover which number means which picture in a restored conversation.
+
+        The links only carry a number; the picture each one wraps is still
+        in the document, so the numbering is read back from there.
+        """
+        images: dict[int, str] = {}
+        block = self.transcript.document().begin()
+        while block.isValid():
+            iterator = block.begin()
+            while not iterator.atEnd():
+                fmt = iterator.fragment().charFormat()
+                href = fmt.anchorHref() if fmt.isAnchor() else ""
+                if fmt.isImageFormat() and href.startswith(IMAGE_SCHEME + ":"):
+                    number = href.split(":", 1)[1]
+                    if number.isdigit():
+                        name = fmt.toImageFormat().name()
+                        images[int(number)] = QtCore.QUrl(name).toLocalFile() or name
+                iterator += 1
+            block = block.next()
+        size = max(images, default=-1) + 1
+        self._transcript_images = [images.get(index, "") for index in range(size)]
+
+    def _image_for(self, url: QtCore.QUrl | str) -> Path | None:
+        """The picture a transcript link means: by number, or an old path link."""
+        url = QtCore.QUrl(url) if isinstance(url, str) else url
+        reference = url.path() or url.toString().split(":", 1)[-1]
+        images = self.__dict__.get("_transcript_images", [])
+        if reference.isdigit():
+            index = int(reference)
+            return Path(images[index]) if index < len(images) and images[index] else None
+        return Path(reference) if reference else None
+
     def _on_link(self, url: QtCore.QUrl) -> None:
         """Follow a link clicked in the transcript."""
         if url.scheme() == IMAGE_SCHEME:
-            self.open_image(url.path())
+            self.open_image(self._image_for(url))
             return
         if url.scheme() == GRAPHICS_SCHEME:
-            self.showGraphics.emit(url.path())
+            image = self._image_for(url)
+            if image is not None:
+                self.showGraphics.emit(str(image))
             return
         if url.scheme() == RUN_SCHEME:
             self.openRun.emit(url.path())
@@ -1122,16 +1176,82 @@ class AITab(QtWidgets.QWidget):
             return
         QtGui.QDesktopServices.openUrl(url)
 
-    def open_image(self, path: str | Path) -> "ImageViewer | None":
+    def _image_under(self, position: QtCore.QPoint) -> Path | None:
+        """The transcript picture at a viewport position, if any."""
+        anchor = self.transcript.anchorAt(position)
+        if anchor.startswith((IMAGE_SCHEME + ":", GRAPHICS_SCHEME + ":")):
+            return self._image_for(QtCore.QUrl(anchor))
+        cursor = self.transcript.cursorForPosition(position)
+        for offset in (0, 1):
+            probe = QtGui.QTextCursor(cursor)
+            probe.setPosition(max(0, cursor.position() + offset))
+            fmt = probe.charFormat()
+            if fmt.isImageFormat():
+                name = fmt.toImageFormat().name()
+                local = QtCore.QUrl(name).toLocalFile() or name
+                return Path(local)
+        return None
+
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802 - Qt override
+        """Clicks on transcript pictures and their links, handled here.
+
+        Following them through QTextBrowser's anchorClicked alone proved
+        unreliable on the operator's machine, so a left click on an image
+        or one of its links is acted on directly.
+        """
+        viewport = self.transcript.viewport() if hasattr(self, "transcript") else None
+        if watched is viewport and event.type() == QtCore.QEvent.Type.MouseButtonRelease:
+            if event.button() == QtCore.Qt.MouseButton.LeftButton:
+                position = event.position().toPoint()
+                anchor = self.transcript.anchorAt(position)
+                if anchor.startswith(GRAPHICS_SCHEME + ":"):
+                    self._on_link(QtCore.QUrl(anchor))
+                    return True
+                if anchor.startswith(IMAGE_SCHEME + ":") or (
+                    not anchor and self._image_under(position) is not None
+                ):
+                    self.open_image(self._image_under(position))
+                    return True
+        return super().eventFilter(watched, event)
+
+    def _transcript_menu(self, position: QtCore.QPoint) -> None:
+        """Right-click: picture actions on a picture, the usual menu elsewhere."""
+        image = self._image_under(position)
+        menu = (
+            QtWidgets.QMenu(self) if image is not None
+            else self.transcript.createStandardContextMenu(position)
+        )
+        if image is not None:
+            menu.addAction("Enlarge", lambda: self.open_image(image))
+            menu.addAction("Open in the Graphics tab", lambda: self.showGraphics.emit(str(image)))
+            menu.addAction(
+                "Open externally",
+                lambda: QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(image))),
+            )
+            menu.addAction("Save as…", lambda: ImageViewer.save_copy(self, image))
+        menu.exec(self.transcript.viewport().mapToGlobal(position))
+
+    def open_image(self, path: str | Path | None) -> "ImageViewer | None":
         """Show a transcript picture full size in its own window."""
+        if path is None:
+            self._append_note("That picture is not known any more.")
+            return None
         path = Path(path)
         if not path.is_file():
-            self._warn(f"The picture is no longer there:\n{path}")
+            self._append_note(f"The picture is no longer there: {path}")
             return None
-        viewer = ImageViewer(path, self)
-        self._viewers = [v for v in getattr(self, "_viewers", []) if v.isVisible()]
-        self._viewers.append(viewer)
+        viewer = ImageViewer(path)
+        alive = []
+        for existing in self.__dict__.get("_viewers", []):
+            try:
+                if existing.isVisible():
+                    alive.append(existing)
+            except RuntimeError:  # its window was already destroyed
+                continue
+        self._viewers = alive + [viewer]
         viewer.show()
+        viewer.raise_()
+        viewer.activateWindow()
         return viewer
 
     def _append_note(self, text: str) -> None:
@@ -1154,6 +1274,7 @@ class AITab(QtWidgets.QWidget):
 
 
 IMAGE_KEYS = ("image_path", "geometry_image_path")
+STUDY_TOOLS = {"radiation_shield_study": "shield", "sps30_housing_study": "sps30"}
 
 
 def _image_paths(result: Any) -> list[Path]:
@@ -1233,8 +1354,12 @@ class ImageViewer(QtWidgets.QDialog):
         super().__init__(parent)
         self.path = Path(path)
         self.setWindowTitle(self.path.name)
+        # A window of its own (no parent): it can never open behind the main
+        # window or vanish with it. It is not deleted on close either -- the
+        # tab keeps a reference and drops it when hidden.
+        self.setWindowFlag(QtCore.Qt.WindowType.Window, True)
         self.setWindowFlag(QtCore.Qt.WindowType.WindowMaximizeButtonHint, True)
-        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        self.setWindowFlag(QtCore.Qt.WindowType.WindowMinimizeButtonHint, True)
         self.pixmap = QtGui.QPixmap(str(self.path))
         self.zoom = 1.0
         self._fit = True
@@ -1330,13 +1455,17 @@ class ImageViewer(QtWidgets.QDialog):
         return super().eventFilter(watched, event)
 
     def save_as(self) -> None:
+        ImageViewer.save_copy(self, self.path)
+
+    @staticmethod
+    def save_copy(parent: QtWidgets.QWidget, path: Path) -> None:
         target, _ = QtWidgets.QFileDialog.getSaveFileName(
-            self, "Save picture", str(Path.home() / self.path.name), "PNG image (*.png)"
+            parent, "Save picture", str(Path.home() / Path(path).name), "PNG image (*.png)"
         )
         if target:
             import shutil
 
-            shutil.copyfile(self.path, target)
+            shutil.copyfile(path, target)
 
     def open_externally(self) -> None:
         QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(self.path)))

@@ -263,12 +263,12 @@ def test_an_image_from_the_assistant_appears_in_the_transcript(
 
     wanted = []
     tab.showGraphics.connect(wanted.append)
-    tab._on_link(QtCore.QUrl(f"ats-graphics:{image}"))
+    tab._on_link(QtCore.QUrl("ats-graphics:0"))
     assert wanted == [str(image)]
 
     # Clicking the picture itself opens it full size in a zoomable window.
-    assert f"ats-image:{image}" in tab.transcript.toHtml()
-    tab._on_link(QtCore.QUrl(f"ats-image:{image}"))
+    assert "ats-image:0" in tab.transcript.toHtml()
+    tab._on_link(QtCore.QUrl("ats-image:0"))
     viewer = tab._viewers[-1]
     assert viewer.isVisible() and viewer.path == image
     viewer.close()

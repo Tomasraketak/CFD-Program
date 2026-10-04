@@ -55,6 +55,18 @@ from core.models import (
     VelocityType,
 )
 from core.platform_env import data_root, probe_environment
+from core.shield_models import (
+    ShieldCfdOverrides,
+    ShieldSetupOverrides,
+    ShieldStudyOverrides,
+    ShieldVariablesOverrides,
+)
+from core.sps30_models import (
+    Sps30CfdOverrides,
+    Sps30SetupOverrides,
+    Sps30StudyOverrides,
+    Sps30VariablesOverrides,
+)
 from core.project import (
     PROJECT_EXTENSION,
     Project,
@@ -1245,6 +1257,109 @@ def _study_sweep(
     return _ok(**payload)
 
 
+def _as_overrides(value: Any, model: Any, label: str) -> dict[str, Any]:
+    """A tool's override argument as a plain dict of the fields it sets.
+
+    Accepts the typed object, a dict, or JSON text (some models send
+    objects as strings); unknown keys are refused by name.
+    """
+    from pydantic import BaseModel
+
+    if value is None:
+        return {}
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return {}
+        try:
+            value = json.loads(text)
+        except ValueError as error:
+            raise ValueError(f"{label} must be an object (or its JSON text): {error}") from error
+    if isinstance(value, BaseModel):
+        return value.model_dump(mode="json", exclude_none=True)
+    if isinstance(value, dict):
+        return model.model_validate(value).model_dump(mode="json", exclude_none=True)
+    raise ValueError(f"{label} must be an object, not {type(value).__name__}")
+
+
+TAB_NAMES = {"shield": "the Radiation shield study tab", "sps30": "the SPS30 housing study tab"}
+
+
+def _study_base(kind: str, study_id: str | None, load: Any) -> tuple[Any, str]:
+    """What a call's overrides apply to, and where it came from.
+
+    An existing study when one is named; otherwise whatever the operator
+    has open on the study tab (their STEP file, optics, ranges), so "the
+    shield I have open" means exactly that; otherwise the defaults.
+    """
+    if study_id:
+        return load(_store(), study_id), f"study {study_id}"
+    from core.workspace import active_study
+
+    data = active_study(kind)
+    if data:
+        model = _study_model(kind)
+        try:
+            return model.model_validate(data), TAB_NAMES[kind]
+        except Exception:  # noqa: BLE001 - a stale file is ignored
+            pass
+    return None, "program defaults"
+
+
+def _study_model(kind: str) -> Any:
+    if kind == "shield":
+        from core.shield_models import ShieldStudyParams
+
+        return ShieldStudyParams
+    from core.sps30_models import Sps30StudyParams
+
+    return Sps30StudyParams
+
+
+def _with_applied(reply: dict[str, Any], applied: dict[str, Any]) -> dict[str, Any]:
+    """Tell the caller what was actually used, so it can check its request."""
+    if isinstance(reply, dict):
+        reply.update(applied)
+    return reply
+
+
+def _applied_shield(params: Any, source: str) -> dict[str, Any]:
+    setup = params.setup
+    return {
+        "setup_source": source,
+        "applied_setup": setup.model_dump(mode="json"),
+        "applied_optics": {side: {"solar_absorptivity": a, "emissivity": e}
+                           for side, (a, e) in setup.side_optics().items()},
+        "applied_variables": {
+            name: {"minimum": v.minimum, "maximum": v.maximum,
+                   "distribution": v.distribution.value, "scale": v.scale.value}
+            for name, v in params.variables().items()
+        },
+        "applied_study": {
+            "doe": params.doe.value, "doe_points": params.doe_points,
+            "surrogate": params.surrogate.value,
+            "monte_carlo_samples": params.monte_carlo_samples,
+            "tolerance_k": params.tolerance_k, "seed": params.seed,
+        },
+    }
+
+
+def _applied_sps30(params: Any, source: str) -> dict[str, Any]:
+    return {
+        "setup_source": source,
+        "applied_setup": params.setup.model_dump(mode="json"),
+        "applied_variables": {
+            name: {"minimum": v.minimum, "maximum": v.maximum, "log": v.log}
+            for name, v in params.variables().items()
+        },
+        "applied_study": {
+            "doe": params.doe, "doe_points": params.doe_points,
+            "surrogate": params.surrogate,
+            "monte_carlo_samples": params.monte_carlo_samples, "seed": params.seed,
+        },
+    }
+
+
 def _shield_params(
     base: Any,
     setup: dict[str, Any] | None,
@@ -1329,10 +1444,10 @@ def _shield_summary(result: Any) -> dict[str, Any]:
 def radiation_shield_study(
     action: str = "analytic",
     study_id: str | None = None,
-    setup: dict[str, Any] | None = None,
-    variables: dict[str, Any] | None = None,
-    study: dict[str, Any] | None = None,
-    cfd: dict[str, Any] | None = None,
+    setup: ShieldSetupOverrides | str | None = None,
+    variables: ShieldVariablesOverrides | str | None = None,
+    study: ShieldStudyOverrides | str | None = None,
+    cfd: ShieldCfdOverrides | str | None = None,
     results_csv: str | None = None,
     max_points: int | None = None,
     sweep_variable: str | None = None,
@@ -1362,7 +1477,10 @@ def radiation_shield_study(
         export_fluent and status; optional for import (its parameters are
         reused).
     setup:
-        Overrides of the setup, any of: shield_step_path, scale_to_meters,
+        Overrides of the setup (only the fields to change; the base is the
+        study_id's study, else what the operator has open on the Radiation
+        shield study tab, else the defaults -- see setup_source and
+        applied_setup in the reply). Any of: shield_step_path, scale_to_meters,
         shield_size_m [x,y,z], plate_count, domain_size_m [length along the
         wind, width, height] (default [2.0, 2.0, 1.44]), thermometer_xyz_m
         (monitor point relative to the shield centre), ambient_temp_c,
@@ -1370,6 +1488,9 @@ def radiation_shield_study(
         'roof_temperature'), bottom_flux_w_m2, bottom_temperature_k (343 K
         = 70 C roof), roof_emissivity, sky_longwave_w_m2, ground_albedo,
         shield_solar_absorptivity, shield_emissivity,
+        top_side_solar_absorptivity, top_side_emissivity,
+        bottom_side_solar_absorptivity, bottom_side_emissivity (two-sided
+        plates: faces looking up / down; null = the shield values),
         shield_conductivity_w_mk, ventilation_coefficient.
     variables:
         Ranges and distributions of the three inputs, keyed
@@ -1409,14 +1530,34 @@ def radiation_shield_study(
     if action not in known:
         return _error(f"unknown action '{action}'; use {', '.join(known)}")
     try:
-        base = workflow.load_params(store, study_id) if study_id else None
-        params = _shield_params(base, setup, variables, study)
-        settings = ShieldCfdSettings.model_validate(cfd or {})
+        base, source = _study_base("shield", study_id, workflow.load_params)
+        params = _shield_params(
+            base,
+            _as_overrides(setup, ShieldSetupOverrides, "setup"),
+            _as_overrides(variables, ShieldVariablesOverrides, "variables"),
+            _as_overrides(study, ShieldStudyOverrides, "study"),
+        )
+        settings = ShieldCfdSettings.model_validate(
+            _as_overrides(cfd, ShieldCfdOverrides, "cfd")
+        )
     except RecordNotFoundError as error:
         return _error(str(error))
     except Exception as error:  # noqa: BLE001 - validation message is the point
         return _error(f"invalid parameters: {error}")
+    return _with_applied(
+        _run_shield_action(
+            store, workflow, action, study_id, params, settings, results_csv,
+            max_points, sweep_variable, sweep_start, sweep_stop, sweep_step,
+        ),
+        _applied_shield(params, source),
+    )
 
+
+def _run_shield_action(
+    store, workflow, action, study_id, params, settings, results_csv,
+    max_points, sweep_variable, sweep_start, sweep_stop, sweep_step,
+) -> dict[str, Any]:
+    """One action of radiation_shield_study, with validated parameters."""
     try:
         if action == "sweep":
             return _study_sweep(
@@ -1518,10 +1659,10 @@ def _sps30_summary(result: Any) -> dict[str, Any]:
 def sps30_housing_study(
     action: str = "analytic",
     study_id: str | None = None,
-    setup: dict[str, Any] | None = None,
-    variables: dict[str, Any] | None = None,
-    study: dict[str, Any] | None = None,
-    cfd: dict[str, Any] | None = None,
+    setup: Sps30SetupOverrides | str | None = None,
+    variables: Sps30VariablesOverrides | str | None = None,
+    study: Sps30StudyOverrides | str | None = None,
+    cfd: Sps30CfdOverrides | str | None = None,
     results_csv: str | None = None,
     max_points: int | None = None,
     sweep_variable: str | None = None,
@@ -1548,7 +1689,10 @@ def sps30_housing_study(
     study_id:
         An existing 'sps30-...' study (solve_cfd, export_fluent, status; optional for import).
     setup:
-        Overrides of: housing_step_path (empty = built-in housing),
+        Overrides (only the fields to change; the base is the study_id's
+        study, else what the operator has open on the SPS30 housing study
+        tab, else the defaults -- see setup_source and applied_setup in the
+        reply) of: housing_step_path (empty = built-in housing),
         scale_to_meters, sensor_face_center_m, sensor_face_normal ('-x'...),
         sensor_face_size_m [a, b], chamber_plane_x_m, fan_enabled,
         fan_flow_lpm, forward_axis (travel direction in the CAD, '+x', '-x',
@@ -1589,20 +1733,32 @@ def sps30_housing_study(
     if action not in known:
         return _error(f"unknown action '{action}'; use {', '.join(known)}")
     try:
-        base = workflow.load_params(store, study_id) if study_id else Sps30StudyParams()
-        data = base.model_dump(mode="json")
-        data["setup"].update(setup or {})
-        for name, overrides in (variables or {}).items():
-            if name not in ("speed_ms", "yaw_deg", "droplet_um"):
-                raise ValueError(f"unknown variable '{name}'; use speed_ms, yaw_deg or droplet_um")
+        base, source = _study_base("sps30", study_id, workflow.load_params)
+        data = (base or Sps30StudyParams()).model_dump(mode="json")
+        data["setup"].update(_as_overrides(setup, Sps30SetupOverrides, "setup"))
+        for name, overrides in _as_overrides(variables, Sps30VariablesOverrides, "variables").items():
             data[name].update(overrides or {})
-        data.update(study or {})
+        data.update(_as_overrides(study, Sps30StudyOverrides, "study"))
         params = Sps30StudyParams.model_validate(data)
-        settings = Sps30CfdSettings.model_validate(cfd or {})
+        settings = Sps30CfdSettings.model_validate(_as_overrides(cfd, Sps30CfdOverrides, "cfd"))
     except RecordNotFoundError as error:
         return _error(str(error))
     except Exception as error:  # noqa: BLE001
         return _error(f"invalid parameters: {error}")
+    return _with_applied(
+        _run_sps30_action(
+            store, workflow, action, study_id, params, settings, results_csv,
+            max_points, sweep_variable, sweep_start, sweep_stop, sweep_step,
+        ),
+        _applied_sps30(params, source),
+    )
+
+
+def _run_sps30_action(
+    store, workflow, action, study_id, params, settings, results_csv,
+    max_points, sweep_variable, sweep_start, sweep_stop, sweep_step,
+) -> dict[str, Any]:
+    """One action of sps30_housing_study, with validated parameters."""
     try:
         if action == "sweep":
             return _study_sweep(

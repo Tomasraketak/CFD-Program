@@ -339,3 +339,43 @@ def _write(record: ActiveGeometry, root: Path | str | None) -> None:
         # Losing the hand-off means the operator names the file again. It
         # is not worth failing an import over.
         pass
+
+
+# ---------------------------------------------------------------------------
+# The study each sensor-study tab is showing
+# ---------------------------------------------------------------------------
+
+STUDY_KINDS = ("shield", "sps30")
+
+
+def active_study_path(kind: str, root: Path | str | None = None) -> Path:
+    """Where the tab's current study settings are kept."""
+    if kind not in STUDY_KINDS:
+        raise ValueError(f"kind must be one of {STUDY_KINDS}")
+    base = Path(root) if root is not None else data_root()
+    return base / f"active_{kind}_study.json"
+
+
+def set_active_study(kind: str, params: dict, root: Path | str | None = None) -> None:
+    """Record the settings a study tab currently shows.
+
+    The assistant runs in the same program but cannot see the form; this is
+    how "the shield I have open" reaches it.
+    """
+    target = active_study_path(kind, root)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_suffix(".tmp")
+    temporary.write_text(json.dumps(params, indent=2), encoding="utf-8")
+    temporary.replace(target)
+
+
+def active_study(kind: str, root: Path | str | None = None) -> dict | None:
+    """The settings the tab last showed, or None. Never raises."""
+    try:
+        target = active_study_path(kind, root)
+        if not target.is_file():
+            return None
+        payload = json.loads(target.read_text(encoding="utf-8"))
+        return payload if isinstance(payload, dict) else None
+    except (OSError, ValueError):
+        return None

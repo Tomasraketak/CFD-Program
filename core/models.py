@@ -48,6 +48,27 @@ class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", validate_assignment=True)
 
 
+def partial_model(model: type[BaseModel], name: str, **nested: type[BaseModel]) -> type[BaseModel]:
+    """A copy of ``model`` with every field optional and no defaults.
+
+    Tools take *overrides* -- only the fields being changed -- but an
+    untyped ``dict`` gives a language model an object with no properties,
+    which some providers strip to ``{}``. This keeps every field's name,
+    type and description in the tool schema without making any required.
+    ``nested`` swaps a field's type for another partial model.
+    """
+    from pydantic import create_model
+
+    fields = {}
+    for field_name, info in model.model_fields.items():
+        annotation = nested.get(field_name, info.annotation)
+        fields[field_name] = (
+            annotation | None,
+            Field(default=None, description=info.description),
+        )
+    return create_model(name, __base__=StrictModel, **fields)
+
+
 # --------------------------------------------------------------------------
 # Geometry and orientation
 # --------------------------------------------------------------------------

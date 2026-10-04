@@ -283,12 +283,51 @@ def read_points(path: Path | str) -> np.ndarray:
     return np.asarray(values, dtype=float).reshape(-1, 3)
 
 
+_NUMBERED_POINT = re.compile(
+    r"#(?P<id>\d+)\s*=\s*CARTESIAN_POINT\s*\(\s*'[^']*'\s*,\s*\(\s*"
+    r"(?P<x>[-+0-9.eE]+)\s*,\s*(?P<y>[-+0-9.eE]+)\s*,\s*(?P<z>[-+0-9.eE]+)",
+    re.ASCII,
+)
+_VERTEX_POINT = re.compile(r"VERTEX_POINT\s*\(\s*'[^']*'\s*,\s*#(?P<id>\d+)", re.ASCII)
+
+
+def read_vertex_points(path: Path | str) -> np.ndarray:
+    """The model's corners: the points its VERTEX_POINTs refer to.
+
+    Unlike every CARTESIAN_POINT, this leaves out the origins of axis
+    placements, which sit at (0, 0, 0) however far from it the part was
+    drawn -- a 55 mm shield modelled at x = 160..212 mm would otherwise
+    measure 212 mm.
+    """
+    target = Path(path)
+    try:
+        raw = target.read_bytes()[:_MAX_BYTES]
+    except OSError as error:
+        raise StepInspectionError(f"could not read '{target.name}': {error}") from error
+    text = _strip_comments_and_strings(raw.decode("utf-8", errors="replace"))
+    wanted = {match.group("id") for match in _VERTEX_POINT.finditer(text)}
+    values: list[float] = []
+    for match in _NUMBERED_POINT.finditer(text):
+        if match.group("id") in wanted:
+            try:
+                values.extend(float(match.group(axis)) for axis in "xyz")
+            except ValueError:  # pragma: no cover - malformed literal
+                continue
+    if not values:
+        return np.empty((0, 3), dtype=float)
+    return np.asarray(values, dtype=float).reshape(-1, 3)
+
+
 def largest_extent(path: Path | str) -> float | None:
     """Longest side of the model's bounding box, in the file's own units.
 
-    Returns None when the file holds no readable points.
+    Measured over the vertices, falling back to every point when a file has
+    none (a model of only closed curved faces). Returns None when the file
+    holds no readable points.
     """
-    points = read_points(path)
+    points = read_vertex_points(path)
+    if len(points) < 2:
+        points = read_points(path)
     if points.size == 0:
         return None
     return float((points.max(axis=0) - points.min(axis=0)).max())

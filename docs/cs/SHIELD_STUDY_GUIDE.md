@@ -176,6 +176,22 @@ Model **neotáčí** — použije orientaci ze souboru tak, jak je.
 | Desky aspoň ~1,5 mm tlusté, vzduchové mezery **≥ ~3 mm**, žádné detaily pod ~1 mm (šroubky, nápisy, malá zaoblení, zacvakávací háčky) | program změří nejužší vzduchovou mezeru a buňky u štítu zvolí tak, aby přes ni byly 3 (coarse), 4 (medium) nebo 6 (fine) buněk a podél štítu aspoň 20/30/45 — v logu je napsané, co velikost určilo. Užší mezera = mnohem víc buněk | velmi úzké mezery → obří síť (nad limit Ansys Student) nebo selhání |
 | Pro Ansys Student pod ~1 milion buněk — držte model jednoduchý | limit studentské licence | Fluent síť odmítne |
 
+**Oboustranné desky.** Deska může mít na každé straně jiný povrch — třeba
+lesklý hliník ke slunci a černou barvu zespodu. Nastavte *Top side
+absorptivity / emissivity* (plochy hledící nahoru) a *Bottom side
+absorptivity / emissivity* (plochy hledící dolů); na *auto* se použijí
+hodnoty *Shield*. Hrany dostanou průměr. Počítá s tím analytický model,
+paprsky v SU2 i balíček pro Fluent (v README je, jak rozdělit stěnu štítu
+podle směru ploch). Lesklý hliník zhruba 0,15 / 0,1, černá barva zhruba
+0,95 / 0,9.
+
+**Asistent pracuje se štítem, který máte otevřený.** To, co ukazuje tato
+záložka — váš STEP, optika, rozsahy — je výchozí bod nástroje asistenta,
+když nejmenujete existující studii; každá odpověď to uvádí
+(`setup_source`) a vypíše, co skutečně použila (`applied_setup`,
+`applied_optics`). „Spusť analytickou studii na mém štítu“ tedy znamená
+tento štít a obrázek ukazuje váš model, ne vestavěný.
+
 **Dvě pole musí odpovídat vašemu modelu**, protože je analytický model a
 bod teploměru ze souboru nečtou:
 

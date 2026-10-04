@@ -156,6 +156,24 @@ Working rules:
   returned rows as the table. Never build such a table by reading or
   extrapolating a response surface: a quadratic fitted on 15 points
   invents minima and sign changes and is meaningless outside its range.
+- Sensor studies are separate from the rocket: for a shield or housing
+  never use get_active_geometry, preview_orientation or
+  set_geometry_and_mesh -- they belong to the Rocket Aerodynamics tab and
+  would rotate the shield as if it were a rocket. Use the study tool's own
+  'preview' (it draws the thermometer point too).
+- With no study_id, radiation_shield_study and sps30_housing_study start
+  from what the operator has open on that study tab (their STEP file,
+  optics, ranges); setup_source in the reply says so. Pass only what must
+  change, as objects: setup={"shield_emissivity": 0.5, ...},
+  variables={"wind_speed_ms": {"minimum": 0.5, "maximum": 5}},
+  study={"doe": "ccd"}. Every reply returns applied_setup,
+  applied_optics, applied_variables and applied_study: compare them with
+  the request and say plainly if anything differs, instead of reporting
+  results for a setup the operator did not ask for.
+- Two-sided plates (e.g. shiny aluminium on top, black underneath) are
+  setup top_side_solar_absorptivity, top_side_emissivity,
+  bottom_side_solar_absorptivity, bottom_side_emissivity (faces looking up
+  and down); unset sides use shield_solar_absorptivity/shield_emissivity.
 - When the operator wants to see what a shield or housing looks like, use
   action 'preview'; 'analytic' and 'sweep' also return the picture
   (geometry_image_path), which the panel shows.
@@ -693,6 +711,53 @@ class FakeChatClient(ChatClient):
 # ---------------------------------------------------------------------------
 
 
+def portable_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """A tool schema every provider behind OpenRouter reads the same way.
+
+    Some providers drop ``$ref`` and ``anyOf`` or treat an object without
+    properties as ``{}`` -- the model then cannot pass a setup at all and
+    every call silently runs with the defaults. So references are inlined,
+    and an ``anyOf`` of one real type plus null (or plus the JSON-text
+    fallback the server also accepts) becomes that type.
+    """
+    import copy
+
+    definitions = schema.get("$defs", {})
+
+    def resolve(node: Any, depth: int = 0) -> Any:
+        if depth > 20:  # pragma: no cover - recursive definitions
+            return node
+        if isinstance(node, list):
+            return [resolve(item, depth + 1) for item in node]
+        if not isinstance(node, dict):
+            return node
+        if "$ref" in node:
+            name = node["$ref"].rsplit("/", 1)[-1]
+            target = copy.deepcopy(definitions.get(name, {}))
+            extra = {k: v for k, v in node.items() if k != "$ref"}
+            return resolve({**target, **extra}, depth + 1)
+        out = {k: resolve(v, depth + 1) for k, v in node.items() if k != "$defs"}
+        choices = out.get("anyOf")
+        if isinstance(choices, list):
+            real = [c for c in choices if c.get("type") != "null"]
+            objects = [c for c in real if c.get("type") == "object"]
+            keep = objects if objects else real
+            if len(keep) == 1:
+                merged = {**keep[0]}
+                for key in ("description", "title", "default"):
+                    if key in out and key not in merged:
+                        merged[key] = out[key]
+                return merged
+        return out
+
+    return resolve(schema)
+
+
+# Tools and actions whose result changes from one call to the next.
+REPEATABLE_TOOLS = frozenset({"check_environment", "list_runs", "get_settings"})
+REPEATABLE_ACTIONS = frozenset({"solve_cfd", "status"})
+
+
 def build_tool_schemas() -> list[dict[str, Any]]:
     """Convert the MCP server's tools into OpenAI function definitions.
 
@@ -724,7 +789,7 @@ def build_tool_schemas() -> list[dict[str, Any]]:
                 "function": {
                     "name": tool.name,
                     "description": (tool.description or "").strip(),
-                    "parameters": tool.input_schema,
+                    "parameters": portable_schema(tool.input_schema),
                 },
             }
         )
@@ -925,6 +990,7 @@ class AIAssistant:
         started = time.perf_counter()
         stopped_early = False
         rounds = 0
+        self._calls_made: dict[str, dict[str, Any]] = {}
 
         for rounds in range(1, self.max_rounds + 1):
             if self._stop_requested.is_set():
@@ -1055,6 +1121,38 @@ class AIAssistant:
             metrics=metrics,
         )
 
+    @staticmethod
+    def _call_key(name: str, arguments: dict[str, Any]) -> str:
+        return name + json.dumps(arguments, sort_keys=True, default=str)
+
+    def _repeated_call(self, name: str, arguments: dict[str, Any]) -> str | None:
+        """Why an identical call already made this request is not run again.
+
+        A model that keeps calling the same tool with the same arguments
+        gets the same answer every time; it once spent nine rounds doing
+        that. Calls whose result changes between calls (solving the next
+        design points, status) are exempt.
+        """
+        if name in REPEATABLE_TOOLS or arguments.get("action") in REPEATABLE_ACTIONS:
+            return None
+        previous = getattr(self, "_calls_made", {}).get(self._call_key(name, arguments))
+        if previous is None:
+            return None
+        summary = json.dumps(previous, default=str)[:1500]
+        return (
+            "this exact call was already made in this request and returned the "
+            "same result shown here; repeating it changes nothing. Change the "
+            "arguments (e.g. pass the setup you need as an object) or answer the "
+            f"operator. Previous result: {summary}"
+        )
+
+    def _remember_call(self, name: str, arguments: dict[str, Any], result: Any) -> None:
+        if not hasattr(self, "_calls_made"):
+            self._calls_made = {}
+        if isinstance(result, dict) and result.get("ok"):
+            brief = {k: v for k, v in result.items() if k not in ("design_points", "rows")}
+            self._calls_made[self._call_key(name, arguments)] = brief
+
     def _run_tool_call(self, call: dict[str, Any], mcp_server: Any) -> ToolInvocation:
         """Execute one tool call, honouring the approval callback."""
         function = call.get("function") or {}
@@ -1086,6 +1184,20 @@ class AIAssistant:
             return invocation
 
         invocation = ToolInvocation(name=name, arguments=arguments)
+
+        repeated = self._repeated_call(name, arguments)
+        if repeated is not None:
+            invocation.error = repeated
+            self._emit(
+                ProgressEvent(
+                    kind=EVENT_TOOL_FINISHED,
+                    message=f"Not repeated: {name}",
+                    tool=name,
+                    arguments=arguments,
+                    failed=True,
+                )
+            )
+            return invocation
 
         if (
             self.approve is not None
@@ -1119,6 +1231,7 @@ class AIAssistant:
         started = time.perf_counter()
         invocation.result = mcp_server.call_tool(name, arguments)
         invocation.duration_s = time.perf_counter() - started
+        self._remember_call(name, arguments, invocation.result)
         self._emit(
             ProgressEvent(
                 kind=EVENT_TOOL_FINISHED,

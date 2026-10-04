@@ -23,7 +23,7 @@ from enum import Enum
 
 from pydantic import Field, model_validator
 
-from core.models import StrictModel, Vector3
+from core.models import StrictModel, Vector3, partial_model
 from core.units import celsius_to_kelvin
 
 STEFAN_BOLTZMANN = 5.670374419e-8
@@ -231,6 +231,34 @@ class ShieldSetup(StrictModel):
     shield_emissivity: float = Field(
         default=0.9, ge=0.0, le=1.0, description="Long-wave emissivity of the shield."
     )
+    top_side_solar_absorptivity: float | None = Field(
+        default=None, ge=0.0, le=1.0,
+        description=(
+            "Solar absorptivity of the shield faces that look UP (towards the "
+            "sun), e.g. 0.15 for shiny aluminium. Null = shield_solar_absorptivity."
+        ),
+    )
+    top_side_emissivity: float | None = Field(
+        default=None, ge=0.0, le=1.0,
+        description=(
+            "Long-wave emissivity of the faces that look up, e.g. 0.1 for "
+            "shiny aluminium. Null = shield_emissivity."
+        ),
+    )
+    bottom_side_solar_absorptivity: float | None = Field(
+        default=None, ge=0.0, le=1.0,
+        description=(
+            "Solar absorptivity of the faces that look DOWN (towards the "
+            "ground), e.g. 0.95 for black paint. Null = shield_solar_absorptivity."
+        ),
+    )
+    bottom_side_emissivity: float | None = Field(
+        default=None, ge=0.0, le=1.0,
+        description=(
+            "Long-wave emissivity of the faces that look down, e.g. 0.9 for "
+            "black paint. Null = shield_emissivity."
+        ),
+    )
     shield_conductivity_w_mk: float = Field(
         default=0.2, gt=0.0, le=500.0,
         description="Conductivity of the shield material (Fluent solid zone).",
@@ -242,6 +270,31 @@ class ShieldSetup(StrictModel):
             "of the wind speed."
         ),
     )
+
+    def side_optics(self) -> dict[str, tuple[float, float]]:
+        """(solar absorptivity, emissivity) of the up- and down-facing faces.
+
+        Faces that look sideways take the mean of the two.
+        """
+        top = (
+            self.shield_solar_absorptivity if self.top_side_solar_absorptivity is None
+            else self.top_side_solar_absorptivity,
+            self.shield_emissivity if self.top_side_emissivity is None
+            else self.top_side_emissivity,
+        )
+        bottom = (
+            self.shield_solar_absorptivity if self.bottom_side_solar_absorptivity is None
+            else self.bottom_side_solar_absorptivity,
+            self.shield_emissivity if self.bottom_side_emissivity is None
+            else self.bottom_side_emissivity,
+        )
+        side = (0.5 * (top[0] + bottom[0]), 0.5 * (top[1] + bottom[1]))
+        return {"top": top, "bottom": bottom, "side": side}
+
+    def two_sided(self) -> bool:
+        """Do the up- and down-facing faces differ?"""
+        optics = self.side_optics()
+        return optics["top"] != optics["bottom"]
 
     def ambient_temp_k(self) -> float:
         """Inlet air temperature in kelvin."""
@@ -451,3 +504,31 @@ class ShieldStudyResult(StrictModel):
         ),
     )
     notes: list[str] = Field(default_factory=list)
+
+
+# Overrides the assistant's tools take: every field optional, so a call
+# names only what it changes, and the schema still lists every field.
+ShieldSetupOverrides = partial_model(ShieldSetup, "ShieldSetupOverrides")
+StudyVariableOverrides = partial_model(StudyVariable, "StudyVariableOverrides")
+
+
+class ShieldVariablesOverrides(StrictModel):
+    """Ranges of the three uncertain inputs (only those being changed)."""
+
+    wind_speed_ms: StudyVariableOverrides | None = None  # type: ignore[valid-type]
+    solar_flux_w_m2: StudyVariableOverrides | None = None  # type: ignore[valid-type]
+    bottom_flux_w_m2: StudyVariableOverrides | None = None  # type: ignore[valid-type]
+
+
+class ShieldStudyOverrides(StrictModel):
+    """How to explore the inputs (only what is being changed)."""
+
+    doe: DoeKind | None = Field(default=None, description="'ccd' (15 points) or 'lhs'.")
+    doe_points: int | None = Field(default=None, description="Points of a Latin hypercube.")
+    surrogate: SurrogateKind | None = Field(default=None, description="'quadratic' or 'rbf'.")
+    monte_carlo_samples: int | None = None
+    tolerance_k: float | None = Field(default=None, description="Reliability threshold, K.")
+    seed: int | None = None
+
+
+ShieldCfdOverrides = partial_model(ShieldCfdSettings, "ShieldCfdOverrides")

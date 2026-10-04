@@ -70,6 +70,9 @@ class Sps30StudyPanel(QtWidgets.QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(splitter)
         self.refresh_studies()
+        from gui.study_extras import publish_study_state
+
+        self._publish_timer = publish_study_state(self, "sps30")
 
     # ------------------------------------------------------------ controls
 

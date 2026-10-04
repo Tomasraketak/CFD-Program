@@ -136,17 +136,25 @@ class ShieldAnalyticModel:
         setup = self.setup
         ambient = setup.ambient_temp_k()
         density = self.pressure / (R_SPECIFIC_AIR * ambient)
-        alpha = setup.shield_solar_absorptivity
-        emissivity = setup.shield_emissivity
+        optics = setup.side_optics()
+        (a_top, e_top), (a_bottom, e_bottom), (a_side, e_side) = (
+            optics["top"], optics["bottom"], optics["side"]
+        )
         sky = setup.sky_flux_w_m2()
         reflected = setup.ground_albedo * solar_flux_w_m2
 
+        # The roof looks up (sun and sky), the floor down (ground and its
+        # reflection); a shiny-top, black-bottom plate gets each side's
+        # own optics.
         absorbed = (
-            self.top_area * (alpha * solar_flux_w_m2 + emissivity * sky)
-            + self.bottom_area * (alpha * reflected + emissivity * bottom_flux_w_m2)
+            self.top_area * (a_top * solar_flux_w_m2 + e_top * sky)
+            + self.bottom_area * (a_bottom * reflected + e_bottom * bottom_flux_w_m2)
             + self.side_area
             * 0.5
-            * (emissivity * (sky + bottom_flux_w_m2) + alpha * reflected)
+            * (e_side * (sky + bottom_flux_w_m2) + a_side * reflected)
+        )
+        emitting = (
+            e_top * self.top_area + e_bottom * self.bottom_area + e_side * self.side_area
         )
 
         forced_out = _forced_h(wind_speed_ms, self.length, density, self.viscosity)
@@ -162,7 +170,7 @@ class ShieldAnalyticModel:
             h_in = _combined_h(forced_in, natural)
             ntu = h_in * self.internal_area / max(mass_flow * CP_AIR, 1.0e-9)
             internal = mass_flow * CP_AIR * (shield - air_in) * (1.0 - math.exp(-ntu))
-            emitted = emissivity * STEFAN_BOLTZMANN * shield**4 * self.external_area
+            emitted = STEFAN_BOLTZMANN * shield**4 * emitting
             balance = (
                 absorbed
                 - emitted

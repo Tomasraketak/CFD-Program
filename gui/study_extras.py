@@ -218,3 +218,43 @@ def run_in_background(panel, function: Callable[[], Any], done: Callable[[Any], 
     panel._workers.append(worker)
     panel.append_log(label)
     panel.pool.start(worker)
+
+
+def publish_study_state(panel, kind: str, delay_ms: int = 400) -> QtCore.QTimer:
+    """Keep the assistant told what this study tab shows.
+
+    Every edit of the form (re)starts a short timer; when it fires the
+    tab's current study settings are written where the assistant's tools
+    read them, so "the shield I have open" is the shield on this tab.
+    """
+    from PySide6 import QtWidgets as W
+
+    from core.workspace import set_active_study
+
+    timer = QtCore.QTimer(panel)
+    timer.setSingleShot(True)
+    timer.setInterval(delay_ms)
+
+    def publish() -> None:
+        try:
+            params = panel.study_params()
+        except Exception:  # noqa: BLE001 - the form is mid-edit
+            return
+        try:
+            set_active_study(kind, params.model_dump(mode="json"))
+        except OSError:  # pragma: no cover - read-only data folder
+            pass
+
+    timer.timeout.connect(publish)
+    for widget in panel.findChildren(W.QWidget):
+        if isinstance(widget, W.QLineEdit):
+            widget.textChanged.connect(timer.start)
+        elif isinstance(widget, W.QAbstractSpinBox) and hasattr(widget, "valueChanged"):
+            widget.valueChanged.connect(timer.start)
+        elif isinstance(widget, W.QComboBox):
+            widget.currentIndexChanged.connect(timer.start)
+        elif isinstance(widget, W.QCheckBox):
+            widget.toggled.connect(timer.start)
+    panel.publish_study_state = publish
+    publish()
+    return timer
