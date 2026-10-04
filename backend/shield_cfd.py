@@ -71,8 +71,18 @@ RESOLUTION_SIZES = {
     "fine": (0.0025, 0.05),
 }
 
-# Spacing of the coarse surface the rays are cast against, metres.
+# Spacing of the coarse surface the rays are cast against, metres (and at
+# most a fifteenth of the shield, so a small shield keeps its shape).
 RAY_SURFACE_SIZE = 0.02
+
+# Cells across the narrowest air gap of the shield, per resolution. The
+# sizes above suit the built-in 20 cm shield; a small shield with a 5 mm
+# channel would otherwise get a single cell across the channel where the
+# thermometer sits.
+CELLS_ACROSS_GAP = {"coarse": 3.0, "medium": 4.0, "fine": 6.0}
+# ... and at least this many cells along the shield's largest dimension.
+CELLS_ALONG_SHIELD = {"coarse": 20.0, "medium": 30.0, "fine": 45.0}
+SMALLEST_NEAR_SIZE = 4.0e-4
 
 
 class ShieldCfdError(RuntimeError):
@@ -96,6 +106,9 @@ class ShieldDomain:
     node_count: int
     shield_triangles: np.ndarray  # (T, 3, 3) wall facets, fluid-facing normals
     marker_counts: dict[str, int] = field(default_factory=dict)
+    near_size_m: float | None = None
+    narrowest_gap_m: float | None = None
+    sizing_note: str = ""
 
     def monitor_point(self, offset: Sequence[float]) -> list[float]:
         """The thermometer point in mesh coordinates."""
@@ -123,6 +136,133 @@ def resolve_shield_step(setup: ShieldSetup, folder: Path) -> tuple[Path, float]:
     return path, 1.0
 
 
+def inspect_shield_step(path: Path | str, scale: float | None = None) -> dict:
+    """Size (m) and number of solids of a shield STEP, as the mesher reads it."""
+    import gmsh
+
+    from backend.gmsh_session import gmsh_session
+
+    path = Path(path)
+    if scale is None:
+        from core.step_inspect import suggest_scale_to_meters
+
+        scale = suggest_scale_to_meters(path).scale
+    with gmsh_session("shield_inspect"):
+        occ = gmsh.model.occ
+        solids = [e for e in occ.importShapes(str(path)) if e[0] == 3]
+        occ.synchronize()
+        if not solids:
+            raise ShieldCfdError(f"{path.name} contains no solid; export the shield as a solid")
+        low = np.full(3, np.inf)
+        high = np.full(3, -np.inf)
+        for dim, tag in solids:
+            box = gmsh.model.getBoundingBox(dim, tag)
+            low, high = np.minimum(low, box[:3]), np.maximum(high, box[3:])
+    return {
+        "size_m": [float(v) for v in (high - low) * scale],
+        "solids": len(solids),
+        "scale_to_meters": float(scale),
+    }
+
+
+def _shield_surface(step_path: Path, scale: float, spacing: float | None = None):
+    """Triangulate the shield where the file puts it: (points, faces, size)."""
+    import gmsh
+
+    from backend.gmsh_session import gmsh_session
+
+    with gmsh_session("shield_surface"):
+        occ = gmsh.model.occ
+        solids = [e for e in occ.importShapes(str(step_path)) if e[0] == 3]
+        if not solids:
+            raise ShieldCfdError(
+                f"{Path(step_path).name} contains no solid; export the shield as a solid"
+            )
+        if scale != 1.0:
+            occ.dilate(solids, 0.0, 0.0, 0.0, scale, scale, scale)
+        occ.synchronize()
+        low = np.full(3, np.inf)
+        high = np.full(3, -np.inf)
+        for dim, tag in solids:
+            box = gmsh.model.getBoundingBox(dim, tag)
+            low, high = np.minimum(low, box[:3]), np.maximum(high, box[3:])
+        size = high - low
+        spacing = spacing or float(max(size)) / 60.0
+        gmsh.option.setNumber("Mesh.MeshSizeMax", spacing)
+        gmsh.option.setNumber("Mesh.MeshSizeMin", 0.2 * spacing)
+        gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 12)
+        gmsh.model.mesh.generate(2)
+        tags, coords, _ = gmsh.model.mesh.getNodes()
+        index_of = np.full(int(tags.max()) + 1, -1, dtype=np.int64)
+        index_of[tags.astype(np.int64)] = np.arange(len(tags))
+        points = coords.reshape(-1, 3)
+        faces = []
+        types, _, nodes = gmsh.model.mesh.getElements(2)
+        for element_type, element_nodes in zip(types, nodes):
+            if element_type == 2:
+                faces.append(index_of[element_nodes.astype(np.int64)].reshape(-1, 3))
+    return points, np.vstack(faces), size
+
+
+def narrowest_air_gap(points: np.ndarray, faces: np.ndarray) -> float | None:
+    """The narrowest air gap between parts of the shield, metres.
+
+    From each facet a ray goes out into the air along its normal; the
+    distance to where it meets the shield again is the gap there. The 5th
+    percentile of those distances (not the minimum, which a single sliver
+    facet in a corner would set) is the narrowest gap the mesh must resolve.
+    None when no ray comes back (a single convex body).
+    """
+    import vtk
+
+    faces = _orient_outwards(points, faces)
+    triangles = points[faces]
+    normals = _normals(triangles)
+    centroids = triangles.mean(axis=1)
+    occluder = _Occluder(triangles)
+    reach = float(np.linalg.norm(np.ptp(points, axis=0)))
+    found, cells = vtk.vtkPoints(), vtk.vtkIdList()
+    gaps = []
+    for centroid, normal in zip(centroids, normals):
+        start = centroid + normal * 1.0e-6 * reach
+        occluder._tree.IntersectWithLine(start, start + normal * reach, 1.0e-10, found, cells)
+        if found.GetNumberOfPoints():
+            hits = np.array([found.GetPoint(i) for i in range(found.GetNumberOfPoints())])
+            distance = float(np.min(np.linalg.norm(hits - start, axis=1)))
+            if distance > 1.0e-5 * reach:
+                gaps.append(distance)
+    if len(gaps) < 5:
+        return None
+    return float(np.percentile(gaps, 5))
+
+
+def shield_mesh_sizes(
+    resolution: str, shield_size: np.ndarray, gap: float | None
+) -> tuple[float, float, str]:
+    """Near-wall and far-field mesh size for this shield, and why.
+
+    The table sizes are kept for a shield like the built-in one; a smaller
+    shield or a narrow channel gets finer cells near the shield, so the
+    channel the thermometer sits in is resolved rather than spanned by one
+    cell.
+    """
+    near, far = RESOLUTION_SIZES[resolution]
+    reasons = []
+    along = float(max(shield_size)) / CELLS_ALONG_SHIELD[resolution]
+    if along < near:
+        near, reasons = along, [f"shield {max(shield_size) * 1000:.0f} mm"]
+    if gap is not None and gap / CELLS_ACROSS_GAP[resolution] < near:
+        near = gap / CELLS_ACROSS_GAP[resolution]
+        reasons = [f"narrowest air gap {gap * 1000:.1f} mm"]
+    near = max(near, SMALLEST_NEAR_SIZE)
+    note = (
+        f"near-shield cells {near * 1000:.2f} mm ({resolution}; set by "
+        + (reasons[0] if reasons else "the resolution table")
+        + ")"
+    )
+    return near, far, note
+
+
 def mesh_shield_domain(
     setup: ShieldSetup,
     output_dir: Path | str,
@@ -138,7 +278,9 @@ def mesh_shield_domain(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     step_path, scale = resolve_shield_step(setup, output_dir)
-    near, far = RESOLUTION_SIZES[resolution]
+    surface_points, surface_faces, shield_size = _shield_surface(step_path, scale)
+    gap = narrowest_air_gap(surface_points, surface_faces)
+    near, far, sizing_note = shield_mesh_sizes(resolution, shield_size, gap)
     length, width, height = setup.domain_size_m
 
     with gmsh_session("shield_domain", threads=threads or None):
@@ -295,6 +437,9 @@ def mesh_shield_domain(
         node_count=int(len(points)),
         shield_triangles=points[shield_faces],
         marker_counts=mesh.marker_counts(),
+        near_size_m=near,
+        narrowest_gap_m=gap,
+        sizing_note=sizing_note,
     )
     (output_dir / GEOMETRY_FILENAME).write_text(
         json.dumps(
@@ -308,6 +453,9 @@ def mesh_shield_domain(
                 "shield_step": str(step_path),
                 "scale_to_meters": scale,
                 "resolution": resolution,
+                "near_size_m": near,
+                "narrowest_gap_m": gap,
+                "sizing_note": sizing_note,
             },
             indent=2,
         )
@@ -397,6 +545,16 @@ class _Occluder:
             )
             counts[index] = self._points.GetNumberOfPoints()
         return counts
+
+
+def point_inside_shield(triangles: np.ndarray, point) -> bool:
+    """Is the point inside the shield material (odd number of crossings)?"""
+    direction = np.array([0.5773, 0.5774, 0.5775])
+    direction /= np.linalg.norm(direction)
+    crossings = _Occluder(np.asarray(triangles)).crossings(
+        np.asarray([point], dtype=float), direction
+    )
+    return bool(crossings[0] % 2 == 1)
 
 
 def _hemisphere_directions(count: int, seed: int = 7) -> np.ndarray:
@@ -552,8 +710,10 @@ def coarse_ray_surface(setup: ShieldSetup, folder: Path) -> np.ndarray:
             high = np.maximum(high, box[3:])
         occ.translate(solids, *(np.array(geometry["shield_centre_m"]) - 0.5 * (low + high)))
         occ.synchronize()
-        gmsh.option.setNumber("Mesh.MeshSizeMax", RAY_SURFACE_SIZE)
-        gmsh.option.setNumber("Mesh.MeshSizeMin", 0.2 * RAY_SURFACE_SIZE)
+        spacing = min(RAY_SURFACE_SIZE, float(max(high - low)) / 15.0)
+        gmsh.option.setNumber("Mesh.MeshSizeMax", spacing)
+        gmsh.option.setNumber("Mesh.MeshSizeMin", 0.2 * spacing)
+        gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 12)
         gmsh.model.mesh.generate(2)
         tags, coords, _ = gmsh.model.mesh.getNodes()
         index_of = np.full(int(tags.max()) + 1, -1, dtype=np.int64)
@@ -817,6 +977,14 @@ def prepare_study(
     say(f"Meshing the air round the shield ({cfd.mesh_resolution})...")
     domain = mesh_shield_domain(setup, study_dir, cfd.mesh_resolution)
     say(f"  {domain.cell_count:,} cells, {len(domain.shield_triangles):,} shield facets")
+    say(f"  {domain.sizing_note}")
+    monitor = domain.monitor_point(setup.thermometer_xyz_m)
+    if point_inside_shield(domain.shield_triangles, monitor):
+        raise ShieldCfdError(
+            f"the thermometer point {np.round(monitor, 4).tolist()} m lies inside the "
+            "shield material; move it into the air with 'Thermometer' (offset from the "
+            "centre of the shield's bounding box)"
+        )
     say("Casting rays for shading and view factors...")
     occluders = coarse_ray_surface(setup, study_dir)
     facets = radiation_facets(domain.shield_triangles, cfd.rays_per_face, occluders)

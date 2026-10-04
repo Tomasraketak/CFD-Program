@@ -174,9 +174,12 @@ def solve_cfd(
         "failures": failures,
         "result": None,
     }
+    if not solved:
+        summary["analysis_pending"] = "no design point is solved yet"
+        return summary
     try:
         result = analyse(load_params(store, study_id), solved, Evaluator.SU2)
-    except ShieldStudyError as error:
+    except (ShieldStudyError, ValueError, IndexError) as error:
         summary["analysis_pending"] = str(error)
         return summary
     summary["result"] = _save(store, study_id, result)

@@ -135,6 +135,7 @@ class ShieldStudyPanel(QtWidgets.QWidget):
         row = QtWidgets.QHBoxLayout()
         row.addWidget(self.step_path, 1)
         row.addWidget(browse)
+        self.step_path.editingFinished.connect(self._step_changed)
         form.addRow("Shield STEP", _wrap(row))
         self.scale = _optional_spin(1.0e3, decimals=6)
         self.scale.setToolTip("CAD unit multiplier; auto reads it from the file")
@@ -391,6 +392,41 @@ class ShieldStudyPanel(QtWidgets.QWidget):
         )
         if path:
             self.step_path.setText(path)
+            self._step_changed()
+
+    def _step_changed(self) -> None:
+        """Read the new STEP's size into the form and redraw the picture.
+
+        The analytic model does not read the file, so the size it uses has
+        to come from somewhere: the file itself, rather than a 20 cm default
+        the operator may not notice.
+        """
+        path = self.step_path.text().strip()
+        if path and Path(path).is_file():
+            from backend.shield_cfd import inspect_shield_step
+
+            try:
+                info = inspect_shield_step(path, _optional(self.scale))
+            except Exception as error:  # noqa: BLE001 - shown to the operator
+                self.append_log(f"Could not read {Path(path).name}: {error}")
+                return
+            self.shield_size.set_value(tuple(round(v, 4) for v in info["size_m"]))
+            if info["solids"] >= 2:
+                self.plate_count.setValue(min(20, info["solids"]))
+            self.append_log(
+                f"{Path(path).name}: {info['size_m'][0] * 1000:.1f} x "
+                f"{info['size_m'][1] * 1000:.1f} x {info['size_m'][2] * 1000:.1f} mm, "
+                f"{info['solids']} solid(s); shield size set from the file."
+            )
+        params = self._params_quietly()
+        if params is not None:
+            self._draw_geometry_for(params.setup)
+
+    def _params_quietly(self) -> ShieldStudyParams | None:
+        try:
+            return self.study_params()
+        except Exception:  # noqa: BLE001 - the form is mid-edit
+            return None
 
     def study_params(self) -> ShieldStudyParams:
         """The study the form describes (raises on invalid values)."""
@@ -579,12 +615,28 @@ class ShieldStudyPanel(QtWidgets.QWidget):
             return
         self._draw_geometry_for(params.setup, switch=True)
 
+    def _redraw_if_changed(self, setup) -> None:
+        """Draw the geometry again when it is not the one on screen."""
+        from backend.study_preview import preview_key
+
+        if getattr(self.geometry_view, "key", None) != preview_key("shield", setup):
+            self._draw_geometry_for(setup)
+
     def _draw_geometry_for(self, setup, switch: bool = False) -> None:
         from backend.study_preview import cached_preview
         from gui.study_extras import run_in_background
 
+        from backend.study_preview import preview_key
+
+        key = preview_key("shield", setup)
+        self._geometry_request = key
+
         def done(path) -> None:
+            # A slower, older drawing must not replace a newer one.
+            if key != self._geometry_request:
+                return
             self.geometry_view.show_image(path)
+            self.geometry_view.key = key
             if switch:
                 self.result_tabs.setCurrentWidget(self.geometry_view)
 
@@ -768,8 +820,8 @@ class ShieldStudyPanel(QtWidgets.QWidget):
             for column, value in enumerate(values):
                 self.points_table.setItem(row, column, QtWidgets.QTableWidgetItem(value))
         self._draw_charts(result)
-        if self.geometry_view.path is None and self.isVisible():
-            self._draw_geometry_for(result.params.setup)
+        if self.isVisible():
+            self._redraw_if_changed(result.params.setup)
         if refresh and result.study_id:
             self.refresh_studies(select=result.study_id)
         self.statusMessage.emit(

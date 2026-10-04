@@ -173,7 +173,7 @@ Model **neotáčí** — použije orientaci ze souboru tak, jak je.
 | **Bez teploměru, držáku a kabelu** v modelu (pokud je nechcete zkoumat) | teploměr je jen bod, kde se čte teplota vzduchu | — |
 | Štít **menší než polovina domény** v každém směru (tj. < 1 × 1 × 0,72 m) | místo pro proudění kolem | *„too large for the domain — check the CAD units“* |
 | Jednotky: program je přečte ze souboru a zkontroluje podle velikosti; když se splete, nastavte *Scale to metres* (0,001 = milimetry, 0,01 = cm) | | 200mm štít přečtený jako 200 m → chyba výše |
-| Desky aspoň ~1,5 mm tlusté, mezery mezi deskami **≥ 5 mm**, žádné detaily pod ~1 mm (šroubky, nápisy, malá zaoblení, zacvakávací háčky) | síť u štítu má 6 mm (coarse) až 2,5 mm (fine); 2mm mezera by měla přes sebe jednu buňku | velmi špatná nebo selhávající síť; pro úzké mezery použijte *medium*/*fine* |
+| Desky aspoň ~1,5 mm tlusté, vzduchové mezery **≥ ~3 mm**, žádné detaily pod ~1 mm (šroubky, nápisy, malá zaoblení, zacvakávací háčky) | program změří nejužší vzduchovou mezeru a buňky u štítu zvolí tak, aby přes ni byly 3 (coarse), 4 (medium) nebo 6 (fine) buněk a podél štítu aspoň 20/30/45 — v logu je napsané, co velikost určilo. Užší mezera = mnohem víc buněk | velmi úzké mezery → obří síť (nad limit Ansys Student) nebo selhání |
 | Pro Ansys Student pod ~1 milion buněk — držte model jednoduchý | limit studentské licence | Fluent síť odmítne |
 
 **Dvě pole musí odpovídat vašemu modelu**, protože je analytický model a
@@ -181,6 +181,8 @@ bod teploměru ze souboru nečtou:
 
 - *Shield size* — vnější rozměr v metrech (x, y, z) — a *Plates*: používá je
   analytický model (část A) a sweep; CFD počítá se skutečnou geometrií.
+  Když vyberete soubor, program *Shield size* vyplní z něj (a *Plates* podle
+  počtu samostatných těles, je-li jich víc) — zkontrolujte je.
 - *Thermometer* — poloha čidla **vůči středu obalového kvádru štítu**
   (x po větru, z nahoru), v metrech. U štítu, který není nahoře a dole
   souměrný, nemusí být střed kvádru tam, kde je čidlo — změřte si to v CAD.
@@ -189,7 +191,8 @@ bod teploměru ze souboru nečtou:
 požádejte asistenta o *preview*). Obrázek ukáže váš štít v řezu s
 teploměrem (červený bod), sluncem shora a větrem zleva — pokud desky stojí
 na boku nebo je červený bod v desce, opravte to dřív, než strávíte hodiny
-výpočtem.
+výpočtem. Teploměr uvnitř materiálu obrázek navíc označí červeným
+varováním a *Prepare CFD* ho odmítne.
 
 Tipy pro dobrý model: jedno těleso spojené v CAD přes *Combine/Union*;
 desky jako jednoduché ploché (nebo mírně kuželové) prstence; horní deska

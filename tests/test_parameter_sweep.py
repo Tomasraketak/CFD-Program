@@ -199,3 +199,81 @@ def test_a_transcript_picture_opens_in_a_zoomable_viewer(tmp_path):
     viewer.close()
     url = QtCore.QUrl(IMAGE_SCHEME + ":" + str(picture))
     assert url.scheme() == IMAGE_SCHEME and url.path() == str(picture)
+
+
+# ---------------------------------------------------------------------------
+# Imported shields: sizing, thermometer check, picture of the imported model
+# ---------------------------------------------------------------------------
+
+
+def _two_plate_shield(path, gap=0.005):
+    """A small shield of two separate 2 mm plates with a narrow gap, in mm."""
+    import gmsh
+
+    from backend.gmsh_session import gmsh_session
+
+    with gmsh_session("test_shield"):
+        occ = gmsh.model.occ
+        occ.addBox(0, 0, 0, 50, 60, 2)
+        occ.addBox(0, 0, 2 + gap * 1000, 50, 60, 2)
+        occ.synchronize()
+        gmsh.write(str(path))
+    return path
+
+
+def test_a_narrow_gap_sets_the_near_shield_mesh_size(tmp_path):
+    from backend.shield_cfd import _shield_surface, narrowest_air_gap, shield_mesh_sizes
+
+    step = _two_plate_shield(tmp_path / "s.step")
+    points, faces, size = _shield_surface(step, 0.001)
+    gap = narrowest_air_gap(points, faces)
+    assert gap == pytest.approx(0.005, rel=0.05)
+    near, _, note = shield_mesh_sizes("coarse", size, gap)
+    assert near == pytest.approx(gap / 3, rel=0.05) and "gap" in note
+    # The built-in 20 cm shield keeps the table size.
+    from backend.shield_cfd import RESOLUTION_SIZES
+
+    assert shield_mesh_sizes("coarse", [0.2, 0.2, 0.2], 0.036)[0] == RESOLUTION_SIZES["coarse"][0]
+
+
+def test_a_thermometer_inside_a_plate_is_caught(tmp_path):
+    from backend.shield_cfd import _shield_surface, point_inside_shield
+
+    points, faces, _ = _shield_surface(_two_plate_shield(tmp_path / "s.step"), 0.001)
+    assert not point_inside_shield(points[faces], [0.025, 0.03, 0.0045])
+    assert point_inside_shield(points[faces], [0.025, 0.03, 0.001])
+
+
+def test_the_step_is_read_for_its_size(tmp_path):
+    from backend.shield_cfd import inspect_shield_step
+
+    info = inspect_shield_step(_two_plate_shield(tmp_path / "s.step"), 0.001)
+    assert info["solids"] == 2
+    assert info["size_m"] == pytest.approx([0.05, 0.06, 0.009])
+
+
+def test_the_picture_follows_an_imported_shield(tmp_path):
+    pytest.importorskip("pyvista")
+    from backend.study_preview import cached_preview, preview_key
+
+    step = _two_plate_shield(tmp_path / "s.step")
+    built_in = ShieldSetup()
+    imported = ShieldSetup(shield_step_path=str(step))
+    assert preview_key("shield", built_in) != preview_key("shield", imported)
+    assert cached_preview("shield", imported, tmp_path) != cached_preview("shield", built_in, tmp_path)
+
+
+def test_choosing_a_step_fills_the_size_and_redraws(store, tmp_path, monkeypatch):
+    from gui.main_window import build_application
+    from gui.shield_panel import ShieldStudyPanel
+
+    build_application([])
+    panel = ShieldStudyPanel(store)
+    drawn = []
+    monkeypatch.setattr(panel, "_draw_geometry_for", lambda setup, switch=False: drawn.append(setup))
+    step = _two_plate_shield(tmp_path / "s.step")
+    panel.step_path.setText(str(step))
+    panel._step_changed()
+    assert panel.shield_size.value() == pytest.approx([0.05, 0.06, 0.009])
+    assert panel.plate_count.value() == 2
+    assert drawn and drawn[-1].shield_step_path == str(step)

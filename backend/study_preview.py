@@ -28,6 +28,8 @@ import numpy as np
 os.environ.setdefault("PYVISTA_OFF_SCREEN", "true")
 
 PREVIEW_SIZE = (1500, 700)
+# Bumped whenever the drawing changes, so cached pictures are redrawn.
+PREVIEW_VERSION = 2
 BACKGROUND = ("#1b2130", "#0e1118")
 SOLID = "#c9d3e2"
 SECTION = "#8aa0c0"
@@ -50,7 +52,7 @@ class PreviewError(RuntimeError):
 
 
 def _tessellate(step: Path, scale: float, angle_z: float, shift: np.ndarray | None,
-                size: float):
+                size: float | None = None):
     """Triangulate a STEP file the way the CFD case places it."""
     import gmsh
     import pyvista as pv
@@ -67,14 +69,18 @@ def _tessellate(step: Path, scale: float, angle_z: float, shift: np.ndarray | No
         if abs(angle_z) > 1e-12:
             occ.rotate(solids, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, angle_z)
         occ.synchronize()
+        low = np.full(3, np.inf)
+        high = np.full(3, -np.inf)
+        for dim, tag in solids:
+            box = gmsh.model.getBoundingBox(dim, tag)
+            low, high = np.minimum(low, box[:3]), np.maximum(high, box[3:])
         if shift is not None:
-            low = np.full(3, np.inf)
-            high = np.full(3, -np.inf)
-            for dim, tag in solids:
-                box = gmsh.model.getBoundingBox(dim, tag)
-                low, high = np.minimum(low, box[:3]), np.maximum(high, box[3:])
             occ.translate(solids, *(shift - 0.5 * (low + high)))
             occ.synchronize()
+        if size is None:
+            # From the model itself, not from a size typed into a form: a
+            # 5 cm shield drawn with 5 mm triangles loses its plates.
+            size = float(max(high - low)) / 60.0
         gmsh.option.setNumber("Mesh.MeshSizeMax", size)
         gmsh.option.setNumber("Mesh.MeshSizeMin", 0.1 * size)
         gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 12)
@@ -92,6 +98,14 @@ def _tessellate(step: Path, scale: float, angle_z: float, shift: np.ndarray | No
     tri = np.vectorize(index.get)(np.vstack(triangles))
     faces = np.hstack([np.full((len(tri), 1), 3, dtype=np.int64), tri]).ravel()
     return pv.PolyData(points, faces).clean()
+
+
+def _inside(surface, point) -> bool:
+    """Is a point inside the solid this closed surface bounds?"""
+    from backend.shield_cfd import point_inside_shield
+
+    triangles = surface.triangulate().faces.reshape(-1, 4)[:, 1:]
+    return point_inside_shield(np.asarray(surface.points)[triangles], point)
 
 
 def _arrow(plotter, start, direction, length, colour, shaft=0.04, tip=0.12):
@@ -145,14 +159,14 @@ def render_shield_preview(setup, output_path: Path | str, caption: str = "") -> 
         step, scale = resolve_shield_step(setup, Path(scratch))
         domain = np.asarray(setup.domain_size_m, dtype=float)
         centre = np.array([0.0, 0.0, 0.5 * domain[2]])
-        size = float(max(setup.shield_size_m)) / 40.0
-        shield = _tessellate(step, scale, 0.0, centre, size)
+        shield = _tessellate(step, scale, 0.0, centre)
 
     low = np.array(shield.bounds[0::2])
     high = np.array(shield.bounds[1::2])
     extent = high - low
     span = float(max(extent))
     probe = centre + np.asarray(setup.thermometer_xyz_m, dtype=float)
+    probe_inside = _inside(shield, probe)
     roof = setup.bottom_mode is BottomMode.ROOF_TEMPERATURE
     bottom_text = (
         f"hot roof {setup.bottom_temperature_k:.0f} K below"
@@ -194,6 +208,12 @@ def render_shield_preview(setup, output_path: Path | str, caption: str = "") -> 
         )
         plotter.add_text("Shield cut open along the wind", position="upper_left",
                          font_size=11, color=LABEL)
+        if probe_inside:
+            plotter.add_text(
+                "WARNING: the thermometer point is inside the shield material -\n"
+                "move it into the air (Thermometer offset)",
+                position="lower_left", font_size=10, color=PROBE,
+            )
         _finish(plotter, (0.25, -1.0, 0.2), (0, 0, 1), 1.05)
 
         # Right: the whole shield in its fluid domain.
@@ -257,7 +277,7 @@ def render_sps30_preview(setup, output_path: Path | str, caption: str = "") -> P
     angle = math.atan2(rotation[1, 0], rotation[0, 0])
     with tempfile.TemporaryDirectory() as scratch:
         step, scale = resolve_housing_step(setup, Path(scratch))
-        housing = _tessellate(step, scale, angle, None, 0.004)
+        housing = _tessellate(step, scale, angle, None)
 
     low = np.array(housing.bounds[0::2])
     high = np.array(housing.bounds[1::2])
@@ -344,6 +364,20 @@ def render_sps30_preview(setup, output_path: Path | str, caption: str = "") -> P
 # ---------------------------------------------------------------------------
 
 
+def preview_key(kind: str, setup) -> str:
+    """Identifies what a preview shows: every setup field and the STEP's age."""
+    import hashlib
+    import json
+
+    data = setup.model_dump(mode="json")
+    step = data.get("shield_step_path") or data.get("housing_step_path")
+    if step and Path(step).is_file():
+        data["_step_mtime"] = Path(step).stat().st_mtime
+    data["_kind"] = kind
+    data["_version"] = PREVIEW_VERSION
+    return hashlib.sha1(json.dumps(data, sort_keys=True).encode()).hexdigest()[:12]
+
+
 def cached_preview(kind: str, setup, folder: Path | str | None = None) -> Path:
     """The preview for this setup, drawn once and reused while it is unchanged.
 
@@ -351,20 +385,13 @@ def cached_preview(kind: str, setup, folder: Path | str | None = None) -> Path:
     STEP file's modification time), so changing anything that is drawn
     draws it again.
     """
-    import hashlib
-    import json
-
     if kind not in ("shield", "sps30"):
         raise PreviewError("kind must be 'shield' or 'sps30'")
     if folder is None:
         from core.platform_env import data_root
 
         folder = data_root() / "previews"
-    data = setup.model_dump(mode="json")
-    step = data.get("shield_step_path") or data.get("housing_step_path")
-    if step and Path(step).is_file():
-        data["_step_mtime"] = Path(step).stat().st_mtime
-    key = hashlib.sha1(json.dumps(data, sort_keys=True).encode()).hexdigest()[:12]
+    key = preview_key(kind, setup)
     path = Path(folder) / f"{kind}-geometry-{key}.png"
     if path.is_file():
         return path

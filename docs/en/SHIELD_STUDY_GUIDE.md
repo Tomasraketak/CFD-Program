@@ -171,7 +171,7 @@ It does **not** rotate the model — the orientation in the file is used as is.
 | **No thermometer, holder or cable** in the model (unless you want to study it) | the thermometer is only a point where the air temperature is read | — |
 | Shield **smaller than half the domain** in every direction (i.e. < 1 × 1 × 0.72 m) | room for the flow round it | *"too large for the domain — check the CAD units"* |
 | Units: the program reads them from the file and checks them against the size; if it gets it wrong, set *Scale to metres* (0.001 = millimetres, 0.01 = cm) | | a 200 mm shield read as 200 m → the error above |
-| Plates at least ~1.5 mm thick, gaps between plates **≥ 5 mm**, no details under ~1 mm (screws, lettering, small fillets, snap hooks) | the mesh near the shield is 6 mm (coarse) to 2.5 mm (fine); a 2 mm gap would have one cell across it | a very poor or failing mesh; for narrow gaps use *medium*/*fine* |
+| Plates at least ~1.5 mm thick, air gaps **≥ ~3 mm**, no details under ~1 mm (screws, lettering, small fillets, snap hooks) | the program measures the narrowest air gap and sizes the cells near the shield to put 3 (coarse), 4 (medium) or 6 (fine) cells across it, and at least 20/30/45 along the shield — the log says what set the size. A smaller gap means many more cells | very narrow gaps → a huge mesh (over the Ansys Student limit) or a failing one |
 | Under ~1 million cells for Ansys Student — keep the model simple | Student licence limit | Fluent refuses the mesh |
 
 **Two fields must match your model**, because the analytic model and the
@@ -179,7 +179,9 @@ monitor point do not read them from the file:
 
 - *Shield size* — the outer size in metres (x, y, z) — and *Plates*: the
   analytic model (Part A) and the sweep use them; the CFD uses the real
-  geometry.
+  geometry. When you pick a file, the program fills *Shield size* from it
+  (and *Plates* from the number of separate solids, if there are several) —
+  check them.
 - *Thermometer* — the sensor position **relative to the centre of the
   shield's bounding box** (x along the wind, z up), in metres. With a shield
   whose plates are not symmetric top to bottom, the centre of the box is not
@@ -189,7 +191,8 @@ monitor point do not read them from the file:
 assistant for a *preview*). The picture shows your shield cut open with the
 thermometer (red point), the sun from above and the wind from the left —
 if the plates stand on their side or the red point is in a plate, fix it
-before spending hours on CFD.
+before spending hours on CFD. A thermometer point inside the material is
+also flagged in red on the picture, and *Prepare CFD* refuses it.
 
 Tips for a good model: one body made with *Combine/Union* in CAD; plates as
 simple flat (or slightly conical) rings; the top plate solid; a material

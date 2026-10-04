@@ -84,6 +84,7 @@ class Sps30StudyPanel(QtWidgets.QWidget):
         group = QtWidgets.QGroupBox("Housing and sensor")
         form = QtWidgets.QFormLayout(group)
         self.step_path = QtWidgets.QLineEdit()
+        self.step_path.editingFinished.connect(lambda: self._step_changed())
         self.step_path.setPlaceholderText("Empty: built-in 120 x 70 x 80 mm housing")
         browse = QtWidgets.QPushButton("Browse")
         browse.clicked.connect(self._browse)
@@ -321,6 +322,15 @@ class Sps30StudyPanel(QtWidgets.QWidget):
         path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Housing STEP", "", "STEP files (*.step *.stp)")
         if path:
             self.step_path.setText(path)
+            self._step_changed()
+
+    def _step_changed(self) -> None:
+        """Draw the newly chosen housing so it can be checked at once."""
+        try:
+            params = self.study_params()
+        except Exception:  # noqa: BLE001 - the form is mid-edit
+            return
+        self._draw_geometry_for(params.setup)
 
     def study_params(self) -> Sps30StudyParams:
         setup = Sps30Setup(
@@ -501,8 +511,16 @@ class Sps30StudyPanel(QtWidgets.QWidget):
         from backend.study_preview import cached_preview
         from gui.study_extras import run_in_background
 
+        from backend.study_preview import preview_key
+
+        key = preview_key("sps30", setup)
+        self._geometry_request = key
+
         def done(path) -> None:
+            if key != self._geometry_request:
+                return
             self.geometry_view.show_image(path)
+            self.geometry_view.key = key
             if switch:
                 self.result_tabs.setCurrentWidget(self.geometry_view)
 
@@ -648,8 +666,11 @@ class Sps30StudyPanel(QtWidgets.QWidget):
             for c, v in enumerate(values):
                 self.points_table.setItem(r, c, QtWidgets.QTableWidgetItem(v))
         self._draw()
-        if self.geometry_view.path is None and self.isVisible():
-            self._draw_geometry_for(result.params.setup)
+        if self.isVisible():
+            from backend.study_preview import preview_key
+
+            if getattr(self.geometry_view, "key", None) != preview_key("sps30", result.params.setup):
+                self._draw_geometry_for(result.params.setup)
         if refresh and result.study_id:
             self.refresh_studies(select=result.study_id)
         self.statusMessage.emit(f"SPS30 study: reliability {100 * result.reliability:.1f} %")
