@@ -284,6 +284,17 @@ hodnoty kolem 3,6 m/s.
 - Pro každý design point spustí **SU2** (nestlačitelné proudění + energie +
   turbulence SST + gravitace) a přečte teplotu vzduchu v bodě teploměru.
 
+- **Vedení tepla v deskách** (*Heat conduction in the plates*, výchozí
+  zapnuto): tělesa štítu dostanou také síť a program v nich řeší vedení
+  tepla, svázané se SU2 průchod po průchodu — SU2 drží stěny na teplotě
+  desek a vrátí teplo, které odvede vzduch; desky odpoví novou teplotou ze
+  slunce a dlouhovlnného záření, které pohltí, z vlastního vyzařování a z
+  tohoto tepla. Bez něj je každá ploška samostatná stěna a slunce pohlcené
+  na horní straně hliníkové desky se k teploměru nedostane (taková studie
+  dá stejné ΔT pro 800 i 1200 W/m² slunce).
+- Průchody skončí, jakmile se štít změní o méně než 0,05 K
+  (*Passes (max)*, výchozí 8).
+
 ### 6.2 Nastavení
 
 Ve skupině **SU2 CFD of the design points**:
@@ -744,7 +755,8 @@ naměřenou chybu s ΔT modelu pro stejné podmínky (vítr, slunce).
 - Nestacionární jevy (poryvy větru, přechodné mraky).
 - Slunce šikmo (model má slunce přesně shora) — pro ranní/večerní slunce
   změňte *Sun Direction Vector* ve Fluentu.
-- V programu: vedení tepla uvnitř desek (každá strana desky se bere zvlášť).
+- V programu: vzájemné záření mezi deskami (každá ploška vidí jen oblohu a
+  zem); vedení tepla v deskách se počítá (viz 6.1), pokud ho nevypnete.
 
 ---
 

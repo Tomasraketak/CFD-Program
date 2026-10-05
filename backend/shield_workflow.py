@@ -173,6 +173,7 @@ def solve_cfd(
     todo = [p for p in points if p.delta_t_k is None]
     if max_points is not None:
         todo = todo[:max_points]
+    previous = load_result(store, study_id)
     failures = []
     solved_now = []
     for point in todo:
@@ -194,6 +195,9 @@ def solve_cfd(
         "checks": point_checks(reports),
         "result": None,
     }
+    extra = [p for p in solved if p.name in solved_now and p.name.startswith(EXTRA_PREFIX)]
+    if extra and previous is not None:
+        summary["surface_check"] = surface_check(previous, extra)
     if not solved:
         summary["analysis_pending"] = "no design point is solved yet"
         return summary
@@ -204,6 +208,92 @@ def solve_cfd(
         return summary
     summary["result"] = _save(store, study_id, result)
     return summary
+
+
+EXTRA_PREFIX = "X"
+
+
+def evaluate_conditions(setup, conditions) -> list[dict]:
+    """The analytical model at given conditions, one row each."""
+    from backend.shield_study import ShieldAnalyticModel
+    from core.shield_models import BottomMode
+
+    model = ShieldAnalyticModel(setup)
+    rows = []
+    for condition in conditions:
+        wind, solar, bottom = condition.resolve(setup)
+        balance = model.solve(wind, solar, bottom)
+        row = {
+            "wind_speed_ms": wind, "solar_flux_w_m2": solar, "bottom_flux_w_m2": bottom,
+            "delta_t_k": balance.delta_t_k, "shield_temp_k": balance.shield_temp_k,
+            "monitor_temp_k": balance.monitor_temp_k,
+        }
+        if setup.bottom_mode is BottomMode.ROOF_TEMPERATURE:
+            row["roof_temperature_k"] = setup.roof_temperature_for(bottom)
+            row["inlet_warming_k"] = balance.inlet_warming_k
+        rows.append(row)
+    return rows
+
+
+def add_cfd_points(store, study_id: str, conditions=(), worst_case: bool = False) -> list[DesignPoint]:
+    """Append extra design points (X1, X2, ...) to a prepared CFD study.
+
+    ``worst_case`` takes the inputs of the study's Monte Carlo worst case,
+    so the edge of the range -- where a response surface is least
+    accurate -- can be checked by a direct solve.
+    """
+    from backend.shield_study import write_design_points_csv
+
+    params = load_params(store, study_id)
+    folder = store.get(study_id).path(CFD_FOLDER)
+    points = cfd_points(store, study_id)
+    wanted = [condition.resolve(params.setup) for condition in conditions]
+    if worst_case:
+        result = load_result(store, study_id)
+        if result is None:
+            raise ShieldStudyError(
+                "the study has no analysed result yet: solve its design points first"
+            )
+        worst = result.monte_carlo.worst_case
+        wanted.append((worst["wind_speed_ms"], worst["solar_flux_w_m2"], worst["bottom_flux_w_m2"]))
+    if not wanted:
+        raise ShieldStudyError("give conditions or worst_case")
+    taken = {p.name for p in points}
+    number = 1
+    added = []
+    for wind, solar, bottom in wanted:
+        while f"{EXTRA_PREFIX}{number}" in taken:
+            number += 1
+        name = f"{EXTRA_PREFIX}{number}"
+        taken.add(name)
+        added.append(DesignPoint(
+            name=name, wind_speed_ms=round(float(wind), 6),
+            solar_flux_w_m2=round(float(solar), 6), bottom_flux_w_m2=round(float(bottom), 6),
+        ))
+    # Results live in points/<name>/result.json; the table keeps only inputs.
+    unsolved = [p.model_copy(update={"delta_t_k": None}) for p in points]
+    write_design_points_csv(folder / "design_points.csv", params.setup, unsolved + added)
+    return added
+
+
+def surface_check(previous, extra: list[DesignPoint]) -> list[dict]:
+    """The previous response surface against CFD at the extra points."""
+    import numpy as np
+
+    from backend.shield_study import ResponseSurface
+
+    try:
+        surface = ResponseSurface(previous.params, previous.design_points)
+    except Exception:  # noqa: BLE001 - nothing to compare with
+        return []
+    rows = []
+    for point in extra:
+        predicted = float(surface.predict(np.array([point.inputs()]))[0])
+        rows.append({
+            "name": point.name, "cfd_delta_t_k": point.delta_t_k,
+            "surface_delta_t_k": predicted, "difference_k": point.delta_t_k - predicted,
+        })
+    return rows
 
 
 def point_reports(store, study_id: str) -> list[dict]:

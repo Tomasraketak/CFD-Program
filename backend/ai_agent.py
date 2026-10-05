@@ -177,6 +177,26 @@ Working rules:
   radiation_settled (last pass < 0.05 K) and oscillating per point, and
   name the points in checks. Never say these were not returned without
   looking at point_results.
+- Pass only the parameters the action uses (no sweep_* for analytic, no
+  max_points for evaluate...).
+- One condition or a handful (e.g. comparing a roof scenario at one wind
+  speed): action 'evaluate' with conditions=[{...}], never a study with
+  ranges narrowed to a point.
+- "Fluid renders", "show the flow", pictures of results: action 'render'
+  on a CFD study (study_id) with point (default: the first solved) and
+  render_quantity ('temperature', 'velocity', 'streamlines',
+  'wall_temperature' or 'all'); the images appear in the chat and the
+  Graphics tab. Do not say renders are impossible for a solved CFD study.
+- To verify the worst case (it lies at the edge of the range, where the
+  surface is least accurate): action 'add_points' with worst_case=true (or
+  conditions), then 'solve_cfd'; its reply has surface_check (surface vs
+  CFD at the new points).
+- SU2 shield studies solve heat conduction in the plates (solid_conduction
+  'on', the default; reported per point as conduction and
+  solid_temperature_k). A study prepared with solid_conduction 'off' treats
+  every facet as an independent wall: then sun absorbed on the top of a
+  metal plate never reaches the thermometer -- say so if you report such a
+  study.
 - If the operator's message says the program cannot do something, check
   the tool schemas before repeating that claim -- the program may already
   do it (two-sided plates, for one).
@@ -750,8 +770,8 @@ def portable_schema(schema: dict[str, Any]) -> dict[str, Any]:
         choices = out.get("anyOf")
         if isinstance(choices, list):
             real = [c for c in choices if c.get("type") != "null"]
-            objects = [c for c in real if c.get("type") == "object"]
-            keep = objects if objects else real
+            structured = [c for c in real if c.get("type") in ("object", "array")]
+            keep = structured if len(structured) == 1 else real
             if len(keep) == 1:
                 merged = {**keep[0]}
                 for key in ("description", "title", "default"):

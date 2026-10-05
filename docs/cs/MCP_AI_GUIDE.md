@@ -420,8 +420,13 @@ pohlcený tok mínus vlastní vyzařování plošky se zadá jako okrajová podm
 stěny, seskupená do několika markerů. Vyzařování (čtvrtá mocnina teploty) se
 linearizuje kolem teploty stěny (SU2 `MARKER_HEATTRANSFER`,
 h_r·(T_eq − T_stěna)), takže ho SU2 řeší implicitně; druhý průchod
-linearizuje kolem spočtené teploty a obvykle ji změní o méně než 0,01 K. Vedení tepla ve štítu se
-neřeší (tenké plastové desky); SU2 nemá standardní k-ε, používá se SST.
+linearizuje kolem spočtené teploty a obvykle ji změní o méně než 0,01 K. S `cfd.solid_conduction`
+"on" (výchozí) se desky vysíťují a program v nich řeší vedení tepla svázané
+se SU2 průchod po průchodu (dělený konjugovaný přenos tepla: SU2 drží stěny
+na teplotě desek, desky přebírají tepelný tok stěn ze SU2); bez něj je každá
+ploška samostatná stěna. Průchody skončí při změně štítu < 0,05 K
+(`radiation_passes` je maximum, 8). Záření mezi deskami se nemodeluje. SU2
+nemá standardní k-ε, používá se SST.
 Balíček pro Fluent se drží zadání přesně: standardní k-ε, DO radiace, pevná
 zóna štítu.
 
@@ -445,6 +450,17 @@ právě spočtených bodů (`points_solved_now`) a `checks` (body
 nezkonvergované, s neustálenou radiací, kmitající). `sps30_housing_study`
 vrací totéž po bodech (rychlost u čela, průnik, výměna vzduchu, zásahy
 senzoru, konvergence, kmitání).
+
+**evaluate, add_points, render.** `evaluate` spočte analytický model v
+zadaných `conditions` (řádek na podmínku; chybějící vstupy = výchozí
+hodnoty) — pro jednotlivé podmínky místo studie se zúženými rozsahy.
+`add_points` přidá do připravené studie další CFD body (`X1`, …) z
+`conditions` nebo `worst_case: true` (nejhorší případ z Monte Carla); další
+`solve_cfd` je spočte a vrátí `surface_check` (plocha vs CFD). `render`
+nakreslí spočtený bod (`point`, `render_quantity`: temperature, velocity,
+streamlines, wall_temperature nebo all; `render_plane` y/x/z), oříznutý
+kolem objektu, do složky renders studie (záložka Graphics). Vedení tepla v
+deskách: `cfd.solid_conduction` "on" (výchozí) / "off".
 
 **Sweepy a obrázky.** `sweep` odpovídá na otázku „co dělá jeden vstup“ po
 zadaných krocích: každý řádek je přímo analytický model, vrací se jako

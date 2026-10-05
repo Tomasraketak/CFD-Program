@@ -1281,10 +1281,10 @@ def _image_paths(result: Any) -> list[Path]:
     """The images a tool reply points at (a chart, a geometry picture) that exist."""
     if not isinstance(result, dict) or not result.get("ok"):
         return []
-    found = []
-    for key in IMAGE_KEYS:
-        path = result.get(key)
-        if path and Path(str(path)).is_file():
+    found: list[Path] = []
+    candidates = [result.get(key) for key in IMAGE_KEYS] + list(result.get("image_paths") or [])
+    for path in candidates:
+        if path and Path(str(path)).is_file() and Path(str(path)) not in found:
             found.append(Path(str(path)))
     return found
 

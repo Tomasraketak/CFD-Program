@@ -57,12 +57,14 @@ from core.models import (
 from core.platform_env import data_root, probe_environment
 from core.shield_models import (
     ShieldCfdOverrides,
+    ShieldCondition,
     ShieldSetupOverrides,
     ShieldStudyOverrides,
     ShieldVariablesOverrides,
 )
 from core.sps30_models import (
     Sps30CfdOverrides,
+    Sps30Condition,
     Sps30SetupOverrides,
     Sps30StudyOverrides,
     Sps30VariablesOverrides,
@@ -1231,6 +1233,79 @@ def _study_preview(kind: str, setup: Any) -> dict[str, Any]:
     return _ok(image_path=str(path), shows=shows)
 
 
+def _conditions(value: Any, model: Any) -> list[Any]:
+    """A list of conditions from objects, dicts or JSON text."""
+    from pydantic import BaseModel
+
+    if value is None:
+        return []
+    if isinstance(value, str):
+        text = value.strip()
+        value = json.loads(text) if text else []
+    if isinstance(value, (dict, BaseModel)):
+        value = [value]
+    return [item if isinstance(item, model) else model.model_validate(
+        item.model_dump() if isinstance(item, BaseModel) else item) for item in value]
+
+
+def _render_quantities(value: Any) -> list[str]:
+    from backend.study_render import QUANTITIES
+
+    if value is None or value == "":
+        return ["temperature", "velocity"]
+    if isinstance(value, str):
+        value = [part.strip() for part in value.replace(";", ",").split(",") if part.strip()]
+    if "all" in value:
+        return list(QUANTITIES)
+    return list(value)
+
+
+def _study_extra_action(
+    kind: str, store: Any, workflow: Any, action: str, study_id: str | None,
+    params: Any, extra: dict[str, Any],
+) -> dict[str, Any]:
+    """evaluate, add_points and render, for either study kind."""
+    condition_model = ShieldCondition if kind == "shield" else Sps30Condition
+    if action == "evaluate":
+        conditions = _conditions(extra.get("conditions"), condition_model) or [condition_model()]
+        rows = workflow.evaluate_conditions(params.setup, conditions)
+        return _ok(
+            evaluator="analytic", rows=rows,
+            note="Each row is the analytical model solved directly at that condition "
+            "(missing inputs = the setup baseline); not CFD.",
+        )
+    if not study_id:
+        return _error(f"action '{action}' needs study_id (a study prepared with prepare_cfd)")
+    if action == "add_points":
+        added = workflow.add_cfd_points(
+            store, study_id, _conditions(extra.get("conditions"), condition_model),
+            bool(extra.get("worst_case")),
+        )
+        return _ok(
+            study_id=study_id,
+            added=[p.model_dump(mode="json") for p in added],
+            next_step="Run action 'solve_cfd' with this study_id to solve them; its reply "
+            "compares the response surface with CFD at these points (surface_check).",
+        )
+    # render
+    from backend.study_render import render_study_point
+
+    folder = store.get(study_id).path("cfd")
+    point = (extra.get("point") or "").strip()
+    if not point:
+        reports = workflow.point_reports(store, study_id)
+        if not reports:
+            return _error("no point of this study is solved yet; run solve_cfd first")
+        point = reports[0]["name"]
+    plane = (extra.get("render_plane") or "y").strip().lower()
+    images = []
+    for quantity in _render_quantities(extra.get("render_quantity")):
+        destination = store.get(study_id).path("renders", f"{point}_{quantity}_{plane}.png")
+        images.append(str(render_study_point(folder, kind, point, quantity, destination, plane)))
+    return _ok(study_id=study_id, point=point, image_path=images[0], image_paths=images,
+               plane=plane)
+
+
 def _study_sweep(
     kind: str,
     setup: Any,
@@ -1280,6 +1355,32 @@ def _as_overrides(value: Any, model: Any, label: str) -> dict[str, Any]:
     if isinstance(value, dict):
         return model.model_validate(value).model_dump(mode="json", exclude_none=True)
     raise ValueError(f"{label} must be an object, not {type(value).__name__}")
+
+
+def _clean_variables(variables: dict[str, Any]) -> dict[str, Any]:
+    """Drop distribution details that do not apply, instead of refusing them.
+
+    A model filling every field of a typed object sends ``std: 0`` or a
+    ``mean`` for a uniform range; those mean "not used", not an error.
+    """
+    cleaned = {}
+    for name, overrides in variables.items():
+        overrides = dict(overrides or {})
+        distribution = overrides.get("distribution", "uniform")
+        for key in ("std", "mean", "mode"):
+            value = overrides.get(key)
+            if value is None:
+                continue
+            unused = (
+                (key == "std" and value <= 0.0)
+                or (distribution == "uniform")
+                or (distribution == "normal" and key == "mode")
+                or (distribution == "triangular" and key in ("mean", "std"))
+            )
+            if unused:
+                overrides.pop(key)
+        cleaned[name] = overrides
+    return cleaned
 
 
 TAB_NAMES = {"shield": "the Radiation shield study tab", "sps30": "the SPS30 housing study tab"}
@@ -1430,7 +1531,11 @@ def _shield_summary(result: Any) -> dict[str, Any]:
         "radiation and bottom radiation, a response surface fitted to the "
         "solved points, and a Monte Carlo analysis on that surface giving the "
         "spread, the worst case and the reliability of T_monitor - T_inlet. "
-        "action: 'analytic' (instant, analytical model), 'sweep' (the "
+        "action: 'analytic' (instant, analytical model), 'evaluate' (the "
+        "model at given conditions), 'render' (pictures of a solved CFD point: "
+        "air temperature, speed, streamlines, wall temperature), 'add_points' "
+        "(extra CFD points, e.g. the worst case, to verify the surface), "
+        "'sweep' (the "
         "analytical model solved directly at fixed steps of one input, e.g. "
         "wind 0.2-5 m/s every 0.2: sweep_variable, sweep_start, sweep_stop, "
         "sweep_step), 'preview' (a picture of the shield and its loads), "
@@ -1458,6 +1563,11 @@ def radiation_shield_study(
     sweep_start: float | None = None,
     sweep_stop: float | None = None,
     sweep_step: float | None = None,
+    conditions: list[ShieldCondition] | str | None = None,
+    worst_case: bool = False,
+    point: str | None = None,
+    render_quantity: list[str] | str | None = None,
+    render_plane: str | None = None,
 ) -> dict[str, Any]:
     """Run or continue a radiation-shield study.
 
@@ -1517,6 +1627,19 @@ def radiation_shield_study(
         design_points.csv with delta_t_k filled in, or a Workbench export).
     max_points:
         For 'solve_cfd': solve at most this many points in this call.
+    conditions:
+        For 'evaluate' (the analytical model at each condition, one row
+        each) and 'add_points' (extra CFD points X1, X2, ... for the next
+        solve_cfd): a list of {"wind_speed_ms", "solar_flux_w_m2",
+        "bottom_flux_w_m2"}; missing inputs = the setup baseline.
+    worst_case:
+        For 'add_points': also add the study's Monte Carlo worst case.
+    point, render_quantity, render_plane:
+        For 'render' on a solved CFD study: the point ('DP7', 'X1'; default
+        the first solved), what to draw ('temperature', 'velocity',
+        'streamlines', 'wall_temperature', a list of them, or 'all';
+        default temperature and velocity) and the cutting plane ('y' along
+        the wind through the thermometer, 'x', 'z').
     sweep_variable, sweep_start, sweep_stop, sweep_step:
         For 'sweep': 'wind_speed_ms', 'solar_flux_w_m2' or
         'bottom_flux_w_m2', and its first value, last value and increment
@@ -1528,7 +1651,8 @@ def radiation_shield_study(
     store = _store()
     action = (action or "").strip().lower()
     known = (
-        "analytic", "sweep", "preview", "prepare_cfd", "solve_cfd", "import",
+        "analytic", "sweep", "evaluate", "preview", "prepare_cfd", "solve_cfd",
+        "add_points", "render", "import",
         "export_fluent", "status",
     )
     if action not in known:
@@ -1538,7 +1662,7 @@ def radiation_shield_study(
         params = _shield_params(
             base,
             _as_overrides(setup, ShieldSetupOverrides, "setup"),
-            _as_overrides(variables, ShieldVariablesOverrides, "variables"),
+            _clean_variables(_as_overrides(variables, ShieldVariablesOverrides, "variables")),
             _as_overrides(study, ShieldStudyOverrides, "study"),
         )
         settings = ShieldCfdSettings.model_validate(
@@ -1552,6 +1676,8 @@ def radiation_shield_study(
         _run_shield_action(
             store, workflow, action, study_id, params, settings, results_csv,
             max_points, sweep_variable, sweep_start, sweep_stop, sweep_step,
+            {"conditions": conditions, "worst_case": worst_case, "point": point,
+             "render_quantity": render_quantity, "render_plane": render_plane},
         ),
         _applied_shield(params, source),
     )
@@ -1559,10 +1685,13 @@ def radiation_shield_study(
 
 def _run_shield_action(
     store, workflow, action, study_id, params, settings, results_csv,
-    max_points, sweep_variable, sweep_start, sweep_stop, sweep_step,
+    max_points, sweep_variable, sweep_start, sweep_stop, sweep_step, extra=None,
 ) -> dict[str, Any]:
     """One action of radiation_shield_study, with validated parameters."""
+    extra = extra or {}
     try:
+        if action in ("evaluate", "add_points", "render"):
+            return _study_extra_action("shield", store, workflow, action, study_id, params, extra)
         if action == "sweep":
             return _study_sweep(
                 "shield", params.setup, sweep_variable, sweep_start, sweep_stop, sweep_step
@@ -1654,7 +1783,8 @@ def _sps30_summary(result: Any) -> dict[str, Any]:
         "(crosswind) and droplet diameter, response surfaces and a Monte Carlo "
         "give the maximum air velocity at the sensor face (goal < 1 m/s), the "
         "share of droplets reaching the face (goal 0) and the chamber exchange "
-        "flow. action: 'analytic' (instant lumped model), 'sweep' (the lumped "
+        "flow. action: 'analytic' (instant lumped model), 'evaluate', "
+        "'render', 'add_points' (as for the shield), 'sweep' (the lumped "
         "model solved directly at fixed steps of one input: sweep_variable, "
         "sweep_start, sweep_stop, sweep_step), 'preview' (a picture of the "
         "housing outside and cut open, with the fan), 'prepare_cfd' (mesh, "
@@ -1678,6 +1808,11 @@ def sps30_housing_study(
     sweep_start: float | None = None,
     sweep_stop: float | None = None,
     sweep_step: float | None = None,
+    conditions: list[Sps30Condition] | str | None = None,
+    worst_case: bool = False,
+    point: str | None = None,
+    render_quantity: list[str] | str | None = None,
+    render_plane: str | None = None,
 ) -> dict[str, Any]:
     """Run or continue an SPS30 housing study.
 
@@ -1725,6 +1860,11 @@ def sps30_housing_study(
         For 'import': design_points.csv filled in, or a Workbench export.
     max_points:
         For 'solve_cfd': solve at most this many points in this call.
+    conditions, worst_case, point, render_quantity, render_plane:
+        As for radiation_shield_study: 'evaluate' and 'add_points' take
+        conditions [{"speed_ms", "yaw_deg", "droplet_um"}] (worst_case = the
+        worst failing condition); 'render' draws a solved point ('y' plane
+        through the SPS30 intake by default).
     sweep_variable, sweep_start, sweep_stop, sweep_step:
         For 'sweep': 'speed_ms', 'yaw_deg' or 'droplet_um', and its first
         value, last value and increment (plain numbers in m/s, degrees or
@@ -1736,7 +1876,8 @@ def sps30_housing_study(
     store = _store()
     action = (action or "").strip().lower()
     known = (
-        "analytic", "sweep", "preview", "prepare_cfd", "solve_cfd", "import",
+        "analytic", "sweep", "evaluate", "preview", "prepare_cfd", "solve_cfd",
+        "add_points", "render", "import",
         "export_fluent", "status",
     )
     if action not in known:
@@ -1745,7 +1886,9 @@ def sps30_housing_study(
         base, source = _study_base("sps30", study_id, workflow.load_params)
         data = (base or Sps30StudyParams()).model_dump(mode="json")
         data["setup"].update(_as_overrides(setup, Sps30SetupOverrides, "setup"))
-        for name, overrides in _as_overrides(variables, Sps30VariablesOverrides, "variables").items():
+        for name, overrides in _clean_variables(
+            _as_overrides(variables, Sps30VariablesOverrides, "variables")
+        ).items():
             data[name].update(overrides or {})
         data.update(_as_overrides(study, Sps30StudyOverrides, "study"))
         params = Sps30StudyParams.model_validate(data)
@@ -1758,6 +1901,8 @@ def sps30_housing_study(
         _run_sps30_action(
             store, workflow, action, study_id, params, settings, results_csv,
             max_points, sweep_variable, sweep_start, sweep_stop, sweep_step,
+            {"conditions": conditions, "worst_case": worst_case, "point": point,
+             "render_quantity": render_quantity, "render_plane": render_plane},
         ),
         _applied_sps30(params, source),
     )
@@ -1765,10 +1910,13 @@ def sps30_housing_study(
 
 def _run_sps30_action(
     store, workflow, action, study_id, params, settings, results_csv,
-    max_points, sweep_variable, sweep_start, sweep_stop, sweep_step,
+    max_points, sweep_variable, sweep_start, sweep_stop, sweep_step, extra=None,
 ) -> dict[str, Any]:
     """One action of sps30_housing_study, with validated parameters."""
+    extra = extra or {}
     try:
+        if action in ("evaluate", "add_points", "render"):
+            return _study_extra_action("sps30", store, workflow, action, study_id, params, extra)
         if action == "sweep":
             return _study_sweep(
                 "sps30", params.setup, sweep_variable, sweep_start, sweep_stop, sweep_step

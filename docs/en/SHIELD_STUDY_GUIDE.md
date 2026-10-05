@@ -283,6 +283,17 @@ minimum and negative values around 3.6 m/s.
   ones) and how much sky and ground it sees.
 - For each design point runs **SU2** (incompressible flow + energy + SST
   turbulence + gravity) and reads the air temperature at the thermometer.
+- **Heat conduction in the plates** (*Heat conduction in the plates*, on by
+  default): the shield bodies get a solid mesh too and the program solves
+  conduction in them, coupled to SU2 pass by pass — SU2 holds the walls at
+  the plates' temperature and reports the heat the air takes; the plates
+  answer with their new temperature from the sun and long-wave they
+  absorb, their own emission and that heat. Without it every surface facet
+  is an independent wall, and sun absorbed on the top of an aluminium
+  plate never reaches the thermometer (a study run that way shows the
+  same ΔT for 800 and 1200 W/m² of sun).
+- The passes stop as soon as the shield changes by less than 0.05 K
+  (*Passes (max)*, 8 by default).
 
 ### 6.2 Settings
 
@@ -745,8 +756,9 @@ Compare the measured error with the model's ΔT for the same conditions
 - Unsteady effects (gusts, passing clouds).
 - Low sun (the model has the sun straight overhead) — for morning or
   evening sun change the *Sun Direction Vector* in Fluent.
-- In the program: conduction within the plates (each side of a plate is
-  treated on its own).
+- In the program: radiation exchanged between the plates themselves (each
+  facet sees only the sky and the ground); conduction within the plates is
+  solved (see 6.1) unless switched off.
 
 ---
 

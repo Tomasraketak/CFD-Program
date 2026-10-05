@@ -618,6 +618,16 @@ temperature so SU2 solves it implicitly (a second pass re-linearises it). SU2 ha
 The Fluent package keeps to the specification (standard k-ε, DO radiation,
 conjugate solid).
 
+**CFD points.** *Heat conduction in the plates* (on by default) solves
+conduction inside the shield bodies, coupled to SU2 pass by pass; *Passes
+(max)* caps the passes, which stop once the shield changes < 0.05 K. The
+*CFD points* box works on the study selected in the results list: **Render
+CFD point** draws a solved point (air temperature, air speed, streamlines,
+wall temperature — cropped round the shield, with the thermometer marked;
+the images also go to the Graphics tab), **Add point** / **Add the worst
+case** append extra points (X1, …) that the next *Solve CFD design points*
+solves — the solve then compares the response surface with CFD there.
+
 **Sweep and picture.** *Sweep one input* steps one input from *From* to *To*
 in *Step* (wind 0.2–5 m/s every 0.2, say) with the others at the baseline
 values, solving every point directly with the analytical model; the

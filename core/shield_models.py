@@ -404,14 +404,35 @@ class ShieldCfdSettings(StrictModel):
         description="Gravity and variable density: natural convection at low wind.",
     )
     radiation_passes: int = Field(
-        default=3, ge=1, le=10,
+        default=8, ge=1, le=20,
         description=(
-            "Outer passes that refresh each surface's long-wave emission from "
-            "the solved wall temperature (the fourth-power term)."
+            "Most outer passes per design point. Each refreshes the long-wave "
+            "emission (and, with solid conduction, the plate temperatures) from "
+            "the last air solve; the loop stops as soon as the shield surface "
+            "changes by less than 0.05 K between passes."
         ),
     )
-    iterations_first_pass: int = Field(default=1500, ge=50, le=100_000)
-    iterations_later_passes: int = Field(default=600, ge=50, le=100_000)
+    solid_conduction: str = Field(
+        default="on", pattern="^(on|off)$",
+        description=(
+            "'on': conjugate heat transfer -- heat conducts inside the shield "
+            "plates (tetrahedral solid mesh, coupled to SU2 pass by pass), so "
+            "sun absorbed on the top of a metal plate reaches its other faces. "
+            "'off': every surface facet is an independent wall (older, faster, "
+            "wrong for metal plates)."
+        ),
+    )
+    iterations_first_pass: int = Field(
+        default=3000, ge=50, le=100_000,
+        description="Iteration cap of the first pass; SU2 stops earlier once converged.",
+    )
+    iterations_later_passes: int = Field(
+        default=1500, ge=50, le=100_000,
+        description=(
+            "Iteration cap of each later pass. A pass that hits it leaves the air "
+            "temperature half-converged, and the passes then creep instead of settling."
+        ),
+    )
     radiation_classes: int = Field(
         default=8, ge=2, le=32,
         description="Surface groups by absorbed radiation (one SU2 marker each).",
@@ -532,3 +553,24 @@ class ShieldStudyOverrides(StrictModel):
 
 
 ShieldCfdOverrides = partial_model(ShieldCfdSettings, "ShieldCfdOverrides")
+
+
+class ShieldCondition(StrictModel):
+    """One condition to evaluate or to solve as an extra CFD point.
+
+    Missing inputs take the setup's baseline (in roof mode the bottom flux
+    of the roof at bottom_temperature_k).
+    """
+
+    wind_speed_ms: float | None = Field(default=None, gt=0.0, description="Wind speed, m/s.")
+    solar_flux_w_m2: float | None = Field(default=None, ge=0.0, description="Top solar flux, W/m^2.")
+    bottom_flux_w_m2: float | None = Field(
+        default=None, ge=0.0, description="Bottom long-wave flux, W/m^2 (roof mode: sets the roof temperature)."
+    )
+
+    def resolve(self, setup: "ShieldSetup") -> tuple[float, float, float]:
+        return (
+            self.wind_speed_ms if self.wind_speed_ms is not None else setup.wind_speed_ms,
+            self.solar_flux_w_m2 if self.solar_flux_w_m2 is not None else setup.solar_flux_w_m2,
+            self.bottom_flux_w_m2 if self.bottom_flux_w_m2 is not None else setup.baseline_bottom_flux(),
+        )

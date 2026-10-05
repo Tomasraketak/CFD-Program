@@ -258,3 +258,154 @@ def publish_study_state(panel, kind: str, delay_ms: int = 400) -> QtCore.QTimer:
     panel.publish_study_state = publish
     publish()
     return timer
+
+
+class CfdPointTools(QtWidgets.QGroupBox):
+    """Draw a solved CFD point, or add extra points to verify the surface.
+
+    Works on the study selected in the results list (one prepared with
+    'Prepare CFD cases'); the same as the assistant's 'render' and
+    'add_points' actions.
+    """
+
+    def __init__(self, inputs: dict[str, tuple[str, float, float, float]],
+                 parent: QtWidgets.QWidget | None = None) -> None:
+        super().__init__("CFD points: render the air, add points to verify", parent)
+        form = QtWidgets.QFormLayout(self)
+        self.point = QtWidgets.QComboBox()
+        self.point.setEditable(True)
+        self.point.setToolTip("A solved point of the selected study (DP0, DP7, X1, ...)")
+        form.addRow("Point", self.point)
+        self.quantity = QtWidgets.QComboBox()
+        for label, value in (
+            ("Temperature + velocity", "temperature,velocity"),
+            ("Air temperature", "temperature"), ("Air speed", "velocity"),
+            ("Streamlines", "streamlines"), ("Wall temperature", "wall_temperature"),
+            ("All four", "all"),
+        ):
+            self.quantity.addItem(label, value)
+        form.addRow("Show", self.quantity)
+        self.plane = QtWidgets.QComboBox()
+        for label, value in (("Along the wind (y)", "y"), ("Across the wind (x)", "x"),
+                             ("Horizontal (z)", "z")):
+            self.plane.addItem(label, value)
+        form.addRow("Cutting plane", self.plane)
+        self.render_button = QtWidgets.QPushButton("Render CFD point")
+        form.addRow(self.render_button)
+        self.inputs: dict[str, QtWidgets.QDoubleSpinBox] = {}
+        row = QtWidgets.QHBoxLayout()
+        for name, (label, low, high, value) in inputs.items():
+            box = QtWidgets.QDoubleSpinBox()
+            box.setRange(low, high)
+            box.setDecimals(3)
+            box.setValue(value)
+            box.setToolTip(label)
+            self.inputs[name] = box
+            row.addWidget(box)
+        holder = QtWidgets.QWidget()
+        holder.setLayout(row)
+        form.addRow("New point " + " / ".join(label.split(" [")[0] for label, *_ in inputs.values()),
+                    holder)
+        buttons = QtWidgets.QHBoxLayout()
+        self.add_button = QtWidgets.QPushButton("Add point")
+        self.worst_button = QtWidgets.QPushButton("Add the worst case")
+        self.worst_button.setToolTip(
+            "Adds the Monte Carlo worst case as a CFD point, to check the response "
+            "surface where it is least accurate. Solve it with 'Solve CFD design points'."
+        )
+        buttons.addWidget(self.add_button)
+        buttons.addWidget(self.worst_button)
+        holder = QtWidgets.QWidget()
+        holder.setLayout(buttons)
+        form.addRow(holder)
+
+    def set_points(self, names: list[str]) -> None:
+        current = self.point.currentText()
+        self.point.blockSignals(True)
+        self.point.clear()
+        self.point.addItems(names)
+        if current in names:
+            self.point.setCurrentText(current)
+        self.point.blockSignals(False)
+
+    def condition(self) -> dict[str, float]:
+        return {name: box.value() for name, box in self.inputs.items()}
+
+
+def wire_cfd_tools(panel, kind: str, tools: CfdPointTools) -> None:
+    """Connect the CFD point tools of a study panel to its workflow."""
+    import importlib
+
+    workflow = importlib.import_module(
+        "backend.shield_workflow" if kind == "shield" else "backend.sps30_workflow"
+    )
+    condition_model = importlib.import_module(
+        "core.shield_models" if kind == "shield" else "core.sps30_models"
+    )
+    condition_class = getattr(condition_model, "ShieldCondition" if kind == "shield" else "Sps30Condition")
+
+    def study() -> str | None:
+        return panel.study_list.currentData()
+
+    def refresh_points(*_):
+        name = study()
+        names = []
+        if name:
+            try:
+                names = [r["name"] for r in workflow.point_reports(panel.store, name)]
+            except Exception:  # noqa: BLE001 - not a CFD study
+                names = []
+        tools.set_points(names)
+
+    def render():
+        name = study()
+        point = tools.point.currentText().strip()
+        if not name or not point:
+            QtWidgets.QMessageBox.information(panel, "Render", "Select a CFD study and a solved point.")
+            return
+        from backend.study_render import QUANTITIES, render_study_point
+
+        quantities = tools.quantity.currentData()
+        quantities = list(QUANTITIES) if quantities == "all" else quantities.split(",")
+        plane = tools.plane.currentData()
+        folder = panel.store.get(name).path("cfd")
+
+        def job():
+            return [
+                str(render_study_point(folder, kind, point, q,
+                                       panel.store.get(name).path("renders", f"{point}_{q}_{plane}.png"),
+                                       plane))
+                for q in quantities
+            ]
+
+        def done(paths):
+            if paths:
+                panel.geometry_view.show_image(paths[0])
+                panel.result_tabs.setCurrentWidget(panel.geometry_view)
+                for path in paths:
+                    panel.append_log(f"Rendered {path}")
+
+        run_in_background(panel, job, done, f"Rendering {point} ...")
+
+    def add(worst: bool):
+        name = study()
+        if not name:
+            QtWidgets.QMessageBox.information(panel, "Add point", "Select a prepared CFD study first.")
+            return
+        try:
+            conditions = [] if worst else [condition_class(**tools.condition())]
+            added = workflow.add_cfd_points(panel.store, name, conditions, worst)
+        except Exception as error:  # noqa: BLE001 - shown to the operator
+            QtWidgets.QMessageBox.warning(panel, "Add point", str(error))
+            return
+        panel.append_log(
+            "Added " + ", ".join(p.name for p in added)
+            + " -- solve them with 'Solve CFD design points'."
+        )
+
+    panel.study_list.currentIndexChanged.connect(refresh_points)
+    tools.render_button.clicked.connect(render)
+    tools.add_button.clicked.connect(lambda: add(False))
+    tools.worst_button.clicked.connect(lambda: add(True))
+    panel.refresh_cfd_points = refresh_points
+    refresh_points()

@@ -283,3 +283,137 @@ def test_the_graphics_tab_shows_previews_and_any_picture(store, tmp_path):
     elsewhere = _png(tmp_path / "chart.png")
     found = {image.path for image in find_rendered_images(store, (elsewhere,))}
     assert preview in found and elsewhere in found
+
+
+# ---------------------------------------------------------------------------
+# evaluate, add_points, render
+# ---------------------------------------------------------------------------
+
+
+def test_evaluate_gives_the_model_at_single_conditions(isolated_data_root):
+    """The roof comparison needed one condition, not a narrowed study."""
+    import mcp_server
+    from backend.shield_study import ShieldAnalyticModel
+
+    reply = mcp_server.radiation_shield_study(
+        action="evaluate",
+        setup={"bottom_mode": "roof_temperature", "bottom_temperature_k": 343},
+        conditions=[{"wind_speed_ms": 2.75}, {"wind_speed_ms": 0.5, "solar_flux_w_m2": 1200}],
+    )
+    assert reply["ok"], reply
+    first, second = reply["rows"]
+    assert first["roof_temperature_k"] == pytest.approx(343.0)
+    setup = ShieldSetup(bottom_mode="roof_temperature", bottom_temperature_k=343)
+    assert second["delta_t_k"] == pytest.approx(
+        ShieldAnalyticModel(setup).delta_t(0.5, 1200, setup.baseline_bottom_flux())
+    )
+    one = mcp_server.sps30_housing_study(action="evaluate", conditions={"droplet_um": 20})
+    assert one["ok"] and one["rows"][0]["droplet_um"] == 20
+
+
+def test_unused_distribution_details_are_dropped(isolated_data_root, monkeypatch):
+    import mcp_server
+
+    monkeypatch.setattr(mcp_server, "_geometry_image", lambda kind, setup: {})
+    reply = mcp_server.radiation_shield_study(
+        action="analytic", study={"monte_carlo_samples": 1000},
+        variables={"wind_speed_ms": {"minimum": 0.5, "maximum": 5, "std": 0, "mean": 0, "mode": 0}},
+    )
+    assert reply["ok"], reply
+
+
+def _fake_solved_study(store, tmp_path):
+    """A shield CFD study record with one solved point and a solution file."""
+    import shutil
+
+    import numpy as np
+    import pyvista as pv
+
+    from backend import shield_workflow
+    from backend.shield_study import write_design_points_csv
+    from core.shield_models import DesignPoint, ShieldCfdSettings
+
+    params = ShieldStudyParams()
+    record = store.create("shield", {})
+    (record.directory / "params.json").write_text(params.model_dump_json())
+    folder = record.path(shield_workflow.CFD_FOLDER)
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "study.json").write_text(json.dumps({
+        "setup": params.setup.model_dump(mode="json"),
+        "cfd": ShieldCfdSettings().model_dump(mode="json"),
+    }))
+    (folder / "geometry.json").write_text(json.dumps({
+        "shield_centre_m": [0.0, 0.0, 0.72], "shield_size_m": [0.2, 0.2, 0.2],
+    }))
+    points = [DesignPoint(name="DP0", wind_speed_ms=1.0, solar_flux_w_m2=1000, bottom_flux_w_m2=300)]
+    write_design_points_csv(folder / "design_points.csv", params.setup, points)
+    case = folder / "points" / "DP0"
+    case.mkdir(parents=True)
+    box = pv.ImageData(dimensions=(30, 30, 30), spacing=(0.05, 0.05, 0.05), origin=(-0.7, -0.7, 0.0))
+    grid = box.cast_to_unstructured_grid()
+    inside = np.all(np.abs(grid.points - [0, 0, 0.72]) < 0.08, axis=1)
+    grid = grid.extract_points(~inside, adjacent_cells=False)
+    grid.point_data["Temperature"] = 298.15 + np.exp(-np.linalg.norm(grid.points - [0, 0, 0.72], axis=1))
+    grid.point_data["Velocity"] = np.tile([1.0, 0.0, 0.0], (grid.n_points, 1))
+    grid.save(str(case / "flow.vtu"))
+    (case / "result.json").write_text(json.dumps({"name": "DP0", "delta_t_k": 0.3, "converged": True}))
+    return record.record_id
+
+
+def test_render_draws_a_solved_point_into_the_graphics_folder(store, tmp_path, monkeypatch):
+    pytest.importorskip("pyvista")
+    import mcp_server
+
+    monkeypatch.setattr(mcp_server, "_store", lambda: store)
+    monkeypatch.setattr(mcp_server, "_geometry_image", lambda kind, setup: {})
+    study = _fake_solved_study(store, tmp_path)
+    reply = mcp_server.radiation_shield_study(
+        action="render", study_id=study, point="DP0", render_quantity="all",
+    )
+    assert reply["ok"], reply
+    assert len(reply["image_paths"]) == 4
+    for path in reply["image_paths"]:
+        assert Path(path).is_file() and "renders" in path
+    from gui.gallery import find_rendered_images
+
+    assert {Path(p) for p in reply["image_paths"]} <= {i.path for i in find_rendered_images(store)}
+
+
+def test_extra_points_are_appended_for_the_next_solve(store, tmp_path, monkeypatch):
+    import mcp_server
+    from backend import shield_workflow
+
+    monkeypatch.setattr(mcp_server, "_store", lambda: store)
+    monkeypatch.setattr(mcp_server, "_geometry_image", lambda kind, setup: {})
+    study = _fake_solved_study(store, tmp_path)
+    reply = mcp_server.radiation_shield_study(
+        action="add_points", study_id=study,
+        conditions=[{"wind_speed_ms": 0.5, "solar_flux_w_m2": 1200}],
+    )
+    assert reply["ok"], reply
+    assert reply["added"][0]["name"] == "X1"
+    names = [p.name for p in shield_workflow.cfd_points(store, study)]
+    assert names == ["DP0", "X1"]
+    # DP0 keeps its result: it is read from its result.json, not the table.
+    assert shield_workflow.cfd_points(store, study)[0].delta_t_k == pytest.approx(0.3)
+    no_result = mcp_server.radiation_shield_study(action="add_points", study_id=study, worst_case=True)
+    assert no_result["ok"] is False and "solve its design points" in no_result["error"]
+
+
+def test_the_surface_is_checked_against_an_extra_cfd_point():
+    from backend.shield_study import ShieldAnalyticModel, run_analytic_study
+    from backend.shield_workflow import surface_check
+    from core.shield_models import DesignPoint
+
+    result = run_analytic_study(ShieldStudyParams(monte_carlo_samples=1000))
+    worst = result.monte_carlo.worst_case
+    model = ShieldAnalyticModel(result.params.setup)
+    exact = model.delta_t(worst["wind_speed_ms"], worst["solar_flux_w_m2"], worst["bottom_flux_w_m2"])
+    point = DesignPoint(
+        name="X1", wind_speed_ms=worst["wind_speed_ms"], solar_flux_w_m2=worst["solar_flux_w_m2"],
+        bottom_flux_w_m2=worst["bottom_flux_w_m2"], delta_t_k=exact,
+    )
+    row = surface_check(result, [point])[0]
+    assert row["name"] == "X1"
+    assert row["surface_delta_t_k"] == pytest.approx(worst["delta_t_k"], abs=1e-6)
+    assert row["difference_k"] == pytest.approx(exact - worst["delta_t_k"])

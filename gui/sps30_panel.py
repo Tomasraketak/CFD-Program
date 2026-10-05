@@ -73,6 +73,9 @@ class Sps30StudyPanel(QtWidgets.QWidget):
         from gui.study_extras import publish_study_state
 
         self._publish_timer = publish_study_state(self, "sps30")
+        from gui.study_extras import wire_cfd_tools
+
+        wire_cfd_tools(self, "sps30", self.cfd_tools)
 
     # ------------------------------------------------------------ controls
 
@@ -229,6 +232,15 @@ class Sps30StudyPanel(QtWidgets.QWidget):
         self.solve_limit.setSpecialValueText("all")
         form.addRow("Points to solve now", self.solve_limit)
         layout.addWidget(group)
+
+        from gui.study_extras import CfdPointTools
+
+        self.cfd_tools = CfdPointTools({
+            "speed_ms": ("Speed [m/s]", 0.5, 80.0, 20.0),
+            "yaw_deg": ("Yaw [deg]", -45.0, 45.0, 0.0),
+            "droplet_um": ("Droplet [um]", 1.0, 5000.0, 100.0),
+        })
+        layout.addWidget(self.cfd_tools)
 
         from gui.study_extras import SweepControls
 

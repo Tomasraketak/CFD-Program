@@ -161,3 +161,54 @@ def point_table(reports: list[dict]) -> list[dict]:
         "oscillating", "residual_drop_orders", "mesh_resolution",
     )
     return [{key: report.get(key) for key in keys} for report in reports]
+
+
+EXTRA_PREFIX = "X"
+
+
+def evaluate_conditions(setup, conditions) -> list[dict]:
+    """The lumped model at given conditions, one row each."""
+    from backend.sps30_study import Sps30AnalyticModel
+
+    model = Sps30AnalyticModel(setup)
+    rows = []
+    for condition in conditions:
+        speed, yaw, droplet = condition.resolve(setup)
+        solved = model.solve(speed, yaw, droplet)
+        rows.append({"speed_ms": speed, "yaw_deg": yaw, "droplet_um": droplet,
+                     **{k: float(v) for k, v in solved.items()}})
+    return rows
+
+
+def add_cfd_points(store, study_id: str, conditions=(), worst_case: bool = False) -> list[Sps30Point]:
+    """Append extra design points (X1, ...) to a prepared CFD study.
+
+    ``worst_case`` takes the worst failing condition of the last analysis.
+    """
+    from backend.sps30_study import write_points_csv
+
+    params = load_params(store, study_id)
+    folder = store.get(study_id).path("cfd")
+    points = cfd_points(store, study_id)
+    wanted = [condition.resolve(params.setup) for condition in conditions]
+    if worst_case:
+        result = load_result(store, study_id)
+        failure = result.first_failure if result is not None else None
+        if not failure:
+            raise Sps30StudyError("the study has no failing worst case to verify")
+        wanted.append((failure["speed_ms"], failure["yaw_deg"], failure["droplet_um"]))
+    if not wanted:
+        raise Sps30StudyError("give conditions or worst_case")
+    taken = {p.name for p in points}
+    number, added = 1, []
+    for speed, yaw, droplet in wanted:
+        while f"{EXTRA_PREFIX}{number}" in taken:
+            number += 1
+        name = f"{EXTRA_PREFIX}{number}"
+        taken.add(name)
+        added.append(Sps30Point(name=name, speed_ms=round(float(speed), 6),
+                                yaw_deg=round(float(yaw), 6), droplet_um=round(float(droplet), 6)))
+    inputs_only = [Sps30Point(name=p.name, speed_ms=p.speed_ms, yaw_deg=p.yaw_deg,
+                              droplet_um=p.droplet_um) for p in points]
+    write_points_csv(folder / "design_points.csv", inputs_only + added)
+    return added

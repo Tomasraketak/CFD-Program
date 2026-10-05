@@ -244,3 +244,18 @@ class Sps30StudyOverrides(StrictModel):
 
 
 Sps30CfdOverrides = partial_model(Sps30CfdSettings, "Sps30CfdOverrides")
+
+
+class Sps30Condition(StrictModel):
+    """One condition to evaluate or to solve as an extra CFD point (missing = baseline)."""
+
+    speed_ms: float | None = Field(default=None, gt=0.0, description="Platform speed, m/s.")
+    yaw_deg: float | None = Field(default=None, description="Yaw (crosswind angle), deg.")
+    droplet_um: float | None = Field(default=None, gt=0.0, description="Droplet diameter, um.")
+
+    def resolve(self, setup: "Sps30Setup") -> tuple[float, float, float]:
+        return (
+            self.speed_ms if self.speed_ms is not None else setup.speed_ms,
+            self.yaw_deg if self.yaw_deg is not None else setup.yaw_deg,
+            self.droplet_um if self.droplet_um is not None else setup.droplet_um,
+        )

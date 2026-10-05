@@ -610,6 +610,16 @@ ho přelinearizuje). SU2 nemá
 standardní k-ε; jeho případy používají SST. Balíček pro Fluent se drží zadání
 (standardní k-ε, DO radiace, pevná zóna štítu).
 
+**CFD body.** *Heat conduction in the plates* (výchozí zapnuto) řeší vedení
+tepla v tělesech štítu svázané se SU2 průchod po průchodu; *Passes (max)*
+omezuje počet průchodů, které skončí, jakmile se štít změní o < 0,05 K.
+Rámeček *CFD points* pracuje se studií vybranou v seznamu výsledků:
+**Render CFD point** nakreslí spočtený bod (teplota vzduchu, rychlost,
+proudnice, teplota stěn — oříznuté kolem štítu, s vyznačeným teploměrem;
+obrázky jdou i do záložky Graphics), **Add point** / **Add the worst case**
+přidají další body (X1, …), které spočte další *Solve CFD design points* —
+a výpočet je pak porovná s response surface.
+
 **Sweep a obrázek.** *Sweep one input* projde jeden vstup od *From* do *To*
 po *Step* (např. vítr 0,2–5 m/s po 0,2) s ostatními na výchozích hodnotách a
 každý bod spočítá přímo analytickým modelem; záložka **Sweep** pod grafy

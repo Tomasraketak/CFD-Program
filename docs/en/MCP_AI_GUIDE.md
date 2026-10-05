@@ -423,8 +423,14 @@ own emission becomes a wall boundary condition, grouped into a handful of
 markers. The fourth-power emission is linearised about the wall temperature
 (SU2 `MARKER_HEATTRANSFER`, h_r·(T_eq − T_wall)), so SU2 solves it
 implicitly; a second pass re-linearises about the solved temperature and
-usually changes it by under 0.01 K. Shield conduction is not solved (thin
-plastic plates); SU2 has no standard k-ε, so SST is used. The Fluent package
+usually changes it by under 0.01 K. With `cfd.solid_conduction` "on" (the
+default) the plates are meshed and conduction in them is solved by the
+program, coupled to SU2 pass by pass (partitioned conjugate heat transfer:
+SU2 holds the walls at the plate temperature, the plates take SU2's wall
+heat flux); without it each facet is an independent wall. Passes stop once
+the shield changes < 0.05 K (`radiation_passes` is the maximum, 8).
+Radiation between the plates is not modelled. SU2 has no standard k-ε, so
+SST is used. The Fluent package
 follows the specification exactly: standard k-ε, DO radiation, conjugate
 solid.
 
@@ -448,6 +454,16 @@ of the points just solved (`points_solved_now`) and `checks` (points not
 converged, radiation not settled, oscillating). `sps30_housing_study`
 returns the same per point (face velocity, penetration, exchange flow,
 sensor hits, convergence, oscillation).
+
+**evaluate, add_points, render.** `evaluate` solves the analytical model at
+the `conditions` given (one row each; missing inputs = the baseline) — use
+it for single conditions instead of a study with narrowed ranges.
+`add_points` appends extra CFD points (`X1`, …) to a prepared study, from
+`conditions` or `worst_case: true` (the Monte Carlo worst case); the next
+`solve_cfd` solves them and returns `surface_check` (surface vs CFD).
+`render` draws a solved point (`point`, `render_quantity`: temperature,
+velocity, streamlines, wall_temperature or all; `render_plane` y/x/z),
+cropped round the object, into the study's renders folder (Graphics tab).
 
 **Sweeps and pictures.** `sweep` answers "what does one input do" at the
 steps asked for: every row is the analytical model itself, returned as

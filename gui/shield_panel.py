@@ -116,6 +116,9 @@ class ShieldStudyPanel(QtWidgets.QWidget):
         from gui.study_extras import publish_study_state
 
         self._publish_timer = publish_study_state(self, "shield")
+        from gui.study_extras import wire_cfd_tools
+
+        wire_cfd_tools(self, "shield", self.cfd_tools)
 
     # ------------------------------------------------------------------ controls
 
@@ -275,8 +278,17 @@ class ShieldStudyPanel(QtWidgets.QWidget):
         self.buoyancy = QtWidgets.QCheckBox("Gravity and natural convection")
         self.buoyancy.setChecked(cfd.buoyancy)
         form.addRow("", self.buoyancy)
-        self.passes = _int_spin(1, 10, cfd.radiation_passes)
-        form.addRow("Radiation passes", self.passes)
+        self.conduction = QtWidgets.QCheckBox("Heat conduction in the plates (conjugate)")
+        self.conduction.setChecked(cfd.solid_conduction == "on")
+        self.conduction.setToolTip(
+            "Meshes the shield plates and solves conduction in them, coupled to "
+            "SU2 pass by pass, so sun absorbed on a metal plate reaches its other "
+            "faces. Off: every surface facet is an independent wall."
+        )
+        form.addRow("", self.conduction)
+        self.passes = _int_spin(1, 20, cfd.radiation_passes)
+        self.passes.setToolTip("Most passes; stops once the shield changes < 0.05 K")
+        form.addRow("Passes (max)", self.passes)
         self.iter_first = _int_spin(50, 100_000, cfd.iterations_first_pass, 100)
         form.addRow("Iterations, first pass", self.iter_first)
         self.iter_later = _int_spin(50, 100_000, cfd.iterations_later_passes, 100)
@@ -296,6 +308,16 @@ class ShieldStudyPanel(QtWidgets.QWidget):
         )
         form.addRow("Points to solve now", self.solve_limit)
         layout.addWidget(group)
+
+        # --- CFD point tools ---------------------------------------------------
+        from gui.study_extras import CfdPointTools
+
+        self.cfd_tools = CfdPointTools({
+            "wind_speed_ms": ("Wind [m/s]", 0.05, 30.0, 0.5),
+            "solar_flux_w_m2": ("Solar [W/m2]", 0.0, 1500.0, 1000.0),
+            "bottom_flux_w_m2": ("Bottom [W/m2]", 0.0, 1500.0, 300.0),
+        })
+        layout.addWidget(self.cfd_tools)
 
         # --- sweep -------------------------------------------------------------
         from gui.study_extras import SweepControls
@@ -507,6 +529,7 @@ class ShieldStudyPanel(QtWidgets.QWidget):
             turbulence_model=self.turbulence.currentData(),
             buoyancy=self.buoyancy.isChecked(),
             radiation_passes=self.passes.value(),
+            solid_conduction="on" if self.conduction.isChecked() else "off",
             iterations_first_pass=self.iter_first.value(),
             iterations_later_passes=self.iter_later.value(),
             radiation_classes=self.classes.value(),

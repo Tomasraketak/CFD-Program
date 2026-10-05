@@ -772,13 +772,19 @@ def write_class_mesh(
     study_dir: Path, facets: RadiationFacets, key: np.ndarray, classes: int
 ) -> PreparedMesh:
     """Write the SU2 mesh with the shield split into radiation classes."""
-    from backend.su2_mesh import VTK_TRIANGLE
-
     faces = np.load(study_dir / "shield_faces.npy")
     points = np.load(study_dir / "points.npy")
     labels = classify(key, classes)
-    count = int(labels.max()) + 1 if len(labels) else 0
+    count = write_marker_split(study_dir, labels, study_dir / MESH_FILENAME)
+    return PreparedMesh(study_dir / MESH_FILENAME, labels, count, facets, faces, points)
 
+
+def write_marker_split(study_dir: Path, labels: np.ndarray, mesh_path: Path) -> int:
+    """Write the domain mesh with the shield facets grouped by ``labels``."""
+    from backend.su2_mesh import VTK_TRIANGLE
+
+    faces = np.load(study_dir / "shield_faces.npy")
+    count = int(labels.max()) + 1 if len(labels) else 0
     base = (study_dir / "shield_domain_base.su2").read_text().splitlines()
     marker_start = next(i for i, line in enumerate(base) if line.startswith("NMARK="))
     body = base[:marker_start]
@@ -800,9 +806,8 @@ def write_class_mesh(
         lines.append(f"MARKER_TAG= {SHIELD_PREFIX}{label + 1}")
         lines.append(f"MARKER_ELEMS= {len(chosen)}")
         lines.extend(f"{VTK_TRIANGLE} {a} {b} {c}" for a, b, c in chosen)
-    mesh_path = study_dir / MESH_FILENAME
-    mesh_path.write_text("\n".join(lines) + "\n", encoding="ascii")
-    return PreparedMesh(mesh_path, labels, count, facets, faces, points)
+    Path(mesh_path).write_text("\n".join(lines) + "\n", encoding="ascii")
+    return count
 
 
 # ---------------------------------------------------------------------------
@@ -883,8 +888,20 @@ def build_shield_config(
     ]
     transfer = [
         f"{name}, {value[0]:.6f}, {value[1]:.5f}" for name, value in marker_fluxes.items()
-        if isinstance(value, tuple)
+        if isinstance(value, tuple) and value[0] != "T"
     ]
+    # Conjugate mode: the walls held at the solid's surface temperature.
+    held = [
+        f"{name}, {value[1]:.5f}" for name, value in marker_fluxes.items()
+        if isinstance(value, tuple) and value[0] == "T"
+    ]
+    if held:
+        if setup.bottom_mode is BottomMode.ROOF_TEMPERATURE:
+            # One MARKER_ISOTHERMAL line only: merge with the roof's.
+            roof_line = next(i for i, line in enumerate(lines) if line.startswith("MARKER_ISOTHERMAL="))
+            lines[roof_line] = lines[roof_line].rstrip(" )") + ", " + ", ".join(held) + " )"
+        else:
+            add(f"MARKER_ISOTHERMAL= ( {', '.join(held)} )")
     if fluxes:
         add(f"MARKER_HEATFLUX= ( {', '.join(fluxes)} )")
     if transfer:
@@ -906,7 +923,13 @@ def build_shield_config(
     add("TIME_DISCRE_TURB= EULER_IMPLICIT")
     add("CFL_NUMBER= 5.0")
     add("CFL_ADAPT= YES")
-    add("CFL_ADAPT_PARAM= ( 0.5, 1.05, 1.0, 100.0 )")
+    # The energy equation is the slow one at low wind. A 1.05 ramp left it
+    # around rms[T] -4 when a pass ran out of iterations, so each radiation
+    # pass started from a half-converged wall temperature and the passes
+    # crept (0.65, 0.20, 0.13 K) instead of settling. 1.1 reaches the
+    # residual target (-7) in a few hundred iterations; a CFL ceiling much
+    # above 100 diverges on these meshes.
+    add("CFL_ADAPT_PARAM= ( 0.5, 1.1, 1.0, 100.0 )")
     add("LINEAR_SOLVER= FGMRES")
     add("LINEAR_SOLVER_PREC= ILU")
     add("LINEAR_SOLVER_ERROR= 1E-4")
@@ -1003,6 +1026,17 @@ def prepare_study(
             "shield material; move it into the air with 'Thermometer' (offset from the "
             "centre of the shield's bounding box)"
         )
+    if cfd.solid_conduction == "on":
+        from backend.shield_conduction import mesh_solids, save_solid
+
+        say("Meshing the shield plates for heat conduction...")
+        step_path, scale = resolve_shield_step(setup, study_dir)
+        solid = mesh_solids(
+            step_path, scale, np.array(domain.shield_centre_m),
+            domain.near_size_m or RESOLUTION_SIZES[cfd.mesh_resolution][0],
+        )
+        save_solid(study_dir, solid)
+        say(f"  {len(solid['tets']):,} solid cells in {int(solid['body'].max()) + 1} bodies")
     say("Casting rays for shading and view factors...")
     occluders = coarse_ray_surface(setup, study_dir)
     facets = radiation_facets(domain.shield_triangles, cfd.rays_per_face, occluders)
@@ -1133,9 +1167,16 @@ def run_design_point(
     wall_changes: list[float] = []
     behaviour: dict = {"residual_drop_orders": None, "oscillating": False}
     say = on_line or (lambda _line: None)
+    coupling = _ConjugateCoupling.create(study_dir, setup, cfd, prepared, absorbed, lumped)
+    if coupling is not None:
+        say(f"{point.name}: conjugate heat transfer -- conduction in the shield plates")
+        wall = coupling.target
 
     for index in range(cfd.radiation_passes):
-        fluxes = _marker_fluxes(setup, prepared, absorbed, wall)
+        if coupling is not None:
+            fluxes = coupling.markers(case_dir / MESH_FILENAME, cfd.radiation_classes)
+        else:
+            fluxes = _marker_fluxes(setup, prepared, absorbed, wall)
         restart = index > 0
         if restart:
             shutil.copyfile(case_dir / "restart_flow.dat", case_dir / "solution_flow.dat")
@@ -1167,15 +1208,22 @@ def run_design_point(
             )
         # Stopping short of the limit means SU2's residual criterion was met.
         converged = bool(parser.records) and parser.records[-1].iteration < iterations - 1
-        previous = wall
-        wall = _wall_temperatures(case_dir, prepared, lumped.shield_temp_k)
-        # No relaxation needed: the linearised emission is a Newton step.
         areas = prepared.facets.areas
+        if coupling is not None:
+            # The air answered; let the plates answer back. The change of
+            # their surface temperature is the coupling's convergence.
+            previous = coupling.target
+            coupling.update_from_air(case_dir, ambient)
+            wall = coupling.target
+        else:
+            previous = wall
+            wall = _wall_temperatures(case_dir, prepared, lumped.shield_temp_k)
+        # No relaxation needed: the linearised emission is a Newton step.
         change = float(np.sum(np.abs(wall - previous) * areas) / np.sum(areas))
         wall_changes.append(round(change, 4))
         behaviour = residual_behaviour(parser.records, iterations)
         say(f"{point.name}: pass {index + 1} mean wall temperature change {change:.3f} K")
-        if index > 0 and change < RADIATION_SETTLED_K:
+        if (index > 0 or coupling is not None) and change < RADIATION_SETTLED_K:
             break
 
     solution = load_solution(find_solution_file(case_dir))
@@ -1239,6 +1287,10 @@ def run_design_point(
                 "residual_drop_orders": result.residual_drop_orders,
                 "oscillating": result.oscillating,
                 "mesh_resolution": cfd.mesh_resolution,
+                "conduction": coupling is not None,
+                "solid_temperature_k": (
+                    None if coupling is None else coupling.body_temperatures()
+                ),
                 "wall_time_s": result.wall_time_s,
                 "notes": notes,
             },
@@ -1288,12 +1340,138 @@ def residual_behaviour(records, iterations: int | None = None) -> dict:
     }
 
 
+class _ConjugateCoupling:
+    """The solid side of the conjugate loop for one design point.
+
+    Holds the plates' conduction model and what the air did at each shield
+    facet in the last pass; produces the isothermal wall markers for the
+    next air solve.
+    """
+
+    def __init__(self, conduction, solid, prepared, absorbed, emissivity, view, h_air, start):
+        from backend.shield_conduction import match_surfaces
+
+        facet_centroids = prepared.points[prepared.wall_nodes].mean(axis=1)
+        self.conduction = conduction
+        self.body = solid["body"]
+        self.prepared = prepared
+        self.to_solid = match_surfaces(facet_centroids, conduction.centroids)
+        self.to_fluid = match_surfaces(conduction.centroids, facet_centroids)
+        self.absorbed = absorbed
+        self.emissivity = emissivity
+        self.view = view
+        count = len(facet_centroids)
+        self.h_air = np.full(count, h_air)
+        self.t_wall = np.full(count, start)
+        self.q_air = self.h_air * 0.0
+        self.nodes = np.full(len(conduction.points), start)
+        self.ambient = start
+        self.target = np.full(count, start)
+
+    @classmethod
+    def create(cls, study_dir, setup, cfd, prepared, absorbed, lumped):
+        from backend.shield_conduction import SolidConduction, load_solid
+
+        if cfd.solid_conduction != "on":
+            return None
+        solid = load_solid(study_dir)
+        if solid is None:
+            return None
+        conduction = SolidConduction(solid["points"], solid["tets"], setup.shield_conductivity_w_mk)
+        _, emissivity = prepared.facets.optics(setup)
+        view = prepared.facets.sky_view + prepared.facets.ground_view
+        coupling = cls(
+            conduction, solid, prepared, absorbed, emissivity, view,
+            lumped.external_h_w_m2k, lumped.shield_temp_k,
+        )
+        ambient = setup.ambient_temp_k()
+        # The first guess of the air side: the lumped model's film
+        # coefficient against the inlet air.
+        coupling.t_wall = np.full(len(view), ambient)
+        coupling.q_air = np.zeros(len(view))
+        coupling._solve_solid()
+        return coupling
+
+    def _solve_solid(self) -> None:
+        from backend.shield_conduction import SolidSurfaceState
+
+        m = self.to_solid
+        state = SolidSurfaceState(
+            absorbed=self.absorbed[m], emissivity=self.emissivity[m], view=self.view[m],
+            q_air=self.q_air[m], t_air_wall=self.t_wall[m], h_air=self.h_air[m],
+        )
+        self.nodes = self.conduction.solve(state, float(np.mean(self.target)))
+        surface = self.conduction.surface_temperature(self.nodes)
+        self.target = surface[self.to_fluid]
+
+    def markers(self, mesh_path: Path, classes: int) -> dict:
+        """Group the facets by solid temperature into isothermal markers."""
+        labels = classify(self.target, classes)
+        count = write_marker_split(self.prepared.mesh_path.parent, labels, mesh_path)
+        areas = self.prepared.facets.areas
+        conditions = {}
+        for label in range(count):
+            chosen = labels == label
+            mean = float(np.sum(self.target[chosen] * areas[chosen]) / np.sum(areas[chosen]))
+            conditions[f"{SHIELD_PREFIX}{label + 1}"] = ("T", mean)
+        return conditions
+
+    def update_from_air(self, case_dir: Path, ambient: float) -> None:
+        """Read the air's wall heat flux and re-solve the plates."""
+        from backend.shield_conduction import film_coefficient
+
+        t_wall, q_raw = _wall_heat_flux(case_dir, self.prepared)
+        areas = self.prepared.facets.areas
+        # SU2's sign convention for Heat_Flux is read from the solution
+        # itself: heat leaves walls hotter than the air and enters colder
+        # ones, so the flux into the air correlates positively with
+        # (T_wall - T_ambient).
+        sign = 1.0 if np.sum(q_raw * areas * (t_wall - ambient)) >= 0.0 else -1.0
+        q_air = sign * q_raw
+        self.h_air = film_coefficient(q_air, t_wall, ambient, self.h_air)
+        self.q_air = q_air
+        self.t_wall = t_wall
+        self._solve_solid()
+
+    def body_temperatures(self) -> list[dict]:
+        """Lowest, mean and highest temperature of every shield body, K."""
+        out = []
+        for body in np.unique(self.body):
+            nodes = np.unique(self.conduction.tets[self.body == body]) if len(
+                self.conduction.tets
+            ) == len(self.body) else np.arange(len(self.nodes))
+            values = self.nodes[nodes]
+            out.append({
+                "body": int(body) + 1, "min_k": round(float(values.min()), 3),
+                "mean_k": round(float(values.mean()), 3), "max_k": round(float(values.max()), 3),
+            })
+        return out
+
+
+def _wall_heat_flux(case_dir: Path, prepared: PreparedMesh) -> tuple[np.ndarray, np.ndarray]:
+    """Wall temperature and SU2's wall heat flux at every shield facet."""
+    from scipy.spatial import cKDTree
+
+    from backend.visualizer import find_solution_file, load_solution, resolve_field
+
+    solution = load_solution(find_solution_file(case_dir))
+    temperature = np.asarray(solution.point_data[resolve_field(solution, "temperature")]).ravel()
+    flux = np.asarray(solution.point_data[resolve_field(solution, "heat_flux")]).ravel()
+    _, index = cKDTree(np.asarray(solution.points)).query(
+        prepared.points[prepared.wall_nodes].reshape(-1, 3)
+    )
+    t_wall = temperature[index].reshape(-1, 3).mean(axis=1)
+    q_raw = flux[index].reshape(-1, 3).mean(axis=1)
+    return t_wall, q_raw
+
+
 def solved_points(study_dir: Path | str) -> list[DesignPoint]:
     """The study's design points, with the results solved so far filled in."""
     from backend.shield_study import read_design_points_csv
 
     study_dir = Path(study_dir)
-    setup = load_study(study_dir)[0]
+    manifest = json.loads((study_dir / "study.json").read_text())
+    setup = ShieldSetup.model_validate(manifest["setup"])
     points = read_design_points_csv(study_dir / "design_points.csv", setup)
     filled = []
     for point in points:

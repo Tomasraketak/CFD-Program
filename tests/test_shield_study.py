@@ -386,6 +386,8 @@ class _TemperatureRunner:
         centre = np.array([0.0, 0.0, 0.72])
         distance = np.linalg.norm(points - centre, axis=1)
         grid.point_data["Temperature"] = 298.15 + 0.5 * np.exp(-distance / 0.1)
+        # A wall heat flux with SU2's look: warmer walls lose heat to the air.
+        grid.point_data["Heat_Flux"] = 6.0 * (grid.point_data["Temperature"] - 298.15)
         grid.save(str(working_directory / "flow.vtu"))
         (working_directory / "restart_flow.dat").write_text("restart")
         if on_line:
@@ -401,7 +403,9 @@ def small_study(tmp_path, monkeypatch):
     monkeypatch.setitem(shield_cfd.RESOLUTION_SIZES, "coarse", (0.012, 0.4))
     monkeypatch.setattr(shield_cfd, "RAY_SURFACE_SIZE", 0.04)
     setup = ShieldSetup(plate_count=3)
-    cfd = ShieldCfdSettings(rays_per_face=16, radiation_classes=4, radiation_passes=2)
+    cfd = ShieldCfdSettings(
+        rays_per_face=16, radiation_classes=4, radiation_passes=2, solid_conduction="off"
+    )
     points = [
         DesignPoint(name="DP0", wind_speed_ms=1.0, solar_flux_w_m2=1000, bottom_flux_w_m2=300)
     ]
@@ -578,3 +582,75 @@ def test_the_solve_reply_lists_every_point(store, monkeypatch, small_study):
     assert row["wall_changes_k"] and "radiation_settled" in row
     assert summary["points_solved_now"][0]["name"] == "DP0"
     assert set(summary["checks"]) == {"not_converged", "radiation_not_settled", "oscillating"}
+
+
+
+# ---------------------------------------------------------------------------
+# Conduction in the plates (partitioned conjugate heat transfer)
+# ---------------------------------------------------------------------------
+
+
+def test_the_solid_solver_matches_a_one_dimensional_slab():
+    """Flux in on one face, convection out of the other: 1-D conduction."""
+    import gmsh
+
+    from backend.gmsh_session import gmsh_session
+    from backend.shield_conduction import SolidConduction, SolidSurfaceState
+
+    with gmsh_session("slab"):
+        gmsh.model.occ.addBox(0, 0, 0, 0.05, 0.05, 0.01)
+        gmsh.model.occ.synchronize()
+        gmsh.option.setNumber("Mesh.MeshSizeMax", 0.005)
+        gmsh.model.mesh.generate(3)
+        tags, coords, _ = gmsh.model.mesh.getNodes()
+        index = np.full(int(tags.max()) + 1, -1)
+        index[tags.astype(int)] = np.arange(len(tags))
+        _, _, nodes = gmsh.model.mesh.getElements(3)
+        tets = index[nodes[0].astype(int)].reshape(-1, 4)
+        points = coords.reshape(-1, 3)
+    solid = SolidConduction(points, tets, 0.5)
+    z = solid.centroids[:, 2]
+    count = len(z)
+    state = SolidSurfaceState(
+        absorbed=np.where(z < 1e-6, 100.0, 0.0), emissivity=np.zeros(count),
+        view=np.zeros(count), q_air=np.zeros(count), t_air_wall=np.full(count, 300.0),
+        h_air=np.where(z > 0.01 - 1e-6, 10.0, 0.0),
+    )
+    temperature = solid.solve(state, 300.0)
+    # q/h = 10 K across the film, q L / k = 2 K across the slab.
+    assert temperature[points[:, 2] > 0.01 - 1e-9].mean() == pytest.approx(310.0, abs=1e-6)
+    assert temperature[points[:, 2] < 1e-9].mean() == pytest.approx(312.0, abs=1e-6)
+
+
+@pytest.fixture
+def conjugate_study(tmp_path, monkeypatch):
+    """A coarse study on the built-in shield with conduction in the plates."""
+    from backend import shield_cfd
+
+    monkeypatch.setitem(shield_cfd.RESOLUTION_SIZES, "coarse", (0.012, 0.4))
+    monkeypatch.setattr(shield_cfd, "RAY_SURFACE_SIZE", 0.04)
+    setup = ShieldSetup(plate_count=3, shield_conductivity_w_mk=167.0)
+    cfd = ShieldCfdSettings(rays_per_face=16, radiation_classes=4, radiation_passes=4)
+    points = [
+        DesignPoint(name="DP0", wind_speed_ms=1.0, solar_flux_w_m2=800, bottom_flux_w_m2=300),
+        DesignPoint(name="DP1", wind_speed_ms=1.0, solar_flux_w_m2=1200, bottom_flux_w_m2=300),
+    ]
+    return shield_cfd.prepare_study(setup, cfd, points, tmp_path / "study")
+
+
+def test_conduction_carries_the_sun_through_the_plates(conjugate_study):
+    """More sun on the top must warm the whole (conducting) shield."""
+    from backend.shield_cfd import run_design_point
+
+    assert (conjugate_study / "solid_mesh.npz").is_file()
+    low = DesignPoint(name="DP0", wind_speed_ms=1.0, solar_flux_w_m2=800, bottom_flux_w_m2=300)
+    high = DesignPoint(name="DP1", wind_speed_ms=1.0, solar_flux_w_m2=1200, bottom_flux_w_m2=300)
+    runner = _TemperatureRunner()
+    cooler = run_design_point(conjugate_study, low, runner)
+    warmer = run_design_point(conjugate_study, high, runner)
+    assert "MARKER_ISOTHERMAL=" in runner.calls[0]
+    assert warmer.shield_mean_temp_k > cooler.shield_mean_temp_k + 0.1
+    saved = json.loads((conjugate_study / "points" / "DP1" / "result.json").read_text())
+    assert saved["conduction"] is True and saved["solid_temperature_k"]
+    body = saved["solid_temperature_k"][0]
+    assert body["min_k"] <= body["mean_k"] <= body["max_k"]
