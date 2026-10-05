@@ -749,6 +749,10 @@ def run_design_point(
         raise Sps30CfdError(f"{point.name}: SU2 reported an error:\n" + "\n".join(parser.errors[:5]))
     if not outcome.succeeded:
         raise Sps30CfdError(f"{point.name}: SU2 stopped with code {outcome.return_code}")
+    from backend.shield_cfd import residual_behaviour
+
+    behaviour = residual_behaviour(parser.records)
+    converged = bool(parser.records) and parser.records[-1].iteration < cfd.iterations - 1
     dataset = load_solution(find_solution_file(case))
     face = face_velocity(dataset, domain)
     exchange = exchange_flow_lpm(dataset, domain)
@@ -776,6 +780,10 @@ def run_design_point(
                 "trapped_housing": drops.trapped_housing,
                 "escaped": drops.escaped,
                 "unresolved": drops.unresolved,
+                "converged": converged,
+                "residual_drop_orders": behaviour["residual_drop_orders"],
+                "oscillating": behaviour["oscillating"],
+                "mesh_resolution": cfd.mesh_resolution,
                 "wall_time_s": time.perf_counter() - started,
             },
             indent=2,

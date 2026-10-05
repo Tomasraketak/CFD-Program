@@ -1438,7 +1438,11 @@ def _shield_summary(result: Any) -> dict[str, Any]:
         "the 2 x 2 x 1.44 m domain, SU2 cases, Fluent/Workbench package), "
         "'solve_cfd' (run SU2 on the design points of study_id -- long), "
         "'import' (analyse design points solved elsewhere, e.g. Fluent, from "
-        "results_csv), 'export_fluent', 'status'."
+        "results_csv), 'export_fluent', 'status'. solve_cfd and status return "
+        "point_results (dT, convergence, wall change per radiation pass, "
+        "oscillation per point); prepare_cfd returns the narrowest air gap and "
+        "the cell size. Two-sided plates ARE supported: setup "
+        "top_side_*/bottom_side_* absorptivity and emissivity."
     ),
 )
 def radiation_shield_study(
@@ -1604,6 +1608,9 @@ def _run_shield_action(
                 points = workflow.cfd_points(store, study_id)
                 payload["cfd_points_solved"] = sum(p.delta_t_k is not None for p in points)
                 payload["cfd_points_total"] = len(points)
+                reports = workflow.point_reports(store, study_id)
+                payload["point_results"] = workflow.point_table(reports)
+                payload["checks"] = workflow.point_checks(reports)
             except Exception:  # noqa: BLE001 - not a CFD study
                 pass
             if result is not None:
@@ -1653,7 +1660,9 @@ def _sps30_summary(result: Any) -> dict[str, Any]:
         "housing outside and cut open, with the fan), 'prepare_cfd' (mesh, "
         "SU2 cases, Fluent/Workbench package), 'solve_cfd' (SU2 SST air flow "
         "plus droplet tracking per design point -- long), 'import' (points "
-        "solved in Fluent, from results_csv), 'export_fluent', 'status'."
+        "solved in Fluent, from results_csv), 'export_fluent', 'status'. "
+        "solve_cfd and status return point_results (face velocity, penetration, "
+        "exchange flow, convergence, oscillation per point)."
     ),
 )
 def sps30_housing_study(
@@ -1789,6 +1798,10 @@ def _run_sps30_action(
         if action == "export_fluent":
             return _ok(study_id=study_id, fluent_folder=str(workflow.export_package(store, study_id)))
         payload: dict[str, Any] = {"study_id": study_id, "params": params.model_dump(mode="json")}
+        try:
+            payload["point_results"] = workflow.point_table(workflow.point_reports(store, study_id))
+        except Exception:  # noqa: BLE001 - not a CFD study
+            pass
         result = workflow.load_result(store, study_id)
         if result is not None:
             payload.update(_sps30_summary(result))

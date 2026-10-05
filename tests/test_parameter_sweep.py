@@ -277,3 +277,21 @@ def test_choosing_a_step_fills_the_size_and_redraws(store, tmp_path, monkeypatch
     assert panel.shield_size.value() == pytest.approx([0.05, 0.06, 0.009])
     assert panel.plate_count.value() == 2
     assert drawn and drawn[-1].shield_step_path == str(step)
+
+
+def test_prepare_reports_the_narrowest_gap(store, tmp_path, monkeypatch):
+    from backend import shield_cfd, shield_workflow
+    from core.shield_models import ShieldCfdSettings, ShieldStudyParams
+
+    monkeypatch.setattr(shield_workflow, "export_package", lambda *_: None)
+    monkeypatch.setitem(shield_cfd.RESOLUTION_SIZES, "coarse", (0.012, 0.4))
+    step = _two_plate_shield(tmp_path / "s.step", gap=0.008)
+    params = ShieldStudyParams.model_validate(
+        {"setup": {"shield_step_path": str(step), "shield_size_m": [0.05, 0.06, 0.012]}}
+    )
+    reply = shield_workflow.prepare_cfd(
+        store, params, ShieldCfdSettings(rays_per_face=8, radiation_classes=2), export_fluent=False
+    )
+    assert reply["narrowest_air_gap_mm"] == pytest.approx(8.0, rel=0.05)
+    assert reply["near_cell_size_mm"] == pytest.approx(8.0 / 3, rel=0.05)
+    assert "gap" in reply["mesh_sizing_note"] and reply["mesh_resolution"] == "coarse"

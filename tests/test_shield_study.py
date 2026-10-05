@@ -516,3 +516,65 @@ def test_only_the_cfd_actions_need_the_operators_approval():
     assert mcp_server.is_long_running("radiation_shield_study", {"action": "prepare_cfd"})
     assert not mcp_server.is_long_running("radiation_shield_study", {"action": "analytic"})
     assert mcp_server.is_long_running("run_parametric_sweep", {})
+
+
+# ---------------------------------------------------------------------------
+# What a solve reports back: per-point dT, radiation settling, oscillation
+# ---------------------------------------------------------------------------
+
+
+def _records(values):
+    from backend.su2_parser import IterationRecord
+
+    return [IterationRecord(iteration=i, values={"rms_pressure": v}) for i, v in enumerate(values)]
+
+
+def test_a_steadily_falling_residual_is_not_oscillating():
+    from backend.shield_cfd import residual_behaviour
+
+    behaviour = residual_behaviour(_records([-1.0 - 0.01 * i for i in range(400)]))
+    assert behaviour["oscillating"] is False
+    assert behaviour["residual_drop_orders"] == pytest.approx(3.99, abs=0.01)
+
+
+def test_a_swinging_flat_tail_is_flagged_as_oscillating():
+    import math
+
+    from backend.shield_cfd import residual_behaviour
+
+    values = [-1.0 - 0.01 * i for i in range(200)] + [
+        -3.0 + 0.6 * math.sin(i / 3.0) for i in range(200)
+    ]
+    assert residual_behaviour(_records(values))["oscillating"] is True
+
+
+def test_a_solved_point_records_its_radiation_passes(small_study):
+    from backend.shield_cfd import run_design_point
+
+    point = DesignPoint(name="DP0", wind_speed_ms=1.0, solar_flux_w_m2=1000, bottom_flux_w_m2=300)
+    result = run_design_point(small_study, point, _TemperatureRunner())
+    saved = json.loads((small_study / "points" / "DP0" / "result.json").read_text())
+    assert saved["wall_changes_k"] == result.wall_changes_k and len(result.wall_changes_k) == 2
+    assert saved["radiation_settled"] == (result.wall_changes_k[-1] < 0.05)
+    if not result.radiation_settled:
+        assert any("radiation not settled" in note for note in result.notes)
+    assert "oscillating" in saved and saved["mesh_resolution"] == "coarse"
+
+
+def test_the_solve_reply_lists_every_point(store, monkeypatch, small_study):
+    """The mesh test and the convergence checks need dT per point."""
+    from backend import shield_workflow
+
+    record = store.create("shield", {})
+    target = record.path(shield_workflow.CFD_FOLDER)
+    import shutil
+
+    shutil.copytree(small_study, target)
+    monkeypatch.setattr(shield_workflow, "load_params", lambda *_: ShieldStudyParams())
+    summary = shield_workflow.solve_cfd(store, record.record_id, _TemperatureRunner(), max_points=1)
+    assert summary["solved"] == 1
+    row = summary["point_results"][0]
+    assert row["name"] == "DP0" and row["delta_t_k"] is not None
+    assert row["wall_changes_k"] and "radiation_settled" in row
+    assert summary["points_solved_now"][0]["name"] == "DP0"
+    assert set(summary["checks"]) == {"not_converged", "radiation_not_settled", "oscillating"}

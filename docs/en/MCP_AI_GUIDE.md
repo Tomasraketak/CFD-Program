@@ -439,6 +439,16 @@ carries `setup_source`, `applied_setup`, `applied_optics`,
 up / down; unset = the shield values). The built-in assistant does not run
 an identical call twice in one request (status and solve_cfd excepted).
 
+**What a CFD solve returns.** `prepare_cfd` adds `narrowest_air_gap_mm`,
+`near_cell_size_mm`, `mesh_sizing_note` and `thermometer_point_m`.
+`solve_cfd` and `status` return `point_results` (per point: inputs,
+`delta_t_k`, `converged`, `wall_changes_k`, `radiation_settled`,
+`oscillating`, `residual_drop_orders`, `mesh_resolution`), the full reports
+of the points just solved (`points_solved_now`) and `checks` (points not
+converged, radiation not settled, oscillating). `sps30_housing_study`
+returns the same per point (face velocity, penetration, exchange flow,
+sensor hits, convergence, oscillation).
+
 **Sweeps and pictures.** `sweep` answers "what does one input do" at the
 steps asked for: every row is the analytical model itself, returned as
 `rows` and saved as `sweep.csv` with a chart (`image_path`). A table at fixed

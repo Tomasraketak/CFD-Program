@@ -122,6 +122,20 @@ def prepare_cfd(
         "fluent_folder": str(fluent) if fluent else None,
         "design_points": len(points),
         "cell_count": geometry["cell_count"],
+        "mesh_resolution": geometry.get("resolution"),
+        "narrowest_air_gap_mm": (
+            None if geometry.get("narrowest_gap_m") is None
+            else round(1000.0 * geometry["narrowest_gap_m"], 2)
+        ),
+        "near_cell_size_mm": (
+            None if geometry.get("near_size_m") is None
+            else round(1000.0 * geometry["near_size_m"], 2)
+        ),
+        "mesh_sizing_note": geometry.get("sizing_note", ""),
+        "thermometer_point_m": [
+            round(c + o, 5)
+            for c, o in zip(geometry["shield_centre_m"], params.setup.thermometer_xyz_m)
+        ],
         "run_script_windows": str(folder / "run_design_points.bat"),
         "run_script_posix": str(folder / "run_design_points.sh"),
     }
@@ -160,18 +174,24 @@ def solve_cfd(
     if max_points is not None:
         todo = todo[:max_points]
     failures = []
+    solved_now = []
     for point in todo:
         try:
             run_design_point(folder, point, runner, on_line)
+            solved_now.append(point.name)
         except Exception as error:  # noqa: BLE001 - one bad point is reported, not fatal
             failures.append(f"{point.name}: {error}")
     points = cfd_points(store, study_id)
     solved = [p for p in points if p.delta_t_k is not None]
+    reports = point_reports(store, study_id)
     summary = {
         "study_id": study_id,
         "solved": len(solved),
         "total": len(points),
         "failures": failures,
+        "points_solved_now": [r for r in reports if r.get("name") in solved_now],
+        "point_results": point_table(reports),
+        "checks": point_checks(reports),
         "result": None,
     }
     if not solved:
@@ -184,6 +204,45 @@ def solve_cfd(
         return summary
     summary["result"] = _save(store, study_id, result)
     return summary
+
+
+def point_reports(store, study_id: str) -> list[dict]:
+    """Everything each solved SU2 point recorded (result.json), in order."""
+    folder = store.get(study_id).path(CFD_FOLDER) / "points"
+    reports = []
+    if folder.is_dir():
+        for path in sorted(folder.glob("*/result.json"), key=lambda p: _point_order(p.parent.name)):
+            try:
+                reports.append(json.loads(path.read_text()))
+            except (OSError, ValueError):  # pragma: no cover - half-written file
+                continue
+    return reports
+
+
+def _point_order(name: str) -> tuple[int, str]:
+    digits = "".join(ch for ch in name if ch.isdigit())
+    return (int(digits) if digits else 10**9, name)
+
+
+def point_table(reports: list[dict]) -> list[dict]:
+    """One compact row per solved point: inputs, dT and the health checks."""
+    keys = (
+        "name", "wind_speed_ms", "solar_flux_w_m2", "bottom_flux_w_m2", "delta_t_k",
+        "converged", "radiation_settled", "wall_changes_k", "oscillating",
+        "residual_drop_orders", "mesh_resolution",
+    )
+    return [{key: report.get(key) for key in keys} for report in reports]
+
+
+def point_checks(reports: list[dict]) -> dict:
+    """Which solved points need a second look, and why."""
+    return {
+        "not_converged": [r["name"] for r in reports if not r.get("converged", False)],
+        "radiation_not_settled": [
+            r["name"] for r in reports if r.get("radiation_settled") is False
+        ],
+        "oscillating": [r["name"] for r in reports if r.get("oscillating")],
+    }
 
 
 def analytic_check(params: ShieldStudyParams) -> Callable[[DesignPoint], float]:

@@ -344,6 +344,18 @@ Po dopočtení program sám proloží response surface a spustí Monte Carlo.
   pole, otevře se např. v programu ParaView).
 - ΔT by se měla chovat rozumně: s rostoucím větrem se zmenšovat, se sluncem
   a zářením zdola růst. Bod, který z trendu vybočuje, je podezřelý.
+- Stejné kontroly se zapíšou do `result.json` každého bodu a vrátí se i
+  asistentovi (`point_results`, `checks`):
+  - `wall_changes_k` — změna teploty stěny v každém radiačním průchodu;
+    `radiation_settled` je false, když je poslední ještě nad 0,05 K
+    (zvyšte *Radiation passes*).
+  - `oscillating` — rezidua v poslední čtvrtině iterací kmitají a neklesají:
+    proudění je nestacionární (typicky při slabém větru) a ΔT je odhad
+    časového průměru.
+  - `converged` — SU2 dosáhl cílového rezidua před limitem iterací.
+- *Prepare CFD* vypíše nejužší nalezenou vzduchovou mezeru a velikost
+  buněk u štítu; pro test sítě spočítejte DP0 na dvou rozlišeních a
+  porovnejte ΔT (rozdíl < 0,03 K nebo 10 % → hrubší síť stačí).
 
 ---
 

@@ -951,6 +951,10 @@ class DesignPointResult:
     converged: bool
     wall_time_s: float
     notes: list[str] = field(default_factory=list)
+    wall_changes_k: list[float] = field(default_factory=list)
+    radiation_settled: bool = True
+    residual_drop_orders: float | None = None
+    oscillating: bool = False
 
 
 def load_study(study_dir: Path) -> tuple[ShieldSetup, ShieldCfdSettings, PreparedMesh, list[float]]:
@@ -1126,6 +1130,8 @@ def run_design_point(
     started = time.perf_counter()
     converged = False
     notes: list[str] = []
+    wall_changes: list[float] = []
+    behaviour: dict = {"residual_drop_orders": None, "oscillating": False}
     say = on_line or (lambda _line: None)
 
     for index in range(cfd.radiation_passes):
@@ -1166,8 +1172,10 @@ def run_design_point(
         # No relaxation needed: the linearised emission is a Newton step.
         areas = prepared.facets.areas
         change = float(np.sum(np.abs(wall - previous) * areas) / np.sum(areas))
+        wall_changes.append(round(change, 4))
+        behaviour = residual_behaviour(parser.records, iterations)
         say(f"{point.name}: pass {index + 1} mean wall temperature change {change:.3f} K")
-        if index > 0 and change < 0.05:
+        if index > 0 and change < RADIATION_SETTLED_K:
             break
 
     solution = load_solution(find_solution_file(case_dir))
@@ -1183,6 +1191,23 @@ def run_design_point(
     )
     if not converged:
         notes.append("the last pass reached its iteration limit")
+    # The first pass starts from the lumped-model wall temperature, so its
+    # change says nothing about settling; a single-pass run has nothing to
+    # compare and is reported as settled only if asked for one pass.
+    settled = cfd.radiation_passes == 1 or (
+        len(wall_changes) > 1 and wall_changes[-1] < RADIATION_SETTLED_K
+    )
+    if not settled:
+        notes.append(
+            f"radiation not settled: the last pass changed the wall by "
+            f"{wall_changes[-1]:.3f} K (target < {RADIATION_SETTLED_K} K); raise radiation_passes"
+        )
+    if behaviour["oscillating"]:
+        notes.append(
+            "residuals oscillate in the last quarter of the iterations: the flow is "
+            "probably unsteady here (often at low wind); treat this dT as an estimate "
+            "of the time average"
+        )
     result = DesignPointResult(
         point=point,
         monitor_temp_k=monitor_temp,
@@ -1192,6 +1217,10 @@ def run_design_point(
         converged=converged,
         wall_time_s=time.perf_counter() - started,
         notes=notes,
+        wall_changes_k=wall_changes,
+        radiation_settled=settled,
+        residual_drop_orders=behaviour["residual_drop_orders"],
+        oscillating=behaviour["oscillating"],
     )
     (case_dir / "result.json").write_text(
         json.dumps(
@@ -1205,6 +1234,11 @@ def run_design_point(
                 "shield_mean_temp_k": result.shield_mean_temp_k,
                 "passes": result.passes,
                 "converged": result.converged,
+                "wall_changes_k": result.wall_changes_k,
+                "radiation_settled": result.radiation_settled,
+                "residual_drop_orders": result.residual_drop_orders,
+                "oscillating": result.oscillating,
+                "mesh_resolution": cfd.mesh_resolution,
                 "wall_time_s": result.wall_time_s,
                 "notes": notes,
             },
@@ -1212,6 +1246,46 @@ def run_design_point(
         )
     )
     return result
+
+
+RADIATION_SETTLED_K = 0.05
+
+
+def residual_behaviour(records, iterations: int | None = None) -> dict:
+    """How the residuals of one SU2 run behaved.
+
+    ``residual_drop_orders`` is how many decades the leading residual fell
+    from the first iteration to the last. ``oscillating`` flags a run whose
+    last quarter shows no net fall (under 0.2 decades) while swinging by
+    more than half a decade -- the signature of an unsteady flow (vortex
+    shedding at low wind) that a steady solver cannot settle.
+    """
+    import math
+
+    names = ("rms_pressure", "rms_rho", "rms_velocity_x", "rms_rho_u")
+    series: list[float] = []
+    for name in names:
+        series = [r.get(name) for r in records if math.isfinite(r.get(name))]
+        if len(series) >= 8:
+            break
+    if len(series) < 8:
+        candidates = sorted({k for r in records for k in r.values if k.startswith("rms")})
+        for name in candidates:
+            series = [r.get(name) for r in records if math.isfinite(r.get(name))]
+            if len(series) >= 8:
+                break
+    if len(series) < 8:
+        return {"residual_drop_orders": None, "oscillating": False}
+    tail = series[-max(4, len(series) // 4):]
+    half = len(tail) // 2
+    # Net fall between the two halves of the tail, averaged so that where
+    # an oscillation happens to stand at either end does not count.
+    net = sum(tail[:half]) / half - sum(tail[half:]) / (len(tail) - half)
+    swing = max(tail) - min(tail)
+    return {
+        "residual_drop_orders": round(series[0] - series[-1], 3),
+        "oscillating": bool(net < 0.2 and swing > 0.5),
+    }
 
 
 def solved_points(study_dir: Path | str) -> list[DesignPoint]:

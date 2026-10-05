@@ -436,6 +436,16 @@ na záložce studie, jinak výchozí hodnoty. Každá odpověď obsahuje
 štítu). Vestavěný asistent nespustí v jednom požadavku dvakrát stejné
 volání (kromě status a solve_cfd).
 
+**Co vrací CFD výpočet.** `prepare_cfd` navíc vrací `narrowest_air_gap_mm`,
+`near_cell_size_mm`, `mesh_sizing_note` a `thermometer_point_m`.
+`solve_cfd` a `status` vrací `point_results` (pro každý bod: vstupy,
+`delta_t_k`, `converged`, `wall_changes_k`, `radiation_settled`,
+`oscillating`, `residual_drop_orders`, `mesh_resolution`), plné záznamy
+právě spočtených bodů (`points_solved_now`) a `checks` (body
+nezkonvergované, s neustálenou radiací, kmitající). `sps30_housing_study`
+vrací totéž po bodech (rychlost u čela, průnik, výměna vzduchu, zásahy
+senzoru, konvergence, kmitání).
+
 **Sweepy a obrázky.** `sweep` odpovídá na otázku „co dělá jeden vstup“ po
 zadaných krocích: každý řádek je přímo analytický model, vrací se jako
 `rows` a ukládá jako `sweep.csv` s grafem (`image_path`). Tabulku po pevných

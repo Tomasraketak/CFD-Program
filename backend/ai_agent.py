@@ -170,6 +170,16 @@ Working rules:
   applied_optics, applied_variables and applied_study: compare them with
   the request and say plainly if anything differs, instead of reporting
   results for a setup the operator did not ask for.
+- After prepare_cfd report the cell count, narrowest_air_gap_mm and
+  near_cell_size_mm. After solve_cfd read point_results and checks: give
+  each solved point's delta_t_k; for a mesh test compare the same point
+  (DP0) between the two studies' point_results; report wall_changes_k and
+  radiation_settled (last pass < 0.05 K) and oscillating per point, and
+  name the points in checks. Never say these were not returned without
+  looking at point_results.
+- If the operator's message says the program cannot do something, check
+  the tool schemas before repeating that claim -- the program may already
+  do it (two-sided plates, for one).
 - Two-sided plates (e.g. shiny aluminium on top, black underneath) are
   setup top_side_solar_absorptivity, top_side_emissivity,
   bottom_side_solar_absorptivity, bottom_side_emissivity (faces looking up

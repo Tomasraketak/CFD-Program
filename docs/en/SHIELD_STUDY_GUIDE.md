@@ -346,6 +346,18 @@ the Monte Carlo by itself.
   whole field, opens in e.g. ParaView).
 - ΔT should behave sensibly: fall with wind, rise with sun and bottom
   radiation. A point off the trend is suspect.
+- The same checks are written into each point's `result.json` and returned
+  to the assistant (`point_results`, `checks`):
+  - `wall_changes_k` — the wall-temperature change of every radiation
+    pass; `radiation_settled` is false when the last one is still above
+    0.05 K (raise *Radiation passes*).
+  - `oscillating` — the residuals of the last quarter of the iterations
+    swing without falling: the flow is unsteady (typical at low wind) and
+    the ΔT is an estimate of its time average.
+  - `converged` — SU2 met its residual target before the iteration limit.
+- *Prepare CFD* reports the narrowest air gap it found and the cell size it
+  chose near the shield; for a mesh test solve DP0 on two resolutions and
+  compare its ΔT (difference < 0.03 K or 10 % → the coarser mesh is enough).
 
 ---
 

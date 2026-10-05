@@ -112,17 +112,52 @@ def solve_cfd(store, study_id: str, runner, on_line=None, max_points: int | None
     if max_points is not None:
         todo = todo[:max_points]
     failures = []
+    solved_now = []
     for point in todo:
         try:
             run_design_point(folder, point, runner, on_line)
+            solved_now.append(point.name)
         except Exception as error:  # noqa: BLE001 - one bad point is reported
             failures.append(f"{point.name}: {error}")
     points = cfd_points(store, study_id)
     solved = [p for p in points if p.solved()]
+    reports = point_reports(store, study_id)
     summary = {"study_id": study_id, "solved": len(solved), "total": len(points),
-               "failures": failures, "result": None}
+               "failures": failures,
+               "points_solved_now": [r for r in reports if r.get("name") in solved_now],
+               "point_results": point_table(reports),
+               "checks": {
+                   "not_converged": [r["name"] for r in reports if r.get("converged") is False],
+                   "oscillating": [r["name"] for r in reports if r.get("oscillating")],
+               },
+               "result": None}
     try:
         summary["result"] = _save(store, study_id, analyse(load_params(store, study_id), solved, Sps30Evaluator.SU2))
     except Sps30StudyError as error:
         summary["analysis_pending"] = str(error)
     return summary
+
+
+def point_reports(store, study_id: str) -> list[dict]:
+    """Everything each solved SU2 point recorded (result.json), in order."""
+    from backend.shield_workflow import _point_order
+
+    folder = store.get(study_id).path("cfd") / "points"
+    reports = []
+    if folder.is_dir():
+        for path in sorted(folder.glob("*/result.json"), key=lambda p: _point_order(p.parent.name)):
+            try:
+                reports.append(json.loads(path.read_text()))
+            except (OSError, ValueError):  # pragma: no cover - half-written file
+                continue
+    return reports
+
+
+def point_table(reports: list[dict]) -> list[dict]:
+    """One compact row per solved point."""
+    keys = (
+        "name", "speed_ms", "yaw_deg", "droplet_um", "face_velocity_ms", "penetration",
+        "exchange_flow_lpm", "sensor_hits", "droplets_entered", "converged",
+        "oscillating", "residual_drop_orders", "mesh_resolution",
+    )
+    return [{key: report.get(key) for key in keys} for report in reports]
