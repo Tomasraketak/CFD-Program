@@ -442,7 +442,7 @@ carries `setup_source`, `applied_setup`, `applied_optics`,
 `applied_variables` and `applied_study`. Two-sided plates:
 `top_side_solar_absorptivity`, `top_side_emissivity`,
 `bottom_side_solar_absorptivity`, `bottom_side_emissivity` (faces looking
-up / down; unset = the shield values). The built-in assistant does not run
+up / down; unset = the shield values; with `optics_orientation: "thermometer"` top = outside, bottom = the faces towards the thermometer). The built-in assistant does not run
 an identical call twice in one request (status and solve_cfd excepted).
 
 **What a CFD solve returns.** `prepare_cfd` adds `narrowest_air_gap_mm`,
@@ -461,9 +461,14 @@ it for single conditions instead of a study with narrowed ranges.
 `add_points` appends extra CFD points (`X1`, …) to a prepared study, from
 `conditions` or `worst_case: true` (the Monte Carlo worst case); the next
 `solve_cfd` solves them and returns `surface_check` (surface vs CFD).
-`render` draws a solved point (`point`, `render_quantity`: temperature,
-velocity, streamlines, wall_temperature or all; `render_plane` y/x/z),
-cropped round the object, into the study's renders folder (Graphics tab).
+`render` draws a solved point (`point`, or `worst` for the largest |ΔT|;
+`render_quantity`: overview — the default, a 2×2 of air temperature, air
+speed, streamlines and wall temperature — or temperature, velocity,
+streamlines, wall_temperature, all; `render_plane` y/x/z), cropped round
+the object, into the study's renders folder (Graphics tab). `solve_cfd`
+draws the overview of the baseline and the worst point by itself
+(`image_paths`; `render_after: false` turns it off). `get_active_geometry`
+without a path picks up the STEP open in the Radiation Shield / SPS30 tab.
 
 **Sweeps and pictures.** `sweep` answers "what does one input do" at the
 steps asked for: every row is the analytical model itself, returned as

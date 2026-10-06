@@ -417,3 +417,88 @@ def test_the_surface_is_checked_against_an_extra_cfd_point():
     assert row["name"] == "X1"
     assert row["surface_delta_t_k"] == pytest.approx(worst["delta_t_k"], abs=1e-6)
     assert row["difference_k"] == pytest.approx(exact - worst["delta_t_k"])
+
+
+# ---------------------------------------------------------------------------
+# Optics by the thermometer, the open STEP, overview pictures
+# ---------------------------------------------------------------------------
+
+
+def test_faces_towards_the_thermometer_take_the_inside_optics():
+    """Two plates with the thermometer between: both facing faces are 'inside'."""
+    import numpy as np
+
+    from backend.shield_cfd import RadiationFacets, facets_toward
+
+    def square(z, up):
+        a, b, c, d = [(-1, -1, z), (1, -1, z), (1, 1, z), (-1, 1, z)]
+        return [(a, b, c), (a, c, d)] if up else [(a, c, b), (a, d, c)]
+
+    triangles = np.array(square(1.0, True) + square(0.9, False) + square(0.1, True)
+                         + square(0.0, False), dtype=float)
+    normals = np.repeat([[0, 0, 1.0], [0, 0, -1.0], [0, 0, 1.0], [0, 0, -1.0]], 2, axis=0)
+    toward = facets_toward(triangles, normals, [0.0, 0.0, 0.5])
+    assert toward.tolist() == [False, False, True, True, True, True, False, False]
+    facets = RadiationFacets(np.ones(8), normals, np.zeros(8), np.zeros(8), np.zeros(8), toward)
+    setup = ShieldSetup(
+        optics_orientation="thermometer",
+        top_side_solar_absorptivity=0.15, top_side_emissivity=0.1,
+        bottom_side_solar_absorptivity=0.95, bottom_side_emissivity=0.9,
+    )
+    alpha, emissivity = facets.optics(setup)
+    assert alpha.tolist() == pytest.approx([0.15, 0.15, 0.95, 0.95, 0.95, 0.95, 0.15, 0.15])
+    assert emissivity[2] == pytest.approx(0.9) and emissivity[0] == pytest.approx(0.1)
+    vertical = facets.optics(setup.model_copy(update={"optics_orientation": "vertical"}))[0]
+    assert vertical[2] == pytest.approx(0.95) and vertical[4] == pytest.approx(0.15)
+
+
+def test_the_analytic_model_uses_the_outside_optics_by_the_thermometer():
+    import math
+
+    from backend.shield_study import ShieldAnalyticModel
+
+    shiny = ShieldSetup(shield_solar_absorptivity=0.15, shield_emissivity=0.1)
+    inside_black = shiny.model_copy(update={
+        "optics_orientation": "thermometer",
+        "bottom_side_solar_absorptivity": 0.95, "bottom_side_emissivity": 0.9,
+    })
+    value = ShieldAnalyticModel(inside_black).delta_t(1, 1000, 300)
+    assert math.isfinite(value)
+    assert value == pytest.approx(ShieldAnalyticModel(shiny).delta_t(1, 1000, 300))
+
+
+def test_the_geometry_falls_back_to_the_step_open_in_the_study_tab(isolated_data_root, tmp_path):
+    import mcp_server
+    from core.workspace import set_active_study
+
+    step = tmp_path / "Radiation Shield Small.step"
+    step.write_text("ISO-10303-21;")
+    tab = ShieldStudyParams.model_validate(
+        {"setup": {"shield_step_path": str(step), "scale_to_meters": 0.001}}
+    )
+    set_active_study("shield", tab.model_dump(mode="json"))
+    reply = mcp_server.get_active_geometry()
+    assert reply["ok"] and reply["geometry"]["step_file_path"] == str(step.resolve())
+    assert reply["source"] == "Radiation Shield tab"
+    bare = mcp_server.get_active_geometry(step_file_path="Radiation Shield Small.step")
+    assert bare["ok"] and Path(bare["geometry"]["step_file_path"]) == step.resolve()
+    assert "note" in bare
+    missing = mcp_server.get_active_geometry(step_file_path="nothing.step")
+    assert missing["ok"] is False and missing["files_open_in_study_tabs"]
+
+
+def test_overview_and_worst_point_pictures(store, tmp_path, monkeypatch):
+    pytest.importorskip("pyvista")
+    import mcp_server
+
+    monkeypatch.setattr(mcp_server, "_store", lambda: store)
+    monkeypatch.setattr(mcp_server, "_geometry_image", lambda kind, setup: {})
+    study = _fake_solved_study(store, tmp_path)
+    reply = mcp_server.radiation_shield_study(action="render", study_id=study, point="worst")
+    assert reply["ok"], reply
+    assert reply["point"] == "DP0" and reply["image_path"].endswith("DP0_overview_y.png")
+    assert Path(reply["image_path"]).is_file()
+    from backend import shield_workflow
+
+    pictures = mcp_server._auto_renders("shield", store, shield_workflow, study)
+    assert pictures["rendered_points"] == ["DP0"] and Path(pictures["image_path"]).is_file()

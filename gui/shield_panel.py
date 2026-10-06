@@ -203,6 +203,16 @@ class ShieldStudyPanel(QtWidgets.QWidget):
                 "uses the shield value above. E.g. shiny aluminium top 0.15 / "
                 "0.1, black bottom 0.95 / 0.9."
             )
+        self.optics_orientation = QtWidgets.QComboBox()
+        self.optics_orientation.addItem("Up / down (+z / -z)", "vertical")
+        self.optics_orientation.addItem("Outside / towards the thermometer", "thermometer")
+        self.optics_orientation.setToolTip(
+            "Up/down: 'top side' = faces looking up, 'bottom side' = faces looking "
+            "down. Outside/towards the thermometer: 'top side' = the outside "
+            "faces, 'bottom side' = the faces looking into the gaps towards the "
+            "thermometer (e.g. black inside, shiny aluminium outside)."
+        )
+        form.addRow("Two-sided optics", self.optics_orientation)
         form.addRow("Top side absorptivity", self.top_absorptivity)
         form.addRow("Top side emissivity", self.top_emissivity)
         form.addRow("Bottom side absorptivity", self.bottom_absorptivity)
@@ -497,6 +507,7 @@ class ShieldStudyPanel(QtWidgets.QWidget):
             top_side_emissivity=_optional(self.top_emissivity),
             bottom_side_solar_absorptivity=_optional(self.bottom_absorptivity),
             bottom_side_emissivity=_optional(self.bottom_emissivity),
+            optics_orientation=self.optics_orientation.currentData(),
             shield_conductivity_w_mk=self.conductivity.value(),
             ventilation_coefficient=self.ventilation.value(),
         )
@@ -561,6 +572,9 @@ class ShieldStudyPanel(QtWidgets.QWidget):
         _set_optional(self.top_emissivity, setup.top_side_emissivity)
         _set_optional(self.bottom_absorptivity, setup.bottom_side_solar_absorptivity)
         _set_optional(self.bottom_emissivity, setup.bottom_side_emissivity)
+        self.optics_orientation.setCurrentIndex(
+            max(0, self.optics_orientation.findData(setup.optics_orientation))
+        )
         self.conductivity.setValue(setup.shield_conductivity_w_mk)
         self.ventilation.setValue(setup.ventilation_coefficient)
         for name, widgets in self._variable_widgets.items():

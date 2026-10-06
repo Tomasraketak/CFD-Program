@@ -185,6 +185,15 @@ paprsky v SU2 i balíček pro Fluent (v README je, jak rozdělit stěnu štítu
 podle směru ploch). Lesklý hliník zhruba 0,15 / 0,1, černá barva zhruba
 0,95 / 0,9.
 
+*Two-sided optics: Outside / towards the thermometer* (setup
+`optics_orientation: "thermometer"`) rozdělí plochy podle teploměru místo
+nahoru/dolů: *Top side* = vnější plochy, *Bottom side* = plochy hledící do
+mezer k teploměru (plocha, jejíž normála míří k bodu teploměru). Černá
+uvnitř a lesklý hliník venku je top 0,15 / 0,1, bottom 0,95 / 0,9. SU2 to
+použije při přípravě CFD studie, takže po změně připravte novou. Analytický
+model si s okolím vyměňuje teplo jen vnějškem, vnitřní optika v něm ΔT
+nemění.
+
 **Asistent pracuje se štítem, který máte otevřený.** To, co ukazuje tato
 záložka — váš STEP, optika, rozsahy — je výchozí bod nástroje asistenta,
 když nejmenujete existující studii; každá odpověď to uvádí

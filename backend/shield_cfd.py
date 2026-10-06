@@ -589,14 +589,24 @@ class RadiationFacets:
     sunlit: np.ndarray     # (F,) fraction of direct sun reaching the facet (0..1)
     sky_view: np.ndarray   # (F,) view factor to the sky
     ground_view: np.ndarray  # (F,) view factor to the ground / roof
+    # (F,) True where the facet looks towards the thermometer (into the gaps).
+    toward: np.ndarray | None = None
 
     def optics(self, setup: ShieldSetup) -> tuple[np.ndarray, np.ndarray]:
         """Per-facet (solar absorptivity, emissivity) from which way it faces.
 
-        Facets looking up (n_z > 0.3) take the top-side optics, those looking
-        down (n_z < -0.3) the bottom side's, the rest the mean.
+        With ``optics_orientation="vertical"`` facets looking up (n_z > 0.3)
+        take the top-side optics, those looking down (n_z < -0.3) the bottom
+        side's, the rest the mean. With ``"thermometer"`` the facets looking
+        towards the thermometer take the bottom-side (inside) optics and all
+        the others the top-side (outside) optics.
         """
         sides = setup.side_optics()
+        if setup.optics_orientation == "thermometer" and self.toward is not None:
+            inside = np.asarray(self.toward, dtype=bool)
+            alpha = np.where(inside, sides["bottom"][0], sides["top"][0])
+            emissivity = np.where(inside, sides["bottom"][1], sides["top"][1])
+            return alpha.astype(float), emissivity.astype(float)
         nz = self.normals[:, 2]
         alpha = np.full(len(nz), sides["side"][0])
         emissivity = np.full(len(nz), sides["side"][1])
@@ -670,6 +680,12 @@ def radiation_facets(
         _, nearest = tree.query(triangles.mean(axis=1) + lift * normals)
         sky, ground = coarse_sky[nearest], coarse_ground[nearest]
     return RadiationFacets(areas, normals, sunlit, sky, ground)
+
+
+def facets_toward(triangles: np.ndarray, normals: np.ndarray, point) -> np.ndarray:
+    """Which facets look towards ``point`` (normals point into the air)."""
+    centroids = np.asarray(triangles).mean(axis=1)
+    return np.einsum("ij,ij->i", np.asarray(point, dtype=float) - centroids, normals) > 0.0
 
 
 def _ray_origins(triangles: np.ndarray, normals: np.ndarray, areas: np.ndarray) -> np.ndarray:
@@ -987,7 +1003,8 @@ def load_study(study_dir: Path) -> tuple[ShieldSetup, ShieldCfdSettings, Prepare
     cfd = ShieldCfdSettings.model_validate(manifest["cfd"])
     data = np.load(study_dir / FACETS_FILENAME)
     facets = RadiationFacets(
-        data["areas"], data["normals"], data["sunlit"], data["sky_view"], data["ground_view"]
+        data["areas"], data["normals"], data["sunlit"], data["sky_view"], data["ground_view"],
+        data["toward"] if "toward" in data.files else None,
     )
     prepared = PreparedMesh(
         mesh_path=study_dir / MESH_FILENAME,
@@ -1040,6 +1057,7 @@ def prepare_study(
     say("Casting rays for shading and view factors...")
     occluders = coarse_ray_surface(setup, study_dir)
     facets = radiation_facets(domain.shield_triangles, cfd.rays_per_face, occluders)
+    facets.toward = facets_toward(domain.shield_triangles, facets.normals, monitor)
     # Group by the baseline absorbed flux: facets that absorb alike, and see
     # the sky and ground alike, share a marker.
     baseline = facets.absorbed(setup, setup.solar_flux_w_m2, setup.baseline_bottom_flux())
@@ -1048,7 +1066,7 @@ def prepare_study(
         study_dir / FACETS_FILENAME,
         areas=facets.areas, normals=facets.normals, sunlit=facets.sunlit,
         sky_view=facets.sky_view, ground_view=facets.ground_view,
-        classes=prepared.classes,
+        toward=facets.toward, classes=prepared.classes,
     )
     sunlit_area = float(np.sum(facets.areas * facets.sunlit * (facets.normals[:, 2] > 0)))
     say(

@@ -173,6 +173,14 @@ def _two_sided_journal(setup) -> list[str]:
     if not setup.two_sided():
         return []
     optics = setup.side_optics()
+    if setup.optics_orientation == "thermometer":
+        return [
+            ";   TWO-SIDED plates (by thermometer): split the shield wall into the",
+            ";   faces looking INTO the gaps towards the thermometer and the outside",
+            ";   faces (SpaceClaim named selections shield_inside / shield_outside).",
+            f";   inside: solar absorptivity {optics['bottom'][0]:g}, emissivity {optics['bottom'][1]:g};",
+            f";   outside: solar absorptivity {optics['top'][0]:g}, emissivity {optics['top'][1]:g}.",
+        ]
     return [
         ";   TWO-SIDED plates: split the shield wall by face normal first, e.g.",
         ";   /mesh/modify-zones/sep-face-zone-angle shield 60",
@@ -188,6 +196,20 @@ def _two_sided_readme(setup) -> str:
     if not setup.two_sided():
         return ""
     optics = setup.side_optics()
+    if setup.optics_orientation == "thermometer":
+        return f"""
+### Two-sided plates (inside / outside)
+
+| Faces | Solar absorptivity | Emissivity |
+|---|---|---|
+| looking towards the thermometer (inside the gaps) | {optics['bottom'][0]:g} | {optics['bottom'][1]:g} |
+| all other faces (outside) | {optics['top'][0]:g} | {optics['top'][1]:g} |
+
+Make two named selections in SpaceClaim (`shield_inside`, `shield_outside`)
+so Fluent gets two wall zones, and assign the values above. The program
+classifies a face as inside when its outward normal points towards the
+thermometer point.
+"""
     return f"""
 ### Two-sided plates
 

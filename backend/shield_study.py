@@ -140,6 +140,11 @@ class ShieldAnalyticModel:
         (a_top, e_top), (a_bottom, e_bottom), (a_side, e_side) = (
             optics["top"], optics["bottom"], optics["side"]
         )
+        if setup.optics_orientation == "thermometer":
+            # Everything this lumped balance exchanges with the surroundings
+            # is the outside of the shield; the inside faces only see each
+            # other and the thermometer, which the model does not resolve.
+            (a_bottom, e_bottom) = (a_side, e_side) = optics["top"]
         sky = setup.sky_flux_w_m2()
         reflected = setup.ground_albedo * solar_flux_w_m2
 

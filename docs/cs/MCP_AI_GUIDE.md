@@ -438,7 +438,7 @@ na záložce studie, jinak výchozí hodnoty. Každá odpověď obsahuje
 `applied_study`. Oboustranné desky: `top_side_solar_absorptivity`,
 `top_side_emissivity`, `bottom_side_solar_absorptivity`,
 `bottom_side_emissivity` (plochy hledící nahoru / dolů; nezadané = hodnoty
-štítu). Vestavěný asistent nespustí v jednom požadavku dvakrát stejné
+štítu; s `optics_orientation: "thermometer"` je top = vnější plochy a bottom = plochy k teploměru). Vestavěný asistent nespustí v jednom požadavku dvakrát stejné
 volání (kromě status a solve_cfd).
 
 **Co vrací CFD výpočet.** `prepare_cfd` navíc vrací `narrowest_air_gap_mm`,
@@ -457,9 +457,14 @@ hodnoty) — pro jednotlivé podmínky místo studie se zúženými rozsahy.
 `add_points` přidá do připravené studie další CFD body (`X1`, …) z
 `conditions` nebo `worst_case: true` (nejhorší případ z Monte Carla); další
 `solve_cfd` je spočte a vrátí `surface_check` (plocha vs CFD). `render`
-nakreslí spočtený bod (`point`, `render_quantity`: temperature, velocity,
-streamlines, wall_temperature nebo all; `render_plane` y/x/z), oříznutý
-kolem objektu, do složky renders studie (záložka Graphics). Vedení tepla v
+nakreslí spočtený bod (`point`, nebo `worst` pro největší |ΔT|;
+`render_quantity`: overview — výchozí, 2×2 teplota vzduchu, rychlost,
+proudnice a teplota stěn — nebo temperature, velocity, streamlines,
+wall_temperature, all; `render_plane` y/x/z), oříznutý kolem objektu, do
+složky renders studie (záložka Graphics). `solve_cfd` sám nakreslí
+overview výchozího a nejhoršího bodu (`image_paths`; vypne se
+`render_after: false`). `get_active_geometry` bez cesty převezme STEP
+otevřený v záložce Radiation Shield / SPS30. Vedení tepla v
 deskách: `cfd.solid_conduction` "on" (výchozí) / "off".
 
 **Sweepy a obrázky.** `sweep` odpovídá na otázku „co dělá jeden vstup“ po

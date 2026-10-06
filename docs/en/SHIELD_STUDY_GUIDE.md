@@ -183,6 +183,16 @@ casting and the Fluent package (README: how to split the shield wall by
 face direction) all use them. For shiny aluminium use about 0.15 / 0.1, for
 black paint about 0.95 / 0.9.
 
+*Two-sided optics: Outside / towards the thermometer* (setup
+`optics_orientation: "thermometer"`) splits the faces by the thermometer
+instead of up/down: *Top side* = the outside faces, *Bottom side* = the
+faces looking into the gaps towards the thermometer (a face whose normal
+points towards the thermometer point). Black inside and shiny aluminium
+outside is top 0.15 / 0.1, bottom 0.95 / 0.9. SU2 applies it when the
+CFD study is prepared, so prepare a new one after changing it. The
+analytic model only exchanges heat with the surroundings through the
+outside, so there the inside optics do not change ΔT.
+
 **The assistant uses the shield you have open.** Whatever this tab shows —
 your STEP, the optics, the ranges — is what the assistant's study tool
 starts from when you do not name a study; every reply says so

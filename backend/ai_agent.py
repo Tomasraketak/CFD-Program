@@ -183,10 +183,19 @@ Working rules:
   speed): action 'evaluate' with conditions=[{...}], never a study with
   ranges narrowed to a point.
 - "Fluid renders", "show the flow", pictures of results: action 'render'
-  on a CFD study (study_id) with point (default: the first solved) and
-  render_quantity ('temperature', 'velocity', 'streamlines',
-  'wall_temperature' or 'all'); the images appear in the chat and the
-  Graphics tab. Do not say renders are impossible for a solved CFD study.
+  on a CFD study (study_id) with point ('DP7', 'worst' = largest |dT';
+  default the first solved) and render_quantity ('overview' = a 2x2 of
+  air temperature, air speed, streamlines and wall temperature -- the
+  default and the best first picture; or 'temperature', 'velocity',
+  'streamlines', 'wall_temperature', 'all'); the images appear in the
+  chat and the Graphics tab. Do not say renders are impossible for a
+  solved CFD study. solve_cfd already returns overview pictures of the
+  baseline and the worst point (image_paths): mention them in the
+  summary.
+- The thermometer: setup thermometer_xyz_m is an offset from the centre of
+  the shield's bounding box; the CFD reply gives the same point in domain
+  coordinates (the shield sits in the middle of the domain). These are the
+  same point -- never report them as a mismatch.
 - To verify the worst case (it lies at the edge of the range, where the
   surface is least accurate): action 'add_points' with worst_case=true (or
   conditions), then 'solve_cfd'; its reply has surface_check (surface vs
@@ -204,6 +213,17 @@ Working rules:
   setup top_side_solar_absorptivity, top_side_emissivity,
   bottom_side_solar_absorptivity, bottom_side_emissivity (faces looking up
   and down); unset sides use shield_solar_absorptivity/shield_emissivity.
+  With setup optics_orientation 'thermometer' the split is by the
+  thermometer instead: top_side_* = the outside faces (looking away from
+  the thermometer), bottom_side_* = the faces looking into the gaps
+  towards it. "Black towards the thermometer, shiny aluminium outside" is
+  optics_orientation 'thermometer', top_side 0.15/0.1, bottom_side
+  0.95/0.9 -- do it, do not ask for an up/down compromise. The thermometer
+  split is applied at prepare_cfd, so prepare a new CFD study after
+  changing it.
+- get_active_geometry finds the STEP open in the Radiation Shield / SPS30
+  tab by itself; call it without a path first. Never pass a bare file
+  name as step_file_path.
 - When the operator wants to see what a shield or housing looks like, use
   action 'preview'; 'analytic' and 'sweep' also return the picture
   (geometry_image_path), which the panel shows.

@@ -85,7 +85,7 @@ from core.step_inspect import (
     suggest_scale_to_meters,
 )
 from core.store import RUN_ID_PATTERN, RecordNotFoundError, RunStore, default_store
-from core.workspace import active_geometry, set_active_geometry
+from core.workspace import active_geometry, active_study, set_active_geometry
 
 SERVER_NAME = "aerothermalstudio"
 
@@ -1249,14 +1249,14 @@ def _conditions(value: Any, model: Any) -> list[Any]:
 
 
 def _render_quantities(value: Any) -> list[str]:
-    from backend.study_render import QUANTITIES
+    from backend.study_render import SINGLE_QUANTITIES
 
-    if value is None or value == "":
-        return ["temperature", "velocity"]
+    if value is None or value == "" or value == []:
+        return ["overview"]
     if isinstance(value, str):
         value = [part.strip() for part in value.replace(";", ",").split(",") if part.strip()]
     if "all" in value:
-        return list(QUANTITIES)
+        return list(SINGLE_QUANTITIES)
     return list(value)
 
 
@@ -1292,11 +1292,11 @@ def _study_extra_action(
 
     folder = store.get(study_id).path("cfd")
     point = (extra.get("point") or "").strip()
-    if not point:
-        reports = workflow.point_reports(store, study_id)
+    reports = workflow.point_reports(store, study_id)
+    if not point or point.lower() == "worst":
         if not reports:
             return _error("no point of this study is solved yet; run solve_cfd first")
-        point = reports[0]["name"]
+        point = _worst_point(reports) if point.lower() == "worst" else reports[0]["name"]
     plane = (extra.get("render_plane") or "y").strip().lower()
     images = []
     for quantity in _render_quantities(extra.get("render_quantity")):
@@ -1304,6 +1304,43 @@ def _study_extra_action(
         images.append(str(render_study_point(folder, kind, point, quantity, destination, plane)))
     return _ok(study_id=study_id, point=point, image_path=images[0], image_paths=images,
                plane=plane)
+
+
+def _worst_point(reports: list[dict]) -> str:
+    """The solved point with the largest |objective| (dT for a shield)."""
+    def size(report: dict) -> float:
+        for key in ("delta_t_k", "objective", "deposition_fraction", "penetration"):
+            value = report.get(key)
+            if isinstance(value, (int, float)):
+                return abs(float(value))
+        return -1.0
+
+    return max(reports, key=size)["name"]
+
+
+def _auto_renders(kind: str, store: Any, workflow: Any, study_id: str) -> dict[str, Any]:
+    """Overview pictures of the baseline and the worst solved point, after a solve."""
+    from backend.study_render import render_study_point
+
+    try:
+        reports = workflow.point_reports(store, study_id)
+        if not reports:
+            return {}
+        folder = store.get(study_id).path("cfd")
+        names = [reports[0]["name"]]
+        worst = _worst_point(reports)
+        if worst not in names:
+            names.append(worst)
+        images = [
+            str(render_study_point(folder, kind, name, "overview",
+                                   store.get(study_id).path("renders", f"{name}_overview_y.png"), "y"))
+            for name in names
+        ]
+    except Exception as error:  # noqa: BLE001 - pictures never fail a solve
+        return {"render_note": f"overview pictures could not be drawn: {error}"}
+    return {"image_path": images[0], "image_paths": images, "rendered_points": names,
+            "render_note": "Overview (air temperature, air speed, streamlines, wall "
+            "temperature) of the baseline point and of the solved point with the largest |dT|."}
 
 
 def _study_sweep(
@@ -1568,6 +1605,7 @@ def radiation_shield_study(
     point: str | None = None,
     render_quantity: list[str] | str | None = None,
     render_plane: str | None = None,
+    render_after: bool = True,
 ) -> dict[str, Any]:
     """Run or continue a radiation-shield study.
 
@@ -1635,11 +1673,16 @@ def radiation_shield_study(
     worst_case:
         For 'add_points': also add the study's Monte Carlo worst case.
     point, render_quantity, render_plane:
-        For 'render' on a solved CFD study: the point ('DP7', 'X1'; default
-        the first solved), what to draw ('temperature', 'velocity',
-        'streamlines', 'wall_temperature', a list of them, or 'all';
-        default temperature and velocity) and the cutting plane ('y' along
-        the wind through the thermometer, 'x', 'z').
+        For 'render' on a solved CFD study: the point ('DP7', 'X1',
+        'worst' = largest |dT|; default the first solved), what to draw
+        ('overview' = all four in one 2x2 picture, 'temperature',
+        'velocity', 'streamlines', 'wall_temperature', a list of them, or
+        'all'; default overview) and the cutting plane ('y' along the wind
+        through the thermometer, 'x', 'z').
+    render_after:
+        For 'solve_cfd': draw overview pictures of the baseline point and
+        the worst solved point when the solve ends (default true); they
+        come back in image_paths -- show them to the user.
     sweep_variable, sweep_start, sweep_stop, sweep_step:
         For 'sweep': 'wind_speed_ms', 'solar_flux_w_m2' or
         'bottom_flux_w_m2', and its first value, last value and increment
@@ -1677,7 +1720,8 @@ def radiation_shield_study(
             store, workflow, action, study_id, params, settings, results_csv,
             max_points, sweep_variable, sweep_start, sweep_stop, sweep_step,
             {"conditions": conditions, "worst_case": worst_case, "point": point,
-             "render_quantity": render_quantity, "render_plane": render_plane},
+             "render_quantity": render_quantity, "render_plane": render_plane,
+             "render_after": render_after},
         ),
         _applied_shield(params, source),
     )
@@ -1726,6 +1770,8 @@ def _run_shield_action(
             result = summary.pop("result")
             if result is not None:
                 summary.update(_shield_summary(result))
+            if extra.get("render_after", True):
+                summary.update(_auto_renders("shield", store, workflow, study_id))
             return _ok(**summary)
         if action == "export_fluent":
             folder = workflow.export_package(store, study_id)
@@ -1813,6 +1859,7 @@ def sps30_housing_study(
     point: str | None = None,
     render_quantity: list[str] | str | None = None,
     render_plane: str | None = None,
+    render_after: bool = True,
 ) -> dict[str, Any]:
     """Run or continue an SPS30 housing study.
 
@@ -1902,7 +1949,8 @@ def sps30_housing_study(
             store, workflow, action, study_id, params, settings, results_csv,
             max_points, sweep_variable, sweep_start, sweep_stop, sweep_step,
             {"conditions": conditions, "worst_case": worst_case, "point": point,
-             "render_quantity": render_quantity, "render_plane": render_plane},
+             "render_quantity": render_quantity, "render_plane": render_plane,
+             "render_after": render_after},
         ),
         _applied_sps30(params, source),
     )
@@ -1942,6 +1990,8 @@ def _run_sps30_action(
             result = summary.pop("result")
             if result is not None:
                 summary.update(_sps30_summary(result))
+            if extra.get("render_after", True):
+                summary.update(_auto_renders("sps30", store, workflow, study_id))
             return _ok(**summary)
         if action == "export_fluent":
             return _ok(study_id=study_id, fluent_folder=str(workflow.export_package(store, study_id)))
@@ -2332,20 +2382,48 @@ def get_active_geometry(
     scale_to_meters:
         Override the unit. Omit to read the file's own declaration.
     """
+    tabs = _study_steps()
     if step_file_path:
+        typed = Path(step_file_path).expanduser()
+        note = None
+        if not typed.is_file():
+            # A bare or mistyped name: take the file open in a study tab
+            # with the same name rather than recording a path that is not there.
+            match = [t for t in tabs if Path(t["path"]).name.lower() == typed.name.lower()]
+            if not match:
+                return _error(
+                    f"{step_file_path} does not exist. Ask the operator for the full path.",
+                    files_open_in_study_tabs=tabs,
+                )
+            note = f"'{step_file_path}' not found; using the same file open in the {match[0]['tab']}"
+            step_file_path = match[0]["path"]
+            if scale_to_meters is None:
+                scale_to_meters = match[0]["scale_to_meters"]
         record = set_active_geometry(
             step_file_path,
             scale_to_meters=scale_to_meters,
             nose_direction=nose_direction,
             source="mcp",
         )
-        return _ok(
-            loaded=True,
-            geometry=record.as_dict(),
-            ask_the_operator=record.open_questions(),
-        )
+        payload = {"loaded": True, "geometry": record.as_dict(),
+                   "ask_the_operator": record.open_questions(),
+                   "files_open_in_study_tabs": tabs}
+        if note:
+            payload["note"] = note
+        return _ok(**payload)
 
     record = active_geometry()
+    if (record is None or not record.exists()) and tabs:
+        tab = tabs[0]
+        record = set_active_geometry(
+            tab["path"], scale_to_meters=tab["scale_to_meters"],
+            nose_direction=nose_direction, source=tab["kind"],
+        )
+        return _ok(
+            loaded=True, geometry=record.as_dict(),
+            ask_the_operator=record.open_questions(),
+            source=tab["tab"], files_open_in_study_tabs=tabs,
+        )
     if record is None:
         return _ok(
             loaded=False,
@@ -2361,7 +2439,22 @@ def get_active_geometry(
         loaded=True,
         geometry=record.as_dict(),
         ask_the_operator=record.open_questions(),
+        files_open_in_study_tabs=tabs,
     )
+
+
+def _study_steps() -> list[dict[str, Any]]:
+    """STEP files open in the Radiation Shield and SPS30 study tabs that exist."""
+    found = []
+    for kind, tab, key in (("shield", "Radiation Shield tab", "shield_step_path"),
+                           ("sps30", "SPS30 Housing tab", "housing_step_path")):
+        params = active_study(kind) or {}
+        setup = params.get("setup") or {}
+        path = setup.get(key) or ""
+        if path and Path(path).is_file():
+            found.append({"kind": kind, "tab": tab, "path": str(Path(path)),
+                          "scale_to_meters": setup.get("scale_to_meters")})
+    return found
 
 
 # ---------------------------------------------------------------------------

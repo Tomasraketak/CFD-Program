@@ -20,6 +20,7 @@ Workbench/DesignXplorer) and imported back as a CSV.
 from __future__ import annotations
 
 from enum import Enum
+from typing import Literal
 
 from pydantic import Field, model_validator
 
@@ -257,6 +258,17 @@ class ShieldSetup(StrictModel):
         description=(
             "Long-wave emissivity of the faces that look down, e.g. 0.9 for "
             "black paint. Null = shield_emissivity."
+        ),
+    )
+    optics_orientation: Literal["vertical", "thermometer"] = Field(
+        default="vertical",
+        description=(
+            "How the two-sided optics are assigned. 'vertical': top_side_* are "
+            "the faces looking up, bottom_side_* those looking down. "
+            "'thermometer': top_side_* are the faces looking AWAY from the "
+            "thermometer (the outside of the shield) and bottom_side_* the faces "
+            "looking TOWARDS it (the inside of the gaps), e.g. shiny outside "
+            "0.15/0.1, black inside 0.95/0.9."
         ),
     )
     shield_conductivity_w_mk: float = Field(

@@ -278,6 +278,7 @@ class CfdPointTools(QtWidgets.QGroupBox):
         form.addRow("Point", self.point)
         self.quantity = QtWidgets.QComboBox()
         for label, value in (
+            ("Overview (all four in one picture)", "overview"),
             ("Temperature + velocity", "temperature,velocity"),
             ("Air temperature", "temperature"), ("Air speed", "velocity"),
             ("Streamlines", "streamlines"), ("Wall temperature", "wall_temperature"),
@@ -363,10 +364,10 @@ def wire_cfd_tools(panel, kind: str, tools: CfdPointTools) -> None:
         if not name or not point:
             QtWidgets.QMessageBox.information(panel, "Render", "Select a CFD study and a solved point.")
             return
-        from backend.study_render import QUANTITIES, render_study_point
+        from backend.study_render import SINGLE_QUANTITIES, render_study_point
 
         quantities = tools.quantity.currentData()
-        quantities = list(QUANTITIES) if quantities == "all" else quantities.split(",")
+        quantities = list(SINGLE_QUANTITIES) if quantities == "all" else quantities.split(",")
         plane = tools.plane.currentData()
         folder = panel.store.get(name).path("cfd")
 
