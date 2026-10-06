@@ -186,6 +186,7 @@ def _draw(plotter, ctx: _Context, quantity: str, compact: bool = False) -> None:
             plotter.add_mesh(shell, color=SHIELD_COLOUR, smooth_shading=True,
                              specular=0.4, specular_power=20)
         view = VIEWS[ctx.plane]
+        zoom = 1.7
     elif quantity == "streamlines":
         # A rake of seeds upstream, across the whole height and depth of the
         # object, so the lines go through every gap and round the outside.
@@ -199,7 +200,9 @@ def _draw(plotter, ctx: _Context, quantity: str, compact: bool = False) -> None:
             integration_direction="both",
         )
         if lines.n_points:
-            scalars = ctx.temperature if (ctx.temperature and ctx.temperature in lines.point_data) else "speed"
+            lines.point_data["speed"] = np.linalg.norm(
+                np.asarray(lines.point_data[ctx.velocity]), axis=1)
+            scalars = "speed"
             args = {}
             if scalars == ctx.temperature:
                 args["clim"] = ctx.temperature_limits(np.asarray(lines.point_data[scalars]))
@@ -210,20 +213,22 @@ def _draw(plotter, ctx: _Context, quantity: str, compact: bool = False) -> None:
                                      else "Air speed [m/s]", compact), **args)
         plotter.add_mesh(ctx.walls, color=SHIELD_COLOUR, opacity=0.35, smooth_shading=True)
         view = ((0.45, -1.0, 0.4), (0, 0, 1))
+        zoom = 1.3
     else:  # wall_temperature
         if ctx.temperature is None or ctx.temperature not in ctx.walls.point_data:
             raise StudyRenderError("this solution has no wall temperature")
         plotter.add_mesh(ctx.walls, scalars=ctx.temperature, cmap="inferno", smooth_shading=True,
                          specular=0.3, scalar_bar_args=_bar("Wall temperature [K]", compact))
         view = ((0.6, -1.0, 0.7), (0, 0, 1))
+        zoom = 1.1
 
     plotter.add_mesh(pv.Sphere(radius=0.035 * span, center=ctx.probe), color="#e53935",
                      smooth_shading=True)
-    plotter.add_point_labels([ctx.probe + np.array([0.0, 0.0, 0.09 * span])], [ctx.probe_name],
-                             font_size=11 if compact else 14, text_color="#1d2433",
-                             shape_color="white", shape_opacity=0.75, show_points=False,
-                             always_visible=True)
     if quantity != "wall_temperature":
+        plotter.add_point_labels([ctx.probe + np.array([0.0, 0.0, 0.09 * span])], [ctx.probe_name],
+                                 font_size=11 if compact else 14, text_color="#1d2433",
+                                 shape_color="white", shape_opacity=0.75, show_points=False,
+                                 always_visible=True)
         start = np.array([ctx.low[0] - 0.95 * span, ctx.probe[1], ctx.high[2] + 0.55 * span])
         plotter.add_mesh(pv.Arrow(start=start, direction=(1, 0, 0), scale=0.4 * span),
                          color="#2b6cb0")
@@ -234,7 +239,7 @@ def _draw(plotter, ctx: _Context, quantity: str, compact: bool = False) -> None:
                      font_size=10 if compact else 13, color="#1d2433")
     plotter.view_vector(*view)
     plotter.reset_camera()
-    plotter.camera.zoom(1.25)
+    plotter.camera.zoom(zoom)
 
 
 def render_study_point(
