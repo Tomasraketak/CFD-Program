@@ -537,3 +537,24 @@ def test_the_shield_tab_material_combo_fills_the_form(store):
     assert setup.side_optics()["top"] == pytest.approx((0.25, 0.9))
     assert panel.cfd_settings().plate_radiation == "on"
     assert panel.render_after.isChecked()
+
+
+def test_the_sky_long_wave_is_realistic_and_zero_is_flagged(store):
+    clear = ShieldSetup(ambient_temp_c=20.0)
+    assert clear.sky_flux_w_m2() == pytest.approx(339, abs=8)
+    assert ShieldSetup(ambient_temp_c=20.0, cloud_cover=1.0).sky_flux_w_m2() > 390
+    assert ShieldSetup(sky_longwave_w_m2=330.0, cloud_cover=1.0).sky_flux_w_m2() == 330.0
+    assert clear.sky_note() is None
+    assert "deep space" in ShieldSetup(sky_longwave_w_m2=0.0).sky_note()
+
+    from gui.main_window import build_application
+    from gui.shield_panel import ShieldStudyPanel
+
+    build_application([])
+    panel = ShieldStudyPanel(store)
+    panel.sky_preset.setCurrentIndex(panel.sky_preset.findData("overcast"))
+    setup = panel.study_params().setup
+    assert setup.sky_longwave_w_m2 is None and setup.cloud_cover == 1.0
+    panel.sky_preset.setCurrentIndex(panel.sky_preset.findData("space"))
+    assert panel.study_params().setup.sky_longwave_w_m2 == 0.0
+    assert "unrealistic" in panel.sky_value.text()

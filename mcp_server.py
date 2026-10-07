@@ -1441,6 +1441,8 @@ def _applied_shield(params: Any, source: str) -> dict[str, Any]:
     return {
         "setup_source": source,
         "applied_setup": setup.model_dump(mode="json"),
+        "sky_longwave_used_w_m2": round(setup.sky_flux_w_m2(), 1),
+        **({"sky_warning": setup.sky_note()} if setup.sky_note() else {}),
         "applied_optics": {side: {"solar_absorptivity": a, "emissivity": e}
                            for side, (a, e) in setup.side_optics().items()},
         "applied_variables": {

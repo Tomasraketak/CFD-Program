@@ -221,6 +221,14 @@ Working rules:
   0.95/0.9 -- do it, do not ask for an up/down compromise. The thermometer
   split is applied at prepare_cfd, so prepare a new CFD study after
   changing it.
+- Sky long-wave: a real sky sends 250-420 W/m2 (clear summer day ~330,
+  overcast ~400, dry clear night ~250). Leave sky_longwave_w_m2 null (the
+  model from air temperature, with cloud_cover 0..1) or set a real value;
+  never 0 unless the operator insists -- 0 is deep space at 0 K, it
+  over-cools the top plate and makes dT strongly negative. If the operator
+  asks for 0 or a reply carries sky_warning, say so. Suggested scenarios:
+  summer day (solar 900-1000, sky 320-340, ground 420-480) and
+  conservative clear sky (sky 280).
 - Materials: setup shield_material 'aluminium', 'abs_multicolour' or
   'petg_multicolour' (white outside, black inside, by the thermometer)
   fills conductivity and optics in one go; use it for "printed ABS/PETG".

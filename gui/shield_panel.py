@@ -164,6 +164,7 @@ class ShieldStudyPanel(QtWidgets.QWidget):
         form = QtWidgets.QFormLayout(group)
         self.ambient = _spin(-50.0, 60.0, setup.ambient_temp_c, 1, 1.0, " C")
         form.addRow("Inlet air", self.ambient)
+        self.ambient.valueChanged.connect(lambda *_: hasattr(self, "sky_value") and self._update_sky_label())
         self.wind = _spin(0.01, 30.0, setup.wind_speed_ms, 2, 0.1, " m/s")
         form.addRow("Wind speed", self.wind)
         self.solar = _spin(0.0, 1500.0, setup.solar_flux_w_m2, 0, 50.0, " W/m2")
@@ -180,7 +181,25 @@ class ShieldStudyPanel(QtWidgets.QWidget):
         form.addRow("Roof emissivity", self.roof_emissivity)
         self.sky = _optional_spin(600.0, decimals=1)
         self.sky.setToolTip("Downward sky long-wave, W/m2; auto = Swinbank, 0 = none")
+        from core.shield_models import SKY_LABELS
+
+        self.sky_preset = QtWidgets.QComboBox()
+        for value, label in SKY_LABELS.items():
+            self.sky_preset.addItem(label, value)
+        self.sky_preset.setToolTip(
+            "Downward long-wave from the atmosphere. Real skies give 250-420 W/m2; "
+            "0 W/m2 is deep space at 0 K and over-cools the shield."
+        )
+        self.sky_preset.currentIndexChanged.connect(self._sky_preset_changed)
+        form.addRow("Sky", self.sky_preset)
         form.addRow("Sky long-wave", self.sky)
+        self.cloud = _spin(0.0, 1.0, setup.cloud_cover, 2, 0.1)
+        self.cloud.setToolTip("Cloud cover 0 (clear) .. 1 (overcast), used when the long-wave is auto")
+        form.addRow("Cloud cover", self.cloud)
+        self.sky_value = QtWidgets.QLabel()
+        form.addRow("", self.sky_value)
+        for widget in (self.sky, self.cloud):
+            widget.valueChanged.connect(self._update_sky_label)
         self.albedo = _spin(0.0, 1.0, setup.ground_albedo, 2, 0.05)
         form.addRow("Ground albedo", self.albedo)
         from core.shield_models import MATERIAL_LABELS
@@ -527,6 +546,7 @@ class ShieldStudyPanel(QtWidgets.QWidget):
             bottom_temperature_k=self.bottom_temp.value(),
             roof_emissivity=self.roof_emissivity.value(),
             sky_longwave_w_m2=_optional(self.sky),
+            cloud_cover=self.cloud.value(),
             ground_albedo=self.albedo.value(),
             shield_solar_absorptivity=self.absorptivity.value(),
             shield_emissivity=self.emissivity.value(),
@@ -594,6 +614,8 @@ class ShieldStudyPanel(QtWidgets.QWidget):
         self.bottom_temp.setValue(setup.bottom_temperature_k)
         self.roof_emissivity.setValue(setup.roof_emissivity)
         _set_optional(self.sky, setup.sky_longwave_w_m2)
+        self.cloud.setValue(setup.cloud_cover)
+        self._update_sky_label()
         self.albedo.setValue(setup.ground_albedo)
         self.absorptivity.setValue(setup.shield_solar_absorptivity)
         self.emissivity.setValue(setup.shield_emissivity)
@@ -783,6 +805,36 @@ class ShieldStudyPanel(QtWidgets.QWidget):
             done,
             "Preparing the CFD cases (mesh, radiation rays, Fluent package) ...",
         )
+
+    def _sky_preset_changed(self, *_: Any) -> None:
+        """Put the chosen sky into the long-wave and cloud cover fields."""
+        from core.shield_models import SKY_PRESETS
+
+        preset = SKY_PRESETS.get(self.sky_preset.currentData())
+        if preset is None:
+            return
+        _set_optional(self.sky, preset.get("sky_longwave_w_m2"))
+        if "cloud_cover" in preset:
+            self.cloud.setValue(preset["cloud_cover"])
+        self._update_sky_label()
+
+    def _update_sky_label(self, *_: Any) -> None:
+        """Show the long-wave the sky will actually send, and warn when unreal."""
+        from core.shield_models import ShieldSetup
+
+        try:
+            sky = ShieldSetup(
+                ambient_temp_c=self.ambient.value(), sky_longwave_w_m2=_optional(self.sky),
+                cloud_cover=self.cloud.value(),
+            )
+        except Exception:  # noqa: BLE001 - half-typed form
+            return
+        note = sky.sky_note()
+        self.sky_value.setText(
+            f"= {sky.sky_flux_w_m2():.0f} W/m2" + ("  -- unrealistic, see tooltip" if note else "")
+        )
+        self.sky_value.setToolTip(note or "Real skies: 250-420 W/m2")
+        self.sky_value.setStyleSheet("color: #c62828;" if note else "")
 
     def _material_changed(self, *_: Any) -> None:
         """Put the chosen material's conductivity and optics into the form."""

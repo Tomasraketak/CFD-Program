@@ -193,6 +193,28 @@ CFD study is prepared, so prepare a new one after changing it. The
 analytic model only exchanges heat with the surroundings through the
 outside, so there the inside optics do not change ΔT.
 
+**Sky long-wave.** The atmosphere (water vapour, CO2, clouds) sends long-wave
+radiation down; a real sky gives 250–420 W/m², never 0. Leave *Sky
+long-wave* on *auto* and the program computes it from the air temperature:
+L↓ = ε σ T_air⁴, with the clear-sky emissivity of Idso–Jackson
+ε_clear = 1 − 0.261 exp(−7.77·10⁻⁴ (T − 273)²) (≈ 339 W/m² at 20 °C,
+377 W/m² at 25 °C) and cloud cover N: ε = ε_clear + N (0.98 − ε_clear).
+The *Sky* combo has presets:
+
+| Sky | L↓ |
+|---|---|
+| Clear (model) | ≈ 340 W/m² at 20 °C |
+| Partly cloudy (N 0.5) | ≈ 375 W/m² at 20 °C |
+| Overcast (N 1) | ≈ 410 W/m² at 20 °C |
+| Summer day | 330 W/m² |
+| Conservative clear | 280 W/m² |
+| Dry clear night | 250 W/m² |
+
+0 W/m² simulates deep space at 0 K: the top plate is over-cooled and ΔT
+comes out strongly negative. Below 220 W/m² the form shows the value in red
+and every result carries a warning (`sky_warning`, a CFD point note).
+A realistic summer-day test: solar 900–1000, sky 320–340, ground 420–480 W/m².
+
 **Material.** The *Material* combo fills the conductivity and both sides'
 optics at once (setup `shield_material`): *Aluminium* (k 167 W/(m K),
 shiny 0.15 / 0.1 outside, black 0.95 / 0.9 inside), *ABS print* (k 0.17,

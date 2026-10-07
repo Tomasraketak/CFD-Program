@@ -19,6 +19,7 @@ Workbench/DesignXplorer) and imported back as a CSV.
 
 from __future__ import annotations
 
+import math
 from enum import Enum
 from typing import Literal
 
@@ -138,6 +139,28 @@ def _solar() -> StudyVariable:
 def _bottom() -> StudyVariable:
     return StudyVariable(minimum=300.0, maximum=800.0)
 
+
+SKY_REALISTIC_MIN_W_M2 = 220.0
+# Sky presets: an explicit flux, or cloud cover for the sky model.
+SKY_PRESETS: dict[str, dict] = {
+    "clear": {"sky_longwave_w_m2": None, "cloud_cover": 0.0},
+    "partly_cloudy": {"sky_longwave_w_m2": None, "cloud_cover": 0.5},
+    "overcast": {"sky_longwave_w_m2": None, "cloud_cover": 1.0},
+    "summer_day": {"sky_longwave_w_m2": 330.0},
+    "conservative": {"sky_longwave_w_m2": 280.0},
+    "dry_clear_night": {"sky_longwave_w_m2": 250.0},
+    "space": {"sky_longwave_w_m2": 0.0},
+}
+SKY_LABELS = {
+    "custom": "Custom (the value / cloud cover below)",
+    "clear": "Clear sky (model from air temperature)",
+    "partly_cloudy": "Partly cloudy (model, cloud 0.5)",
+    "overcast": "Overcast (model, cloud 1)",
+    "summer_day": "Summer day, 330 W/m2",
+    "conservative": "Conservative clear, 280 W/m2",
+    "dry_clear_night": "Dry clear night, 250 W/m2",
+    "space": "0 W/m2 = deep space (unrealistic)",
+}
 
 # Shield materials: conductivity and the optics of the outside and of the
 # faces looking into the gaps towards the thermometer. A multicolour print
@@ -269,9 +292,26 @@ class ShieldSetup(StrictModel):
     sky_longwave_w_m2: float | None = Field(
         default=None, ge=0.0, le=600.0,
         description=(
-            "Downward long-wave flux from the sky, W/m^2. Null estimates it "
-            "from the ambient temperature (Swinbank); 0 reproduces a model "
-            "with the solar flux as the only radiation from above."
+            "Downward long-wave flux from the sky, W/m^2. Null = computed from "
+            "the air temperature and cloud_cover (sky_model). Real values are "
+            "250-420 W/m^2 (clear summer day ~330, overcast ~400, dry clear "
+            "night ~250). 0 simulates deep space at 0 K -- unrealistic, it "
+            "freezes the top plate and makes dT strongly negative."
+        ),
+    )
+    sky_model: Literal["idso_jackson", "swinbank"] = Field(
+        default="idso_jackson",
+        description=(
+            "Clear-sky emissivity when sky_longwave_w_m2 is null: Idso-Jackson "
+            "1 - 0.261 exp(-7.77e-4 (T-273)^2), or Swinbank (T_sky = 0.0552 T^1.5)."
+        ),
+    )
+    cloud_cover: float = Field(
+        default=0.0, ge=0.0, le=1.0,
+        description=(
+            "Cloud cover N, 0 clear .. 1 overcast, when sky_longwave_w_m2 is null: "
+            "e = e_clear + N (0.98 - e_clear); low overcast cloud is nearly black "
+            "at the air temperature."
         ),
     )
     ground_albedo: float = Field(
@@ -369,8 +409,24 @@ class ShieldSetup(StrictModel):
         """Downward long-wave flux, explicit or from Swinbank's sky temperature."""
         if self.sky_longwave_w_m2 is not None:
             return self.sky_longwave_w_m2
-        sky = 0.0552 * self.ambient_temp_k() ** 1.5
-        return STEFAN_BOLTZMANN * sky**4
+        air = self.ambient_temp_k()
+        if self.sky_model == "swinbank":
+            clear = (0.0552 * air**1.5) ** 4 / air**4
+        else:
+            clear = 1.0 - 0.261 * math.exp(-7.77e-4 * (air - 273.0) ** 2)
+        emissivity = clear + self.cloud_cover * (0.98 - clear)
+        return emissivity * STEFAN_BOLTZMANN * air**4
+
+    def sky_note(self) -> str | None:
+        """A warning when the sky long-wave is outside what a real sky gives."""
+        flux = self.sky_flux_w_m2()
+        if flux < SKY_REALISTIC_MIN_W_M2:
+            return (
+                f"sky long-wave {flux:.0f} W/m2 is below any real sky (250-420 W/m2; "
+                "0 = deep space at 0 K): the top of the shield is radiatively "
+                "over-cooled and dT comes out too negative"
+            )
+        return None
 
     def roof_temperature_for(self, bottom_flux_w_m2: float) -> float:
         """Roof temperature emitting a given long-wave flux."""

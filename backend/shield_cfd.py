@@ -1311,6 +1311,8 @@ def run_design_point(
     started = time.perf_counter()
     converged = False
     notes: list[str] = []
+    if setup.sky_note():
+        notes.append(setup.sky_note())
     wall_changes: list[float] = []
     behaviour: dict = {"residual_drop_orders": None, "oscillating": False}
     say = on_line or (lambda _line: None)

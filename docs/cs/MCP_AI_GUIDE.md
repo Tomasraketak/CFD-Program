@@ -438,7 +438,7 @@ na záložce studie, jinak výchozí hodnoty. Každá odpověď obsahuje
 `applied_study`. Oboustranné desky: `top_side_solar_absorptivity`,
 `top_side_emissivity`, `bottom_side_solar_absorptivity`,
 `bottom_side_emissivity` (plochy hledící nahoru / dolů; nezadané = hodnoty
-štítu; `shield_material` aluminium / abs_multicolour / petg_multicolour je vyplní; `cfd.plate_radiation` on/off; s `optics_orientation: "thermometer"` je top = vnější plochy a bottom = plochy k teploměru). Vestavěný asistent nespustí v jednom požadavku dvakrát stejné
+štítu; `shield_material` aluminium / abs_multicolour / petg_multicolour je vyplní; `cfd.plate_radiation` on/off; obloha: `sky_longwave_w_m2` null = model s `cloud_cover`/`sky_model`, odpovědi vrací `sky_longwave_used_w_m2` a pod 220 W/m² `sky_warning`; s `optics_orientation: "thermometer"` je top = vnější plochy a bottom = plochy k teploměru). Vestavěný asistent nespustí v jednom požadavku dvakrát stejné
 volání (kromě status a solve_cfd).
 
 **Co vrací CFD výpočet.** `prepare_cfd` navíc vrací `narrowest_air_gap_mm`,

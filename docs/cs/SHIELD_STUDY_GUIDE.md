@@ -194,6 +194,18 @@ použije při přípravě CFD studie, takže po změně připravte novou. Analyt
 model si s okolím vyměňuje teplo jen vnějškem, vnitřní optika v něm ΔT
 nemění.
 
+**Dlouhovlnné záření oblohy.** Atmosféra (vodní pára, CO2, mraky) září dolů;
+reálná obloha dává 250–420 W/m², nikdy 0. S *Sky long-wave* na *auto*
+program spočte L↓ z teploty vzduchu: L↓ = ε σ T⁴, emisivita jasné oblohy
+podle Idso–Jacksona ε = 1 − 0,261 exp(−7,77·10⁻⁴ (T − 273)²) (≈ 339 W/m²
+při 20 °C, 377 W/m² při 25 °C), s oblačností N: ε = ε_jasno + N (0,98 −
+ε_jasno). Předvolby v poli *Sky*: jasno (model), polojasno (N 0,5),
+zataženo (N 1), letní den 330, konzervativní jasno 280, suchá jasná noc
+250 W/m². 0 W/m² simuluje vesmír o 0 K: horní deska se přehnaně ochladí a
+ΔT vyjde silně záporné. Pod 220 W/m² formulář ukáže hodnotu červeně a
+výsledky nesou varování (`sky_warning`, poznámka u CFD bodu). Realistický
+letní test: slunce 900–1000, obloha 320–340, terén 420–480 W/m².
+
 **Materiál.** Pole *Material* najednou vyplní vodivost i optiku obou
 stran (setup `shield_material`): *Aluminium* (k 167 W/(m K), venku lesklý
 0,15 / 0,1, uvnitř černý 0,95 / 0,9), *ABS print* (k 0,17, venku bílé ABS

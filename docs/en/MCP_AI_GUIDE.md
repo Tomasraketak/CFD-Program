@@ -442,7 +442,7 @@ carries `setup_source`, `applied_setup`, `applied_optics`,
 `applied_variables` and `applied_study`. Two-sided plates:
 `top_side_solar_absorptivity`, `top_side_emissivity`,
 `bottom_side_solar_absorptivity`, `bottom_side_emissivity` (faces looking
-up / down; unset = the shield values; `shield_material` aluminium / abs_multicolour / petg_multicolour fills them; `cfd.plate_radiation` on/off; with `optics_orientation: "thermometer"` top = outside, bottom = the faces towards the thermometer). The built-in assistant does not run
+up / down; unset = the shield values; `shield_material` aluminium / abs_multicolour / petg_multicolour fills them; `cfd.plate_radiation` on/off; sky: `sky_longwave_w_m2` null = model with `cloud_cover`/`sky_model`, replies give `sky_longwave_used_w_m2` and `sky_warning` below 220 W/m²; with `optics_orientation: "thermometer"` top = outside, bottom = the faces towards the thermometer). The built-in assistant does not run
 an identical call twice in one request (status and solve_cfd excepted).
 
 **What a CFD solve returns.** `prepare_cfd` adds `narrowest_air_gap_mm`,
