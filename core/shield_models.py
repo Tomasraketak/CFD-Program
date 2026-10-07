@@ -139,8 +139,61 @@ def _bottom() -> StudyVariable:
     return StudyVariable(minimum=300.0, maximum=800.0)
 
 
+# Shield materials: conductivity and the optics of the outside and of the
+# faces looking into the gaps towards the thermometer. A multicolour print
+# is white outside and black inside.
+MATERIAL_PRESETS: dict[str, dict] = {
+    "aluminium": {
+        "shield_conductivity_w_mk": 167.0, "optics_orientation": "thermometer",
+        "shield_solar_absorptivity": 0.15, "shield_emissivity": 0.1,
+        "top_side_solar_absorptivity": 0.15, "top_side_emissivity": 0.1,
+        "bottom_side_solar_absorptivity": 0.95, "bottom_side_emissivity": 0.9,
+    },
+    "abs_multicolour": {
+        "shield_conductivity_w_mk": 0.17, "optics_orientation": "thermometer",
+        "shield_solar_absorptivity": 0.25, "shield_emissivity": 0.9,
+        "top_side_solar_absorptivity": 0.25, "top_side_emissivity": 0.9,
+        "bottom_side_solar_absorptivity": 0.95, "bottom_side_emissivity": 0.92,
+    },
+    "petg_multicolour": {
+        "shield_conductivity_w_mk": 0.20, "optics_orientation": "thermometer",
+        "shield_solar_absorptivity": 0.25, "shield_emissivity": 0.9,
+        "top_side_solar_absorptivity": 0.25, "top_side_emissivity": 0.9,
+        "bottom_side_solar_absorptivity": 0.95, "bottom_side_emissivity": 0.92,
+    },
+}
+MATERIAL_LABELS = {
+    "custom": "Custom (the values below)",
+    "aluminium": "Aluminium, shiny outside, black inside",
+    "abs_multicolour": "ABS print, white outside, black inside",
+    "petg_multicolour": "PETG print, white outside, black inside",
+}
+
+
 class ShieldSetup(StrictModel):
     """Geometry, domain, surfaces and the baseline condition."""
+
+    shield_material: Literal["custom", "aluminium", "abs_multicolour", "petg_multicolour"] = Field(
+        default="custom",
+        description=(
+            "Material preset. 'aluminium' (k 167, shiny 0.15/0.1 outside, black "
+            "0.95/0.9 inside), 'abs_multicolour' (k 0.17, white ABS 0.25/0.90 "
+            "outside, black ABS 0.95/0.92 inside), 'petg_multicolour' (k 0.20, "
+            "same colours). It fills shield_conductivity_w_mk, the optics and "
+            "optics_orientation='thermometer'; any of those given explicitly "
+            "wins. 'custom' = use the fields as given."
+        ),
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _material(cls, data):
+        if isinstance(data, dict) and data.get("shield_material") in MATERIAL_PRESETS:
+            data = dict(data)
+            for key, value in MATERIAL_PRESETS[data["shield_material"]].items():
+                if data.get(key) is None:
+                    data[key] = value
+        return data
 
     shield_step_path: str = Field(
         default="",
@@ -432,6 +485,16 @@ class ShieldCfdSettings(StrictModel):
             "sun absorbed on the top of a metal plate reaches its other faces. "
             "'off': every surface facet is an independent wall (older, faster, "
             "wrong for metal plates)."
+        ),
+    )
+    plate_radiation: str = Field(
+        default="on", pattern="^(on|off)$",
+        description=(
+            "'on': long-wave radiation exchanged between the shield's own "
+            "surfaces (plate to plate across the gaps), grey diffuse, with view "
+            "factors from the ray casting. 'off': each surface radiates only to "
+            "the sky and ground; the part of its view filled by other plates "
+            "is treated as a mirror."
         ),
     )
     iterations_first_pass: int = Field(

@@ -654,3 +654,43 @@ def test_conduction_carries_the_sun_through_the_plates(conjugate_study):
     assert saved["conduction"] is True and saved["solid_temperature_k"]
     body = saved["solid_temperature_k"][0]
     assert body["min_k"] <= body["mean_k"] <= body["max_k"]
+
+
+def test_facing_plates_exchange_long_wave_like_parallel_plates():
+    """Large plates close together: the exchange approaches the textbook value."""
+    from backend.shield_cfd import _orient_triangles, radiation_facets
+
+    triangles = _orient_triangles(
+        np.concatenate([_plate(0.0, size=1.0, thickness=0.01), _plate(0.03, size=1.0, thickness=0.01)])
+    )
+    facets = radiation_facets(triangles, rays_per_face=400)
+    assert facets.has_exchange()
+    seen = np.asarray(facets.exchange.sum(axis=1)).ravel()
+    assert seen + facets.sky_view + facets.ground_view == pytest.approx(np.ones(len(seen)), abs=1e-9)
+    centroids = triangles.mean(axis=1)
+    lower_top = (facets.normals[:, 2] > 0.9) & (centroids[:, 2] < 0.02)
+    upper_bottom = (facets.normals[:, 2] < -0.9) & (centroids[:, 2] > 0.02) & (centroids[:, 2] < 0.035)
+    assert seen[lower_top].mean() > 0.9
+    setup = ShieldSetup(shield_emissivity=0.9)
+    wall = np.full(len(triangles), 300.0)
+    wall[lower_top] = 320.0
+    gain = facets.incoming(setup, wall) - facets.emitted(setup, wall, plates=True)
+    sigma = 5.670374419e-8
+    textbook = sigma * (320.0**4 - 300.0**4) / (1 / 0.9 + 1 / 0.9 - 1)
+    assert gain[upper_bottom].mean() == pytest.approx(textbook, rel=0.15)
+    assert gain[lower_top].mean() == pytest.approx(-textbook, rel=0.15)
+    # Without the exchange the facing faces do not see each other at all.
+    assert facets.surroundings_view(False)[lower_top].mean() < 0.1
+
+
+def test_the_exchange_is_reciprocal():
+    from backend.shield_cfd import _orient_triangles, radiation_facets
+
+    triangles = _orient_triangles(np.concatenate([_plate(0.0), _plate(0.05)]))
+    facets = radiation_facets(triangles, rays_per_face=256)
+    matrix = facets.exchange.toarray() * facets.areas[:, None]
+    lower_top = (facets.normals[:, 2] > 0.9) & (triangles.mean(axis=1)[:, 2] < 0.01)
+    upper_bottom = (facets.normals[:, 2] < -0.9) & (triangles.mean(axis=1)[:, 2] > 0.04)
+    forward = matrix[np.ix_(lower_top, upper_bottom)].sum()
+    backward = matrix[np.ix_(upper_bottom, lower_top)].sum()
+    assert forward == pytest.approx(backward, rel=0.1)

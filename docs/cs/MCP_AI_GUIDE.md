@@ -425,7 +425,7 @@ linearizuje kolem spočtené teploty a obvykle ji změní o méně než 0,01 K. 
 se SU2 průchod po průchodu (dělený konjugovaný přenos tepla: SU2 drží stěny
 na teplotě desek, desky přebírají tepelný tok stěn ze SU2); bez něj je každá
 ploška samostatná stěna. Průchody skončí při změně štítu < 0,05 K
-(`radiation_passes` je maximum, 8). Záření mezi deskami se nemodeluje. SU2
+(`radiation_passes` je maximum, 8). Záření mezi deskami se počítá (`cfd.plate_radiation`, výchozí zapnuto). SU2
 nemá standardní k-ε, používá se SST.
 Balíček pro Fluent se drží zadání přesně: standardní k-ε, DO radiace, pevná
 zóna štítu.
@@ -438,7 +438,7 @@ na záložce studie, jinak výchozí hodnoty. Každá odpověď obsahuje
 `applied_study`. Oboustranné desky: `top_side_solar_absorptivity`,
 `top_side_emissivity`, `bottom_side_solar_absorptivity`,
 `bottom_side_emissivity` (plochy hledící nahoru / dolů; nezadané = hodnoty
-štítu; s `optics_orientation: "thermometer"` je top = vnější plochy a bottom = plochy k teploměru). Vestavěný asistent nespustí v jednom požadavku dvakrát stejné
+štítu; `shield_material` aluminium / abs_multicolour / petg_multicolour je vyplní; `cfd.plate_radiation` on/off; s `optics_orientation: "thermometer"` je top = vnější plochy a bottom = plochy k teploměru). Vestavěný asistent nespustí v jednom požadavku dvakrát stejné
 volání (kromě status a solve_cfd).
 
 **Co vrací CFD výpočet.** `prepare_cfd` navíc vrací `narrowest_air_gap_mm`,

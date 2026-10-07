@@ -429,7 +429,7 @@ program, coupled to SU2 pass by pass (partitioned conjugate heat transfer:
 SU2 holds the walls at the plate temperature, the plates take SU2's wall
 heat flux); without it each facet is an independent wall. Passes stop once
 the shield changes < 0.05 K (`radiation_passes` is the maximum, 8).
-Radiation between the plates is not modelled. SU2 has no standard k-ε, so
+Radiation between the plates is solved (`cfd.plate_radiation`, default on). SU2 has no standard k-ε, so
 SST is used. The Fluent package
 follows the specification exactly: standard k-ε, DO radiation, conjugate
 solid.
@@ -442,7 +442,7 @@ carries `setup_source`, `applied_setup`, `applied_optics`,
 `applied_variables` and `applied_study`. Two-sided plates:
 `top_side_solar_absorptivity`, `top_side_emissivity`,
 `bottom_side_solar_absorptivity`, `bottom_side_emissivity` (faces looking
-up / down; unset = the shield values; with `optics_orientation: "thermometer"` top = outside, bottom = the faces towards the thermometer). The built-in assistant does not run
+up / down; unset = the shield values; `shield_material` aluminium / abs_multicolour / petg_multicolour fills them; `cfd.plate_radiation` on/off; with `optics_orientation: "thermometer"` top = outside, bottom = the faces towards the thermometer). The built-in assistant does not run
 an identical call twice in one request (status and solve_cfd excepted).
 
 **What a CFD solve returns.** `prepare_cfd` adds `narrowest_air_gap_mm`,

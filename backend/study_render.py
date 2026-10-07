@@ -288,3 +288,44 @@ def render_study_point(
     finally:
         plotter.close()
     return output_path
+
+
+def worst_point(reports: list[dict]) -> str:
+    """The solved point with the largest |objective| (dT for a shield)."""
+    def size(report: dict) -> float:
+        for key in ("delta_t_k", "objective", "deposition_fraction", "penetration"):
+            value = report.get(key)
+            if isinstance(value, (int, float)):
+                return abs(float(value))
+        return -1.0
+
+    return max(reports, key=size)["name"]
+
+
+def render_solved_study(store, kind: str, workflow, study_id: str) -> dict:
+    """Overview pictures of the baseline and the worst solved point.
+
+    Drawn after every CFD solve -- from the program's own Solve button and
+    from the assistant alike. Never raises: a picture is not worth failing a
+    solve over, so a problem comes back as ``render_note``.
+    """
+    try:
+        reports = workflow.point_reports(store, study_id)
+        if not reports:
+            return {}
+        record = store.get(study_id)
+        folder = record.path("cfd")
+        names = [reports[0]["name"]]
+        worst = worst_point(reports)
+        if worst not in names:
+            names.append(worst)
+        images = [
+            str(render_study_point(folder, kind, name, "overview",
+                                   record.path("renders", f"{name}_overview_y.png"), "y"))
+            for name in names
+        ]
+    except Exception as error:  # noqa: BLE001 - pictures never fail a solve
+        return {"render_note": f"overview pictures could not be drawn: {error}"}
+    return {"image_path": images[0], "image_paths": images, "rendered_points": names,
+            "render_note": "Overview (air temperature, air speed, streamlines, wall "
+            "temperature) of the baseline point and of the solved point with the largest |dT|."}

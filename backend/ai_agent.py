@@ -221,6 +221,14 @@ Working rules:
   0.95/0.9 -- do it, do not ask for an up/down compromise. The thermometer
   split is applied at prepare_cfd, so prepare a new CFD study after
   changing it.
+- Materials: setup shield_material 'aluminium', 'abs_multicolour' or
+  'petg_multicolour' (white outside, black inside, by the thermometer)
+  fills conductivity and optics in one go; use it for "printed ABS/PETG".
+- cfd plate_radiation 'on' (default) / 'off': long-wave exchange between
+  the shield's own plates across the gaps. Report it per point
+  (plate_radiation). To compare on/off, prepare two CFD studies.
+- The program's own Solve button also draws the overview pictures; the
+  operator can see them on the 3D geometry tab and in Graphics.
 - get_active_geometry finds the STEP open in the Radiation Shield / SPS30
   tab by itself; call it without a path first. Never pass a bare file
   name as step_file_path.

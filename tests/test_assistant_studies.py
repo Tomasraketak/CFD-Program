@@ -502,3 +502,38 @@ def test_overview_and_worst_point_pictures(store, tmp_path, monkeypatch):
 
     pictures = mcp_server._auto_renders("shield", store, shield_workflow, study)
     assert pictures["rendered_points"] == ["DP0"] and Path(pictures["image_path"]).is_file()
+
+
+def test_a_material_preset_fills_the_plates_and_explicit_values_win(isolated_data_root, monkeypatch):
+    import mcp_server
+
+    abs_print = ShieldSetup(shield_material="abs_multicolour")
+    assert abs_print.shield_conductivity_w_mk == pytest.approx(0.17)
+    assert abs_print.optics_orientation == "thermometer"
+    assert abs_print.side_optics()["bottom"] == (0.95, 0.92)
+    assert ShieldSetup(shield_material="abs_multicolour",
+                       shield_conductivity_w_mk=0.3).shield_conductivity_w_mk == 0.3
+    monkeypatch.setattr(mcp_server, "_geometry_image", lambda kind, setup: {})
+    reply = mcp_server.radiation_shield_study(
+        action="evaluate", setup={"shield_material": "petg_multicolour"},
+        conditions=[{"wind_speed_ms": 1.0}],
+    )
+    assert reply["ok"], reply
+    assert reply["applied_setup"]["shield_conductivity_w_mk"] == pytest.approx(0.2)
+    assert reply["applied_setup"]["top_side_solar_absorptivity"] == pytest.approx(0.25)
+
+
+def test_the_shield_tab_material_combo_fills_the_form(store):
+    from gui.main_window import build_application
+    from gui.shield_panel import ShieldStudyPanel
+
+    build_application([])
+    panel = ShieldStudyPanel(store)
+    panel.material.setCurrentIndex(panel.material.findData("abs_multicolour"))
+    setup = panel.study_params().setup
+    assert setup.shield_material == "abs_multicolour"
+    assert setup.shield_conductivity_w_mk == pytest.approx(0.17)
+    assert setup.optics_orientation == "thermometer"
+    assert setup.side_optics()["top"] == pytest.approx((0.25, 0.9))
+    assert panel.cfd_settings().plate_radiation == "on"
+    assert panel.render_after.isChecked()

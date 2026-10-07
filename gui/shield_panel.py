@@ -183,6 +183,18 @@ class ShieldStudyPanel(QtWidgets.QWidget):
         form.addRow("Sky long-wave", self.sky)
         self.albedo = _spin(0.0, 1.0, setup.ground_albedo, 2, 0.05)
         form.addRow("Ground albedo", self.albedo)
+        from core.shield_models import MATERIAL_LABELS
+
+        self.material = QtWidgets.QComboBox()
+        for value, label in MATERIAL_LABELS.items():
+            self.material.addItem(label, value)
+        self.material.setToolTip(
+            "Fills the conductivity and the optics below: aluminium (shiny outside, "
+            "black inside) or a multicolour ABS/PETG print (white outside, black "
+            "inside, facing the thermometer). Edit any value afterwards."
+        )
+        self.material.currentIndexChanged.connect(self._material_changed)
+        form.addRow("Material", self.material)
         self.absorptivity = _spin(0.0, 1.0, setup.shield_solar_absorptivity, 2, 0.05)
         form.addRow("Shield solar absorptivity", self.absorptivity)
         self.emissivity = _spin(0.0, 1.0, setup.shield_emissivity, 2, 0.05)
@@ -296,6 +308,14 @@ class ShieldStudyPanel(QtWidgets.QWidget):
             "faces. Off: every surface facet is an independent wall."
         )
         form.addRow("", self.conduction)
+        self.plate_radiation = QtWidgets.QCheckBox("Radiation between the plates")
+        self.plate_radiation.setChecked(cfd.plate_radiation == "on")
+        self.plate_radiation.setToolTip(
+            "Long-wave exchanged between the shield's own surfaces across the gaps "
+            "(grey, diffuse, view factors from the ray casting). Off: each surface "
+            "radiates only to the sky and the ground."
+        )
+        form.addRow("", self.plate_radiation)
         self.passes = _int_spin(1, 20, cfd.radiation_passes)
         self.passes.setToolTip("Most passes; stops once the shield changes < 0.05 K")
         form.addRow("Passes (max)", self.passes)
@@ -317,6 +337,13 @@ class ShieldStudyPanel(QtWidgets.QWidget):
             "meshes. 'all' solves every one."
         )
         form.addRow("Points to solve now", self.solve_limit)
+        self.render_after = QtWidgets.QCheckBox("Draw overview pictures after solving")
+        self.render_after.setChecked(True)
+        self.render_after.setToolTip(
+            "After the solve, draw air temperature, air speed, streamlines and wall "
+            "temperature of the baseline point and of the worst point (Graphics tab)."
+        )
+        form.addRow("", self.render_after)
         layout.addWidget(group)
 
         # --- CFD point tools ---------------------------------------------------
@@ -508,6 +535,7 @@ class ShieldStudyPanel(QtWidgets.QWidget):
             bottom_side_solar_absorptivity=_optional(self.bottom_absorptivity),
             bottom_side_emissivity=_optional(self.bottom_emissivity),
             optics_orientation=self.optics_orientation.currentData(),
+            shield_material=self.material.currentData(),
             shield_conductivity_w_mk=self.conductivity.value(),
             ventilation_coefficient=self.ventilation.value(),
         )
@@ -541,6 +569,7 @@ class ShieldStudyPanel(QtWidgets.QWidget):
             buoyancy=self.buoyancy.isChecked(),
             radiation_passes=self.passes.value(),
             solid_conduction="on" if self.conduction.isChecked() else "off",
+            plate_radiation="on" if self.plate_radiation.isChecked() else "off",
             iterations_first_pass=self.iter_first.value(),
             iterations_later_passes=self.iter_later.value(),
             radiation_classes=self.classes.value(),
@@ -575,6 +604,9 @@ class ShieldStudyPanel(QtWidgets.QWidget):
         self.optics_orientation.setCurrentIndex(
             max(0, self.optics_orientation.findData(setup.optics_orientation))
         )
+        self.material.blockSignals(True)
+        self.material.setCurrentIndex(max(0, self.material.findData(setup.shield_material)))
+        self.material.blockSignals(False)
         self.conductivity.setValue(setup.shield_conductivity_w_mk)
         self.ventilation.setValue(setup.ventilation_coefficient)
         for name, widgets in self._variable_widgets.items():
@@ -752,6 +784,24 @@ class ShieldStudyPanel(QtWidgets.QWidget):
             "Preparing the CFD cases (mesh, radiation rays, Fluent package) ...",
         )
 
+    def _material_changed(self, *_: Any) -> None:
+        """Put the chosen material's conductivity and optics into the form."""
+        from core.shield_models import MATERIAL_PRESETS
+
+        preset = MATERIAL_PRESETS.get(self.material.currentData())
+        if not preset:
+            return
+        self.conductivity.setValue(preset["shield_conductivity_w_mk"])
+        self.absorptivity.setValue(preset["shield_solar_absorptivity"])
+        self.emissivity.setValue(preset["shield_emissivity"])
+        self.top_absorptivity.setValue(preset["top_side_solar_absorptivity"])
+        self.top_emissivity.setValue(preset["top_side_emissivity"])
+        self.bottom_absorptivity.setValue(preset["bottom_side_solar_absorptivity"])
+        self.bottom_emissivity.setValue(preset["bottom_side_emissivity"])
+        self.optics_orientation.setCurrentIndex(
+            max(0, self.optics_orientation.findData(preset["optics_orientation"]))
+        )
+
     def solve_cfd(self) -> None:
         """Solve the selected study's unsolved design points with SU2."""
         study = self.study_list.currentData()
@@ -764,23 +814,32 @@ class ShieldStudyPanel(QtWidgets.QWidget):
         from backend.runner import SU2Runner
 
         limit = self.solve_limit.value() or None
+        draw = self.render_after.isChecked()
+
+        def job(progress):
+            summary = shield_workflow.solve_cfd(
+                self.store, study, SU2Runner(), progress, max_points=limit
+            )
+            if draw:
+                from backend.study_render import render_solved_study
+
+                progress("Drawing the overview pictures ...")
+                summary["pictures"] = render_solved_study(self.store, "shield", shield_workflow, study)
+            return summary
 
         def done(summary: dict) -> None:
             for failure in summary.get("failures", []):
                 self.append_log(f"FAILED {failure}")
             self.append_log(f"{summary['solved']} of {summary['total']} design points solved")
+            from gui.study_extras import show_pictures
+
+            show_pictures(self, summary.get("pictures"))
             if summary.get("result") is not None:
                 self._show_result(summary["result"])
             elif summary.get("analysis_pending"):
                 self.append_log(summary["analysis_pending"])
 
-        self._start(
-            lambda progress: shield_workflow.solve_cfd(
-                self.store, study, SU2Runner(), progress, max_points=limit
-            ),
-            done,
-            f"Solving the design points of {study} with SU2 ...",
-        )
+        self._start(job, done, f"Solving the design points of {study} with SU2 ...")
 
     def import_csv(self) -> None:
         """Analyse design points solved elsewhere (Fluent, a colleague's PC)."""

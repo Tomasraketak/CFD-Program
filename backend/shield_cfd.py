@@ -536,6 +536,21 @@ class _Occluder:
             result[index] = found.GetNumberOfPoints() > 0
         return result
 
+    def first_hit(self, origins: np.ndarray, directions: np.ndarray) -> np.ndarray:
+        """Index of the triangle each ray hits first, -1 for a free ray."""
+        ends = origins + directions * self.reach
+        found, cells = self._points, self._cells
+        result = np.full(len(origins), -1, dtype=np.int64)
+        for index in range(len(origins)):
+            self._tree.IntersectWithLine(origins[index], ends[index], 1.0e-10, found, cells)
+            count = found.GetNumberOfPoints()
+            if count == 0:
+                continue
+            hits = np.array([found.GetPoint(k) for k in range(count)])
+            nearest = int(np.argmin(np.linalg.norm(hits - origins[index], axis=1)))
+            result[index] = cells.GetId(min(nearest, cells.GetNumberOfIds() - 1))
+        return result
+
     def crossings(self, origins: np.ndarray, direction: np.ndarray) -> np.ndarray:
         """How many times each ray crosses the surface."""
         counts = np.empty(len(origins), dtype=np.int64)
@@ -591,6 +606,62 @@ class RadiationFacets:
     ground_view: np.ndarray  # (F,) view factor to the ground / roof
     # (F,) True where the facet looks towards the thermometer (into the gaps).
     toward: np.ndarray | None = None
+    # Long-wave exchange between the shield's own surfaces, on the ray
+    # surface (coarse patches): view factors, which patch each facet
+    # belongs to, and the patch areas.
+    exchange: object | None = None
+    patch_of: np.ndarray | None = None
+    patch_areas: np.ndarray | None = None
+
+    def set_exchange(self, matrix, patch_of: np.ndarray, patch_areas: np.ndarray) -> None:
+        self.exchange = matrix
+        self.patch_of = np.asarray(patch_of, dtype=np.int64)
+        self.patch_areas = np.asarray(patch_areas, dtype=float)
+
+    def has_exchange(self) -> bool:
+        return self.exchange is not None and self.patch_of is not None
+
+    def surroundings_view(self, plates: bool) -> np.ndarray:
+        """Share of each facet's hemisphere it emits through, -.
+
+        Without the exchange only the sky and ground take its emission
+        (the rest of the hemisphere sees the shield, treated as a mirror);
+        with it the facet emits into the whole hemisphere and gets back
+        what the other surfaces send (:meth:`incoming`).
+        """
+        if plates and self.has_exchange():
+            return np.ones(len(self.areas))
+        return self.sky_view + self.ground_view
+
+    def incoming(self, setup: ShieldSetup, wall_temp_k: np.ndarray) -> np.ndarray:
+        """Long-wave each facet absorbs from the other shield surfaces, W/m^2.
+
+        Grey diffuse surfaces: the radiosity of every patch,
+        ``J = e sigma T^4 + (1 - e) F J``, is solved on the ray surface, and
+        a facet absorbs ``e F J`` from the patches it sees.
+        """
+        from scipy.sparse import diags, identity
+        from scipy.sparse.linalg import spsolve
+
+        if not self.has_exchange():
+            return np.zeros(len(self.areas))
+        _, emissivity = self.optics(setup)
+        patches = len(self.patch_areas)
+        weight = np.bincount(self.patch_of, weights=self.areas, minlength=patches)
+        empty = weight <= 0.0
+        weight[empty] = 1.0
+
+        def to_patches(values: np.ndarray) -> np.ndarray:
+            mean = np.bincount(self.patch_of, weights=values * self.areas, minlength=patches) / weight
+            mean[empty] = float(np.sum(values * self.areas) / np.sum(self.areas))
+            return mean
+
+        e_patch = to_patches(emissivity)
+        t_patch = to_patches(np.asarray(wall_temp_k, dtype=float) ** 4) ** 0.25
+        system = identity(patches, format="csr") - diags(1.0 - e_patch) @ self.exchange
+        radiosity = spsolve(system.tocsc(), e_patch * STEFAN_BOLTZMANN * t_patch**4)
+        irradiation = np.asarray(self.exchange @ radiosity).ravel()
+        return emissivity * irradiation[self.patch_of]
 
     def optics(self, setup: ShieldSetup) -> tuple[np.ndarray, np.ndarray]:
         """Per-facet (solar absorptivity, emissivity) from which way it faces.
@@ -626,13 +697,14 @@ class RadiationFacets:
             + emissivity * bottom * self.ground_view
         )
 
-    def emitted(self, setup: ShieldSetup, wall_temp_k: np.ndarray) -> np.ndarray:
-        """Emission lost to the surroundings per facet, W/m^2."""
+    def emitted(self, setup: ShieldSetup, wall_temp_k: np.ndarray, plates: bool = False) -> np.ndarray:
+        """Emission per facet, W/m^2: to the surroundings, or (with ``plates``)
+        into the whole hemisphere, the shield's own surfaces included."""
         return (
             self.optics(setup)[1]
             * STEFAN_BOLTZMANN
             * wall_temp_k**4
-            * (self.sky_view + self.ground_view)
+            * self.surroundings_view(plates)
         )
 
 
@@ -661,7 +733,11 @@ def radiation_facets(
         sunlit[facing] = (~blocked).astype(float)
 
     if ray_surface is None:
-        sky, ground = _view_factors(origins, normals, occluder, rays_per_face)
+        sky, ground, hits = _view_factors(origins, normals, occluder, rays_per_face, True)
+        exchange = _exchange_matrix(hits, len(triangles))
+        facets = RadiationFacets(areas, normals, sunlit, sky, ground)
+        facets.set_exchange(exchange, np.arange(len(triangles)), areas)
+        return facets
     else:
         from scipy.spatial import cKDTree
 
@@ -671,15 +747,40 @@ def radiation_facets(
             np.cross(coarse[:, 1] - coarse[:, 0], coarse[:, 2] - coarse[:, 0]), axis=1
         )
         coarse_origins = _ray_origins(coarse, coarse_normals, coarse_areas)
-        coarse_sky, coarse_ground = _view_factors(
-            coarse_origins, coarse_normals, occluder, rays_per_face
+        coarse_sky, coarse_ground, hits = _view_factors(
+            coarse_origins, coarse_normals, occluder, rays_per_face, True
         )
         # Offsetting along the normal keeps the two faces of a thin plate apart.
         lift = 0.01
         tree = cKDTree(coarse.mean(axis=1) + lift * coarse_normals)
         _, nearest = tree.query(triangles.mean(axis=1) + lift * normals)
         sky, ground = coarse_sky[nearest], coarse_ground[nearest]
-    return RadiationFacets(areas, normals, sunlit, sky, ground)
+    facets = RadiationFacets(areas, normals, sunlit, sky, ground)
+    if ray_surface is not None:
+        facets.set_exchange(_exchange_matrix(hits, len(coarse)), nearest, coarse_areas)
+    return facets
+
+
+def _exchange_matrix(hits: np.ndarray, count: int):
+    """Sparse view factors F[i, j]: share of i's rays that land on j."""
+    from scipy.sparse import coo_matrix
+
+    rows = np.repeat(np.arange(len(hits)), hits.shape[1])
+    cols = hits.ravel()
+    keep = cols >= 0
+    data = np.full(int(keep.sum()), 1.0 / hits.shape[1])
+    return coo_matrix((data, (rows[keep], cols[keep])), shape=(len(hits), count)).tocsr()
+
+
+def _exchange_arrays(facets: "RadiationFacets") -> dict:
+    if not facets.has_exchange():
+        return {}
+    matrix = facets.exchange.tocsr()
+    return {
+        "exchange_data": matrix.data, "exchange_indices": matrix.indices,
+        "exchange_indptr": matrix.indptr, "exchange_shape": np.array(matrix.shape),
+        "patch_of": facets.patch_of, "patch_areas": facets.patch_areas,
+    }
 
 
 def facets_toward(triangles: np.ndarray, normals: np.ndarray, point) -> np.ndarray:
@@ -694,20 +795,34 @@ def _ray_origins(triangles: np.ndarray, normals: np.ndarray, areas: np.ndarray) 
 
 
 def _view_factors(
-    origins: np.ndarray, normals: np.ndarray, occluder: "_Occluder", rays: int
-) -> tuple[np.ndarray, np.ndarray]:
-    """Fractions of each facet's cosine-weighted hemisphere open to sky and ground."""
+    origins: np.ndarray, normals: np.ndarray, occluder: "_Occluder", rays: int,
+    with_hits: bool = False,
+):
+    """Fractions of each facet's cosine-weighted hemisphere open to sky and ground.
+
+    With ``with_hits`` also the occluder triangle every blocked ray lands on
+    (``(F, rays)``, -1 for free rays): the facet-to-facet view factors for
+    the radiation the plates exchange with each other.
+    """
     local = _hemisphere_directions(rays)
     sky = np.zeros(len(origins))
     ground = np.zeros(len(origins))
+    hits = np.full((len(origins), len(local)), -1, dtype=np.int64) if with_hits else None
     for start in range(0, len(origins), 256):
         stop = min(start + 256, len(origins))
         directions = np.concatenate([local @ _frame(normals[i]).T for i in range(start, stop)])
         starts = np.repeat(origins[start:stop], len(local), axis=0)
-        free = ~occluder.blocked(starts, directions).reshape(stop - start, len(local))
+        if with_hits:
+            landed = occluder.first_hit(starts, directions).reshape(stop - start, len(local))
+            hits[start:stop] = landed
+            free = landed < 0
+        else:
+            free = ~occluder.blocked(starts, directions).reshape(stop - start, len(local))
         up = directions[:, 2].reshape(stop - start, len(local)) > 0.0
         sky[start:stop] = np.mean(free & up, axis=1)
         ground[start:stop] = np.mean(free & ~up, axis=1)
+    if with_hits:
+        return sky, ground, hits
     return sky, ground
 
 
@@ -1006,6 +1121,15 @@ def load_study(study_dir: Path) -> tuple[ShieldSetup, ShieldCfdSettings, Prepare
         data["areas"], data["normals"], data["sunlit"], data["sky_view"], data["ground_view"],
         data["toward"] if "toward" in data.files else None,
     )
+    if "exchange_data" in data.files:
+        from scipy.sparse import csr_matrix
+
+        shape = tuple(int(v) for v in data["exchange_shape"])
+        facets.set_exchange(
+            csr_matrix((data["exchange_data"], data["exchange_indices"], data["exchange_indptr"]),
+                       shape=shape),
+            data["patch_of"], data["patch_areas"],
+        )
     prepared = PreparedMesh(
         mesh_path=study_dir / MESH_FILENAME,
         classes=data["classes"],
@@ -1067,6 +1191,7 @@ def prepare_study(
         areas=facets.areas, normals=facets.normals, sunlit=facets.sunlit,
         sky_view=facets.sky_view, ground_view=facets.ground_view,
         toward=facets.toward, classes=prepared.classes,
+        **_exchange_arrays(facets),
     )
     sunlit_area = float(np.sum(facets.areas * facets.sunlit * (facets.normals[:, 2] > 0)))
     say(
@@ -1121,7 +1246,8 @@ def _wall_temperatures(
 
 
 def _marker_fluxes(
-    setup: ShieldSetup, prepared: PreparedMesh, absorbed: np.ndarray, wall: np.ndarray
+    setup: ShieldSetup, prepared: PreparedMesh, absorbed: np.ndarray, wall: np.ndarray,
+    plates: bool = False,
 ) -> dict[str, float | tuple[float, float]]:
     """Radiation boundary condition per marker.
 
@@ -1134,9 +1260,12 @@ def _marker_fluxes(
     per marker, or a plain heat flux for a marker that sees no surroundings.
     """
     facets = prepared.facets
-    view = facets.sky_view + facets.ground_view
+    view = facets.surroundings_view(plates)
     h_r = 4.0 * facets.optics(setup)[1] * STEFAN_BOLTZMANN * view * wall**3
-    net = absorbed - facets.emitted(setup, wall)
+    # What the other plates send is taken at the last pass's wall
+    # temperature; the facet's own emission stays implicit.
+    received = facets.incoming(setup, wall) if plates else 0.0
+    net = absorbed + received - facets.emitted(setup, wall, plates)
     conditions: dict[str, float | tuple[float, float]] = {}
     for label in range(prepared.class_count):
         chosen = prepared.classes == label
@@ -1185,7 +1314,13 @@ def run_design_point(
     wall_changes: list[float] = []
     behaviour: dict = {"residual_drop_orders": None, "oscillating": False}
     say = on_line or (lambda _line: None)
-    coupling = _ConjugateCoupling.create(study_dir, setup, cfd, prepared, absorbed, lumped)
+    plates = cfd.plate_radiation == "on" and prepared.facets.has_exchange()
+    if cfd.plate_radiation == "on" and not plates:
+        notes.append("radiation between the plates is not included: this study was "
+                      "prepared before it existed; prepare it again")
+    coupling = _ConjugateCoupling.create(
+        study_dir, setup, cfd, prepared, absorbed, lumped, plates
+    )
     if coupling is not None:
         say(f"{point.name}: conjugate heat transfer -- conduction in the shield plates")
         wall = coupling.target
@@ -1194,7 +1329,7 @@ def run_design_point(
         if coupling is not None:
             fluxes = coupling.markers(case_dir / MESH_FILENAME, cfd.radiation_classes)
         else:
-            fluxes = _marker_fluxes(setup, prepared, absorbed, wall)
+            fluxes = _marker_fluxes(setup, prepared, absorbed, wall, plates)
         restart = index > 0
         if restart:
             shutil.copyfile(case_dir / "restart_flow.dat", case_dir / "solution_flow.dat")
@@ -1306,6 +1441,7 @@ def run_design_point(
                 "oscillating": result.oscillating,
                 "mesh_resolution": cfd.mesh_resolution,
                 "conduction": coupling is not None,
+                "plate_radiation": plates,
                 "solid_temperature_k": (
                     None if coupling is None else coupling.body_temperatures()
                 ),
@@ -1366,7 +1502,8 @@ class _ConjugateCoupling:
     next air solve.
     """
 
-    def __init__(self, conduction, solid, prepared, absorbed, emissivity, view, h_air, start):
+    def __init__(self, conduction, solid, prepared, absorbed, emissivity, view, h_air, start,
+                 setup=None, plates=False):
         from backend.shield_conduction import match_surfaces
 
         facet_centroids = prepared.points[prepared.wall_nodes].mean(axis=1)
@@ -1385,9 +1522,11 @@ class _ConjugateCoupling:
         self.nodes = np.full(len(conduction.points), start)
         self.ambient = start
         self.target = np.full(count, start)
+        self.setup = setup
+        self.plates = plates
 
     @classmethod
-    def create(cls, study_dir, setup, cfd, prepared, absorbed, lumped):
+    def create(cls, study_dir, setup, cfd, prepared, absorbed, lumped, plates=False):
         from backend.shield_conduction import SolidConduction, load_solid
 
         if cfd.solid_conduction != "on":
@@ -1397,10 +1536,10 @@ class _ConjugateCoupling:
             return None
         conduction = SolidConduction(solid["points"], solid["tets"], setup.shield_conductivity_w_mk)
         _, emissivity = prepared.facets.optics(setup)
-        view = prepared.facets.sky_view + prepared.facets.ground_view
+        view = prepared.facets.surroundings_view(plates)
         coupling = cls(
             conduction, solid, prepared, absorbed, emissivity, view,
-            lumped.external_h_w_m2k, lumped.shield_temp_k,
+            lumped.external_h_w_m2k, lumped.shield_temp_k, setup, plates,
         )
         ambient = setup.ambient_temp_k()
         # The first guess of the air side: the lumped model's film
@@ -1414,8 +1553,12 @@ class _ConjugateCoupling:
         from backend.shield_conduction import SolidSurfaceState
 
         m = self.to_solid
+        absorbed = self.absorbed
+        if self.plates:
+            # The other plates' long-wave at the current surface temperature.
+            absorbed = absorbed + self.prepared.facets.incoming(self.setup, self.target)
         state = SolidSurfaceState(
-            absorbed=self.absorbed[m], emissivity=self.emissivity[m], view=self.view[m],
+            absorbed=absorbed[m], emissivity=self.emissivity[m], view=self.view[m],
             q_air=self.q_air[m], t_air_wall=self.t_wall[m], h_air=self.h_air[m],
         )
         self.nodes = self.conduction.solve(state, float(np.mean(self.target)))

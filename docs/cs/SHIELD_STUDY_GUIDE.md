@@ -194,6 +194,24 @@ použije při přípravě CFD studie, takže po změně připravte novou. Analyt
 model si s okolím vyměňuje teplo jen vnějškem, vnitřní optika v něm ΔT
 nemění.
 
+**Materiál.** Pole *Material* najednou vyplní vodivost i optiku obou
+stran (setup `shield_material`): *Aluminium* (k 167 W/(m K), venku lesklý
+0,15 / 0,1, uvnitř černý 0,95 / 0,9), *ABS print* (k 0,17, venku bílé ABS
+0,25 / 0,90, uvnitř černé ABS 0,95 / 0,92) a *PETG print* (k 0,20, stejné
+barvy). Strany se dělí podle teploměru. Hodnoty lze potom upravit.
+
+**Záření mezi deskami** (volba CFD `plate_radiation`, výchozí zapnuto).
+Desky si přes mezery vyměňují dlouhovlnné záření: šedé difúzní plochy,
+view faktory ze stejného vrhání paprsků jako u oblohy a země, radiozitní
+bilance v každém průchodu. Vypnuto: každá plocha září jen na oblohu a zem
+a část výhledu zakrytá jinými deskami funguje jako zrcadlo. Studie
+připravené dřív je třeba připravit znovu.
+
+**Obrázky po výpočtu.** *Solve CFD design points* nakreslí přehled
+(teplota vzduchu, rychlost se šipkami, proudnice, teplota stěn) výchozího
+bodu a bodu s největším |ΔT| a ukáže ho na záložce 3D geometrie a v
+Graphics; vypne se odškrtnutím *Draw overview pictures after solving*.
+
 **Asistent pracuje se štítem, který máte otevřený.** To, co ukazuje tato
 záložka — váš STEP, optika, rozsahy — je výchozí bod nástroje asistenta,
 když nejmenujete existující studii; každá odpověď to uvádí
@@ -764,8 +782,9 @@ naměřenou chybu s ΔT modelu pro stejné podmínky (vítr, slunce).
 - Nestacionární jevy (poryvy větru, přechodné mraky).
 - Slunce šikmo (model má slunce přesně shora) — pro ranní/večerní slunce
   změňte *Sun Direction Vector* ve Fluentu.
-- V programu: vzájemné záření mezi deskami (každá ploška vidí jen oblohu a
-  zem); vedení tepla v deskách se počítá (viz 6.1), pokud ho nevypnete.
+- V programu: záření mezi deskami je šedé a difúzní s view faktory z
+  vrhání paprsků (lze vypnout, `plate_radiation`); vedení tepla v deskách
+  se počítá (viz 6.1), pokud ho nevypnete.
 
 ---
 
@@ -813,8 +832,8 @@ odstup od střechy.“
 | Model turbulence | SST k-ω (SU2 nemá standard k-ε) | standard k-ε, Enhanced Wall Treatment |
 | Slunce | vlastní paprsky (stínění mezi deskami) | Solar Ray Tracing |
 | Tepelné záření | paprsky: výhled na oblohu a zem, linearizované vyzařování | Discrete Ordinates |
-| Záření mezi deskami navzájem | zanedbáno (desky mají podobnou teplotu) | spočteno |
-| Vedení tepla v deskách | ne (každá strana zvlášť) | ne (heat flux 0), nebo ano s pevnou zónou |
+| Záření mezi deskami navzájem | radiozita, šedé difúzní plochy (`plate_radiation`) | spočteno |
+| Vedení tepla v deskách | ano, konjugovaný MKP (`solid_conduction`) | ne (heat flux 0), nebo ano s pevnou zónou |
 | Limit sítě | žádný | ~1 milion buněk (Student) |
 | Design pointy | automaticky, i přes noc skriptem | Parameter Set → Update All Design Points |
 | Response surface + Monte Carlo | v programu | v programu (po importu) nebo DesignXplorer |

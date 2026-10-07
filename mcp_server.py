@@ -1307,40 +1307,15 @@ def _study_extra_action(
 
 
 def _worst_point(reports: list[dict]) -> str:
-    """The solved point with the largest |objective| (dT for a shield)."""
-    def size(report: dict) -> float:
-        for key in ("delta_t_k", "objective", "deposition_fraction", "penetration"):
-            value = report.get(key)
-            if isinstance(value, (int, float)):
-                return abs(float(value))
-        return -1.0
+    from backend.study_render import worst_point
 
-    return max(reports, key=size)["name"]
+    return worst_point(reports)
 
 
 def _auto_renders(kind: str, store: Any, workflow: Any, study_id: str) -> dict[str, Any]:
-    """Overview pictures of the baseline and the worst solved point, after a solve."""
-    from backend.study_render import render_study_point
+    from backend.study_render import render_solved_study
 
-    try:
-        reports = workflow.point_reports(store, study_id)
-        if not reports:
-            return {}
-        folder = store.get(study_id).path("cfd")
-        names = [reports[0]["name"]]
-        worst = _worst_point(reports)
-        if worst not in names:
-            names.append(worst)
-        images = [
-            str(render_study_point(folder, kind, name, "overview",
-                                   store.get(study_id).path("renders", f"{name}_overview_y.png"), "y"))
-            for name in names
-        ]
-    except Exception as error:  # noqa: BLE001 - pictures never fail a solve
-        return {"render_note": f"overview pictures could not be drawn: {error}"}
-    return {"image_path": images[0], "image_paths": images, "rendered_points": names,
-            "render_note": "Overview (air temperature, air speed, streamlines, wall "
-            "temperature) of the baseline point and of the solved point with the largest |dT|."}
+    return render_solved_study(store, kind, workflow, study_id)
 
 
 def _study_sweep(
@@ -1508,7 +1483,15 @@ def _shield_params(
     from core.shield_models import ShieldStudyParams
 
     data = base.model_dump(mode="json") if base is not None else ShieldStudyParams().model_dump(mode="json")
-    data["setup"].update(setup or {})
+    setup = dict(setup or {})
+    from core.shield_models import MATERIAL_PRESETS
+
+    preset = MATERIAL_PRESETS.get(setup.get("shield_material") or "")
+    if preset:
+        # A material named here sets its properties over the base study's;
+        # anything given alongside it still wins.
+        setup = {**preset, **setup}
+    data["setup"].update(setup)
     for name, overrides in (variables or {}).items():
         if name not in ("wind_speed_ms", "solar_flux_w_m2", "bottom_flux_w_m2"):
             raise ValueError(

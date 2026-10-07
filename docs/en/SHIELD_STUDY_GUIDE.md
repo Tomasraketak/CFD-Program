@@ -193,6 +193,27 @@ CFD study is prepared, so prepare a new one after changing it. The
 analytic model only exchanges heat with the surroundings through the
 outside, so there the inside optics do not change ΔT.
 
+**Material.** The *Material* combo fills the conductivity and both sides'
+optics at once (setup `shield_material`): *Aluminium* (k 167 W/(m K),
+shiny 0.15 / 0.1 outside, black 0.95 / 0.9 inside), *ABS print* (k 0.17,
+white ABS 0.25 / 0.90 outside, black ABS 0.95 / 0.92 inside) and *PETG
+print* (k 0.20, the same colours). The two sides are split by the
+thermometer. Any value can be edited afterwards.
+
+**Radiation between the plates** (CFD option, `plate_radiation`, on by
+default). The plates exchange long-wave radiation across the gaps: grey
+diffuse surfaces, view factors from the same ray casting as the sky and
+ground, the radiosity balance solved every pass. Off, each surface
+radiates only to the sky and the ground and the part of its view filled by
+other plates acts as a mirror. Prepare the CFD study again for studies made
+before this option existed.
+
+**Pictures after a solve.** *Solve CFD design points* draws an overview
+(air temperature, air speed with arrows, streamlines, wall temperature) of
+the baseline point and of the point with the largest |ΔT| and shows it on
+the 3D geometry tab and in Graphics; untick *Draw overview pictures after
+solving* to skip it.
+
 **The assistant uses the shield you have open.** Whatever this tab shows —
 your STEP, the optics, the ranges — is what the assistant's study tool
 starts from when you do not name a study; every reply says so
@@ -766,9 +787,9 @@ Compare the measured error with the model's ΔT for the same conditions
 - Unsteady effects (gusts, passing clouds).
 - Low sun (the model has the sun straight overhead) — for morning or
   evening sun change the *Sun Direction Vector* in Fluent.
-- In the program: radiation exchanged between the plates themselves (each
-  facet sees only the sky and the ground); conduction within the plates is
-  solved (see 6.1) unless switched off.
+- In the program: radiation between the plates is grey and diffuse with
+  ray-cast view factors (switchable, `plate_radiation`), and conduction
+  within the plates is solved (see 6.1) unless switched off.
 
 ---
 
@@ -816,8 +837,8 @@ clearance from the roof would help."
 | Turbulence model | SST k-ω (SU2 has no standard k-ε) | standard k-ε, Enhanced Wall Treatment |
 | Sun | its own rays (shading between plates) | Solar Ray Tracing |
 | Thermal radiation | rays: view of sky and ground, linearised emission | Discrete Ordinates |
-| Plate-to-plate radiation | neglected (plates at similar temperature) | computed |
-| Conduction in the plates | no (each side on its own) | no (heat flux 0), or yes with a solid zone |
+| Plate-to-plate radiation | radiosity, grey diffuse (`plate_radiation`) | computed |
+| Conduction in the plates | yes, conjugate FEM (`solid_conduction`) | no (heat flux 0), or yes with a solid zone |
 | Mesh limit | none | ~1 million cells (Student) |
 | Design points | automatic, overnight by script | Parameter Set → Update All Design Points |
 | Response surface + Monte Carlo | in the program | in the program (after import) or DesignXplorer |

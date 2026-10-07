@@ -410,3 +410,19 @@ def wire_cfd_tools(panel, kind: str, tools: CfdPointTools) -> None:
     tools.worst_button.clicked.connect(lambda: add(True))
     panel.refresh_cfd_points = refresh_points
     refresh_points()
+
+
+def show_pictures(panel, pictures: dict | None) -> None:
+    """Show the overview pictures drawn after a solve, and list them in the log."""
+    if not pictures:
+        return
+    paths = pictures.get("image_paths") or []
+    if paths:
+        panel.geometry_view.show_image(paths[0])
+        panel.result_tabs.setCurrentWidget(panel.geometry_view)
+        for path in paths:
+            panel.append_log(f"Overview picture: {path}")
+        if hasattr(panel, "refresh_cfd_points"):
+            panel.refresh_cfd_points()
+    elif pictures.get("render_note"):
+        panel.append_log(pictures["render_note"])

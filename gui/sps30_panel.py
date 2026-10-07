@@ -231,6 +231,9 @@ class Sps30StudyPanel(QtWidgets.QWidget):
         self.solve_limit = _int_spin(0, 500, 0)
         self.solve_limit.setSpecialValueText("all")
         form.addRow("Points to solve now", self.solve_limit)
+        self.render_after = QtWidgets.QCheckBox("Draw overview pictures after solving")
+        self.render_after.setChecked(True)
+        form.addRow("", self.render_after)
         layout.addWidget(group)
 
         from gui.study_extras import CfdPointTools
@@ -580,18 +583,30 @@ class Sps30StudyPanel(QtWidgets.QWidget):
         from backend.runner import SU2Runner
 
         limit = self.solve_limit.value() or None
+        draw = self.render_after.isChecked()
+
+        def job(progress):
+            summary = sps30_workflow.solve_cfd(self.store, study, SU2Runner(), progress, limit)
+            if draw:
+                from backend.study_render import render_solved_study
+
+                progress("Drawing the overview pictures ...")
+                summary["pictures"] = render_solved_study(self.store, "sps30", sps30_workflow, study)
+            return summary
 
         def done(summary: dict) -> None:
+            from gui.study_extras import show_pictures
+
             for failure in summary.get("failures", []):
                 self.append_log(f"FAILED {failure}")
             self.append_log(f"{summary['solved']} of {summary['total']} design points solved")
+            show_pictures(self, summary.get("pictures"))
             if summary.get("result") is not None:
                 self._show(summary["result"])
             elif summary.get("analysis_pending"):
                 self.append_log(summary["analysis_pending"])
 
-        self._start(lambda progress: sps30_workflow.solve_cfd(self.store, study, SU2Runner(), progress, limit),
-                    done, f"Solving the design points of {study} ...")
+        self._start(job, done, f"Solving the design points of {study} ...")
 
     def import_csv(self) -> None:
         path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Solved design points", "", "CSV files (*.csv)")
