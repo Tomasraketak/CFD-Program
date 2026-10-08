@@ -102,6 +102,62 @@ def _combined_h(forced: float, natural: float) -> float:
     return (forced**3 + natural**3) ** (1.0 / 3.0)
 
 
+PLATE_LENGTH_M = 2.0
+
+
+def plate_temperature(setup, wind_speed_ms: float, solar_flux_w_m2: float) -> float:
+    """Steady temperature of the sun-heated sheet under the shield, K.
+
+    ``a S + e L_sky = e sigma T^4 + h (T - T_air) * sides``; h is the flat-plate
+    forced convection over the sheet's length blended with natural
+    convection, sides = 1 (insulated underside) or 2 (open sheet).
+    """
+    air = setup.ambient_temp_k()
+    state = isa_state(0.0)
+    density = state.pressure_pa / (R_SPECIFIC_AIR * air)
+    length = min(PLATE_LENGTH_M, setup.domain_size_m[0])
+    forced = _forced_h(wind_speed_ms, length, density, state.viscosity_pa_s)
+    sides = 1.0 if setup.plate_underside == "insulated" else 2.0
+    gain = setup.plate_solar_absorptivity * solar_flux_w_m2 + setup.plate_emissivity * setup.sky_flux_w_m2()
+
+    def residual(temperature: float) -> float:
+        h = _combined_h(forced, _natural_h(temperature - air))
+        return gain - setup.plate_emissivity * STEFAN_BOLTZMANN * temperature**4 - h * (temperature - air) * sides
+
+    low, high = air - 60.0, air + 150.0
+    for _ in range(100):
+        middle = 0.5 * (low + high)
+        if residual(middle) > 0.0:
+            low = middle
+        else:
+            high = middle
+    return 0.5 * (low + high)
+
+
+def bottom_state(setup, wind_speed_ms: float, solar_flux_w_m2: float,
+                 bottom_flux_w_m2: float) -> tuple[float, float | None, float]:
+    """What the bottom does at one condition.
+
+    Returns the upward long-wave flux, the floor wall temperature (None when
+    the floor is not a wall) and the solar albedo of the bottom.
+    """
+    if setup.bottom_mode is BottomMode.HEATED_PLATE:
+        plate = plate_temperature(setup, wind_speed_ms, solar_flux_w_m2)
+        flux = (setup.plate_emissivity * STEFAN_BOLTZMANN * plate**4
+                + (1.0 - setup.plate_emissivity) * setup.sky_flux_w_m2())
+        return flux, plate, 1.0 - setup.plate_solar_absorptivity
+    if setup.bottom_mode is BottomMode.ROOF_TEMPERATURE:
+        return bottom_flux_w_m2, setup.roof_temperature_for(bottom_flux_w_m2), setup.ground_albedo
+    return bottom_flux_w_m2, None, setup.ground_albedo
+
+
+def shield_base_clearance(setup) -> float:
+    """Height of the shield's bottom above the domain floor, m."""
+    if setup.shield_clearance_m is not None:
+        return setup.shield_clearance_m
+    return 0.5 * (setup.domain_size_m[2] - setup.shield_size_m[2])
+
+
 class ShieldAnalyticModel:
     """Lumped energy balance of a louvred shield round a thermometer.
 
@@ -146,7 +202,10 @@ class ShieldAnalyticModel:
             # other and the thermometer, which the model does not resolve.
             (a_bottom, e_bottom) = (a_side, e_side) = optics["top"]
         sky = setup.sky_flux_w_m2()
-        reflected = setup.ground_albedo * solar_flux_w_m2
+        bottom_flux_w_m2, floor, albedo = bottom_state(
+            setup, wind_speed_ms, solar_flux_w_m2, bottom_flux_w_m2
+        )
+        reflected = albedo * solar_flux_w_m2
 
         # The roof looks up (sun and sky), the floor down (ground and its
         # reflection); a shiny-top, black-bottom plate gets each side's
@@ -166,7 +225,7 @@ class ShieldAnalyticModel:
         inner_speed = setup.ventilation_coefficient * wind_speed_ms
         forced_in = _forced_h(inner_speed, self.length, density, self.viscosity)
         mass_flow = density * inner_speed * self.flow_area
-        inlet_warming = self._inlet_warming(wind_speed_ms, density, bottom_flux_w_m2)
+        inlet_warming = self._inlet_warming(wind_speed_ms, density, floor)
         air_in = ambient + inlet_warming
 
         def residual(shield: float) -> tuple[float, float, float, float]:
@@ -211,20 +270,20 @@ class ShieldAnalyticModel:
         """T_monitor - T_inlet for one condition, K."""
         return self.solve(wind_speed_ms, solar_flux_w_m2, bottom_flux_w_m2).delta_t_k
 
-    def _inlet_warming(self, wind: float, density: float, bottom_flux: float) -> float:
-        """Warming of the air reaching the shield by a hot roof below it.
+    def _inlet_warming(self, wind: float, density: float, roof: float | None) -> float:
+        """Warming of the air reaching the shield by a hot floor below it.
 
-        Only in roof mode: the thermal boundary layer grown over the roof from
-        the inlet to the shield, against the height of the shield's base.
+        Only with a roof or heated plate: the thermal boundary layer grown
+        over it from the inlet to the shield, against the height of the
+        shield's base.
         """
         setup = self.setup
-        if setup.bottom_mode is not BottomMode.ROOF_TEMPERATURE:
+        if roof is None:
             return 0.0
-        roof = setup.roof_temperature_for(bottom_flux)
         run = 0.5 * setup.domain_size_m[0]
-        reynolds = max(density * wind * run / self.viscosity, 1.0)
+        reynolds = max(density * max(wind, 1e-3) * run / self.viscosity, 1.0)
         layer = 5.0 * run / math.sqrt(reynolds) / PRANDTL_AIR ** (1.0 / 3.0)
-        clearance = 0.5 * (setup.domain_size_m[2] - setup.shield_size_m[2])
+        clearance = shield_base_clearance(setup)
         return (roof - setup.ambient_temp_k()) * math.exp(-clearance / max(layer, 1e-6))
 
 

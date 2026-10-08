@@ -231,6 +231,11 @@ def evaluate_conditions(setup, conditions) -> list[dict]:
         if setup.bottom_mode is BottomMode.ROOF_TEMPERATURE:
             row["roof_temperature_k"] = setup.roof_temperature_for(bottom)
             row["inlet_warming_k"] = balance.inlet_warming_k
+        elif setup.bottom_mode is BottomMode.HEATED_PLATE:
+            from backend.shield_study import plate_temperature
+
+            row["plate_temperature_k"] = plate_temperature(setup, wind, solar)
+            row["inlet_warming_k"] = balance.inlet_warming_k
         rows.append(row)
     return rows
 

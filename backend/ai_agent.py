@@ -229,6 +229,12 @@ Working rules:
   asks for 0 or a reply carries sky_warning, say so. Suggested scenarios:
   summer day (solar 900-1000, sky 320-340, ground 420-480) and
   conservative clear sky (sky 280).
+- A shield over a sun-heated sheet / roof: setup bottom_mode
+  'heated_plate' with shield_clearance_m (e.g. 0.04), plate_solar_absorptivity
+  (grey paint 0.65), plate_emissivity (0.9), plate_underside
+  'insulated'|'open'. The sheet temperature is solved per point from its
+  own balance (evaluate rows give plate_temperature_k and inlet_warming_k;
+  CFD points give floor_temperature_k); the bottom flux variable is unused.
 - Materials: setup shield_material 'aluminium', 'abs_multicolour' or
   'petg_multicolour' (white outside, black inside, by the thermometer)
   fills conductivity and optics in one go; use it for "printed ABS/PETG".

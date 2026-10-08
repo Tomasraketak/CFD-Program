@@ -215,6 +215,20 @@ comes out strongly negative. Below 220 W/m² the form shows the value in red
 and every result carries a warning (`sky_warning`, a CFD point note).
 A realistic summer-day test: solar 900–1000, sky 320–340, ground 420–480 W/m².
 
+**Heated plate under the shield** (*Bottom: Heated plate*, setup
+`bottom_mode: "heated_plate"`). The domain floor is a sheet heated by the
+sun — e.g. a grey-painted aluminium sheet on a roof. Its temperature is
+solved at every wind and sun from its own balance,
+α_p S + ε_p L↓ = ε_p σ T⁴ + h (T − T_air)·(1 or 2 sides), with h the flat-plate
+forced convection over its 2 m length blended with natural convection.
+The floor is then held at that temperature in SU2, so the warm boundary
+layer that grows over the sheet and reaches the shield is solved; the
+shield receives the sheet's long-wave (ε_p σ T⁴ + (1 − ε_p) L↓) and the sun it
+reflects ((1 − α_p) S). *Shield above floor* (`shield_clearance_m`) sets the
+gap to the shield's base, e.g. 0.04 m. Defaults: α_p 0.65, ε_p 0.90
+(grey paint), underside insulated (the hotter case). Not modelled: the
+shield's shadow on the sheet and the sheet's cooler leading edge.
+
 **Material.** The *Material* combo fills the conductivity and both sides'
 optics at once (setup `shield_material`): *Aluminium* (k 167 W/(m K),
 shiny 0.15 / 0.1 outside, black 0.95 / 0.9 inside), *ABS print* (k 0.17,

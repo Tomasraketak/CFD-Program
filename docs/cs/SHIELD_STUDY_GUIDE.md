@@ -206,6 +206,19 @@ zataženo (N 1), letní den 330, konzervativní jasno 280, suchá jasná noc
 výsledky nesou varování (`sky_warning`, poznámka u CFD bodu). Realistický
 letní test: slunce 900–1000, obloha 320–340, terén 420–480 W/m².
 
+**Vyhřívaný plech pod štítem** (*Bottom: Heated plate*, setup
+`bottom_mode: "heated_plate"`). Podlaha domény je plech ohřívaný sluncem —
+např. šedě natřený hliník na střeše. Jeho teplota se pro každý vítr a
+slunce spočte z jeho vlastní bilance α_p S + ε_p L↓ = ε_p σ T⁴ + h (T −
+T_vzduch)·(1 nebo 2 strany), kde h je nucená konvekce přes 2 m dlouhou
+desku kombinovaná s přirozenou. V SU2 se podlaha drží na této teplotě,
+takže se počítá teplá mezní vrstva, která nad plechem roste a dosáhne ke
+štítu; štít dostává dlouhovlnné záření plechu (ε_p σ T⁴ + (1 − ε_p) L↓) a
+odražené slunce ((1 − α_p) S). *Shield above floor* (`shield_clearance_m`)
+nastaví mezeru ke spodku štítu, např. 0,04 m. Výchozí α_p 0,65, ε_p 0,90
+(šedá barva), spodek izolovaný (teplejší případ). Nezahrnuto: stín štítu
+na plechu a chladnější náběžná hrana plechu.
+
 **Materiál.** Pole *Material* najednou vyplní vodivost i optiku obou
 stran (setup `shield_material`): *Aluminium* (k 167 W/(m K), venku lesklý
 0,15 / 0,1, uvnitř černý 0,95 / 0,9), *ABS print* (k 0,17, venku bílé ABS

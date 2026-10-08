@@ -44,6 +44,7 @@ class BottomMode(str, Enum):
 
     GROUND_FLUX = "ground_flux"
     ROOF_TEMPERATURE = "roof_temperature"
+    HEATED_PLATE = "heated_plate"
 
 
 class Distribution(str, Enum):
@@ -271,7 +272,34 @@ class ShieldSetup(StrictModel):
             "'ground_flux': the bottom emits bottom_flux_w_m2 of long-wave "
             "radiation (baseline ground). 'roof_temperature': the bottom is "
             "a dark vehicle roof at a fixed temperature, which also heats the "
-            "air flowing over it."
+            "air flowing over it. 'heated_plate': the bottom is a sheet (the "
+            "whole domain floor) heated by the sun; its temperature comes from "
+            "its own heat balance at each wind and sun (plate_* fields), it "
+            "heats the air flowing over it and radiates up at the shield; the "
+            "bottom flux variable is not used."
+        ),
+    )
+    shield_clearance_m: float | None = Field(
+        default=None, gt=0.0, le=2.0,
+        description=(
+            "Gap from the domain floor to the bottom of the shield, m (e.g. 0.04 "
+            "= 4 cm above a roof or plate). Null = the shield sits half-way up."
+        ),
+    )
+    plate_solar_absorptivity: float = Field(
+        default=0.65, ge=0.0, le=1.0,
+        description="heated_plate: solar absorptivity of the sheet (grey paint ~0.65).",
+    )
+    plate_emissivity: float = Field(
+        default=0.90, gt=0.0, le=1.0,
+        description="heated_plate: long-wave emissivity of the sheet (paint ~0.9).",
+    )
+    plate_underside: Literal["insulated", "open"] = Field(
+        default="insulated",
+        description=(
+            "heated_plate: 'insulated' = the sheet lies on something (roof, "
+            "vehicle) and loses heat only from its top -- the hotter, "
+            "conservative case; 'open' = free sheet, air cools both sides."
         ),
     )
     bottom_flux_w_m2: float = Field(
@@ -436,8 +464,16 @@ class ShieldSetup(StrictModel):
         """Long-wave flux a roof at this temperature emits."""
         return self.roof_emissivity * STEFAN_BOLTZMANN * temperature_k**4
 
+    def floor_is_wall(self) -> bool:
+        """Is the domain floor a heated wall (roof or sun-heated plate)?"""
+        return self.bottom_mode in (BottomMode.ROOF_TEMPERATURE, BottomMode.HEATED_PLATE)
+
     def baseline_bottom_flux(self) -> float:
         """The bottom flux of the baseline condition, whichever mode."""
+        if self.bottom_mode is BottomMode.HEATED_PLATE:
+            from backend.shield_study import bottom_state
+
+            return bottom_state(self, self.wind_speed_ms, self.solar_flux_w_m2, 0.0)[0]
         if self.bottom_mode is BottomMode.ROOF_TEMPERATURE:
             return self.roof_flux_for(self.bottom_temperature_k)
         return self.bottom_flux_w_m2

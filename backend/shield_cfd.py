@@ -306,7 +306,11 @@ def mesh_shield_domain(
                 f"the shield ({size.round(3).tolist()} m) is too large for the "
                 f"domain {setup.domain_size_m} m -- check the CAD units"
             )
-        centre = np.array([0.0, 0.0, 0.5 * height])
+        if setup.shield_clearance_m is not None:
+            # A set gap between the floor (roof, plate) and the shield's base.
+            centre = np.array([0.0, 0.0, setup.shield_clearance_m + 0.5 * size[2]])
+        else:
+            centre = np.array([0.0, 0.0, 0.5 * height])
         shift = centre - 0.5 * (low + high)
         occ.translate(solids, *shift)
 
@@ -362,8 +366,23 @@ def mesh_shield_domain(
         gmsh.model.mesh.field.setNumber(wake, "ZMin", centre[2] - 0.8 * size[2])
         gmsh.model.mesh.field.setNumber(wake, "ZMax", centre[2] + 0.8 * size[2])
         gmsh.model.mesh.field.setNumber(wake, "Thickness", 0.3 * size[0])
+        fields = [threshold, wake]
+        if setup.floor_is_wall():
+            # The floor heats the air: resolve its boundary layer under, upstream
+            # of and behind the shield, up to above the shield's base.
+            floor = gmsh.model.mesh.field.add("Box")
+            gmsh.model.mesh.field.setNumber(floor, "VIn", 2.0 * near)
+            gmsh.model.mesh.field.setNumber(floor, "VOut", far)
+            gmsh.model.mesh.field.setNumber(floor, "XMin", centre[0] - 3.0 * size[0])
+            gmsh.model.mesh.field.setNumber(floor, "XMax", centre[0] + 2.5 * size[0])
+            gmsh.model.mesh.field.setNumber(floor, "YMin", -1.2 * size[1])
+            gmsh.model.mesh.field.setNumber(floor, "YMax", 1.2 * size[1])
+            gmsh.model.mesh.field.setNumber(floor, "ZMin", -1.0)
+            gmsh.model.mesh.field.setNumber(floor, "ZMax", centre[2])
+            gmsh.model.mesh.field.setNumber(floor, "Thickness", 0.5 * size[0])
+            fields.append(floor)
         combined = gmsh.model.mesh.field.add("Min")
-        gmsh.model.mesh.field.setNumbers(combined, "FieldsList", [threshold, wake])
+        gmsh.model.mesh.field.setNumbers(combined, "FieldsList", fields)
         gmsh.model.mesh.field.setAsBackgroundMesh(combined)
         gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
         gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)
@@ -686,13 +705,15 @@ class RadiationFacets:
         alpha[down], emissivity[down] = sides["bottom"]
         return alpha, emissivity
 
-    def absorbed(self, setup: ShieldSetup, solar: float, bottom: float) -> np.ndarray:
+    def absorbed(self, setup: ShieldSetup, solar: float, bottom: float,
+                 albedo: float | None = None) -> np.ndarray:
         """Absorbed flux per facet, W/m^2, for one condition."""
         alpha, emissivity = self.optics(setup)
         cosine = np.clip(self.normals[:, 2], 0.0, None)
+        albedo = setup.ground_albedo if albedo is None else albedo
         return (
             alpha * solar * cosine * self.sunlit
-            + alpha * setup.ground_albedo * solar * self.ground_view
+            + alpha * albedo * solar * self.ground_view
             + emissivity * setup.sky_flux_w_m2() * self.sky_view
             + emissivity * bottom * self.ground_view
         )
@@ -1007,8 +1028,11 @@ def build_shield_config(
     add("INC_OUTLET_TYPE= PRESSURE_OUTLET")
     add(f"MARKER_OUTLET= ( {MARKER_OUTLET}, 0.0 )")
     symmetry = [MARKER_TOP, MARKER_SIDES]
-    if setup.bottom_mode is BottomMode.ROOF_TEMPERATURE:
-        roof = setup.roof_temperature_for(point.bottom_flux_w_m2)
+    if setup.floor_is_wall():
+        from backend.shield_study import bottom_state
+
+        roof = bottom_state(setup, *point.inputs())[1]
+        add(f"% floor ({setup.bottom_mode.value}) held at {roof:.2f} K")
         add(f"MARKER_ISOTHERMAL= ( {MARKER_BOTTOM}, {roof:.4f} )")
     else:
         symmetry.append(MARKER_BOTTOM)
@@ -1027,7 +1051,7 @@ def build_shield_config(
         if isinstance(value, tuple) and value[0] == "T"
     ]
     if held:
-        if setup.bottom_mode is BottomMode.ROOF_TEMPERATURE:
+        if setup.floor_is_wall():
             # One MARKER_ISOTHERMAL line only: merge with the roof's.
             roof_line = next(i for i, line in enumerate(lines) if line.startswith("MARKER_ISOTHERMAL="))
             lines[roof_line] = lines[roof_line].rstrip(" )") + ", " + ", ".join(held) + " )"
@@ -1307,7 +1331,10 @@ def run_design_point(
     ambient = setup.ambient_temp_k()
     lumped = ShieldAnalyticModel(setup).solve(*point.inputs())
     wall = np.full(len(prepared.classes), lumped.shield_temp_k)
-    absorbed = prepared.facets.absorbed(setup, point.solar_flux_w_m2, point.bottom_flux_w_m2)
+    from backend.shield_study import bottom_state
+
+    bottom_flux, floor_temp, albedo = bottom_state(setup, *point.inputs())
+    absorbed = prepared.facets.absorbed(setup, point.solar_flux_w_m2, bottom_flux, albedo)
     started = time.perf_counter()
     converged = False
     notes: list[str] = []
@@ -1443,6 +1470,8 @@ def run_design_point(
                 "oscillating": result.oscillating,
                 "mesh_resolution": cfd.mesh_resolution,
                 "conduction": coupling is not None,
+                "floor_temperature_k": floor_temp,
+                "bottom_flux_used_w_m2": bottom_flux,
                 "plate_radiation": plates,
                 "solid_temperature_k": (
                     None if coupling is None else coupling.body_temperatures()

@@ -694,3 +694,33 @@ def test_the_exchange_is_reciprocal():
     forward = matrix[np.ix_(lower_top, upper_bottom)].sum()
     backward = matrix[np.ix_(upper_bottom, lower_top)].sum()
     assert forward == pytest.approx(backward, rel=0.1)
+
+
+def test_a_sun_heated_plate_is_hotter_in_sun_and_cooler_in_wind():
+    from backend.shield_study import ShieldAnalyticModel, bottom_state, plate_temperature
+
+    setup = ShieldSetup(bottom_mode="heated_plate", shield_clearance_m=0.04, sky_longwave_w_m2=330.0)
+    hot = plate_temperature(setup, 1.0, 1000.0) - 273.15
+    assert 50.0 < hot < 80.0
+    assert plate_temperature(setup, 1.0, 500.0) < plate_temperature(setup, 1.0, 1000.0)
+    assert plate_temperature(setup, 10.0, 1000.0) < plate_temperature(setup, 1.0, 1000.0)
+    open_sheet = setup.model_copy(update={"plate_underside": "open"})
+    assert plate_temperature(open_sheet, 1.0, 1000.0) < plate_temperature(setup, 1.0, 1000.0)
+    flux, floor, albedo = bottom_state(setup, 1.0, 1000.0, 0.0)
+    assert floor == pytest.approx(plate_temperature(setup, 1.0, 1000.0))
+    assert albedo == pytest.approx(0.35) and flux > 500.0
+    model = ShieldAnalyticModel(setup)
+    slow, fast = model.solve(0.5, 1000.0, 0.0), model.solve(10.0, 1000.0, 0.0)
+    assert slow.inlet_warming_k > fast.inlet_warming_k > 0.0
+    assert slow.delta_t_k > fast.delta_t_k
+
+
+def test_the_heated_plate_floor_is_an_isothermal_wall_in_su2():
+    from backend.shield_cfd import build_shield_config
+    from backend.shield_study import plate_temperature
+
+    setup = ShieldSetup(bottom_mode="heated_plate", shield_clearance_m=0.04)
+    point = DesignPoint(name="P", wind_speed_ms=2.0, solar_flux_w_m2=800.0, bottom_flux_w_m2=0.0)
+    text = build_shield_config(setup, ShieldCfdSettings(), point, {"SHIELD_1": ("T", 300.0)}, 10, False)
+    line = next(l for l in text.splitlines() if l.startswith("MARKER_ISOTHERMAL="))
+    assert f"{plate_temperature(setup, 2.0, 800.0):.4f}" in line and "SHIELD_1" in line

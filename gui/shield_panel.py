@@ -172,6 +172,7 @@ class ShieldStudyPanel(QtWidgets.QWidget):
         self.bottom_mode = QtWidgets.QComboBox()
         self.bottom_mode.addItem("Ground: long-wave flux", BottomMode.GROUND_FLUX.value)
         self.bottom_mode.addItem("Vehicle roof: fixed temperature", BottomMode.ROOF_TEMPERATURE.value)
+        self.bottom_mode.addItem("Heated plate: sun-heated sheet", BottomMode.HEATED_PLATE.value)
         form.addRow("Bottom", self.bottom_mode)
         self.bottom_flux = _spin(0.0, 1500.0, setup.bottom_flux_w_m2, 0, 25.0, " W/m2")
         form.addRow("Bottom flux", self.bottom_flux)
@@ -179,6 +180,22 @@ class ShieldStudyPanel(QtWidgets.QWidget):
         form.addRow("Roof temperature", self.bottom_temp)
         self.roof_emissivity = _spin(0.01, 1.0, setup.roof_emissivity, 2, 0.01)
         form.addRow("Roof emissivity", self.roof_emissivity)
+        self.clearance = _optional_spin(2.0, decimals=3)
+        self.clearance.setSuffix(" m")
+        self.clearance.setRange(0.0, 2.0)
+        self.clearance.setSingleStep(0.01)
+        self.clearance.setValue(0.0)
+        self.clearance.setToolTip("Gap from the floor (roof, plate) to the bottom of the shield; auto = half-way up")
+        form.addRow("Shield above floor", self.clearance)
+        self.plate_absorptivity = _spin(0.0, 1.0, setup.plate_solar_absorptivity, 2, 0.05)
+        self.plate_absorptivity.setToolTip("Heated plate: solar absorptivity (grey paint ~0.65)")
+        form.addRow("Plate solar absorptivity", self.plate_absorptivity)
+        self.plate_emissivity = _spin(0.01, 1.0, setup.plate_emissivity, 2, 0.05)
+        form.addRow("Plate emissivity", self.plate_emissivity)
+        self.plate_underside = QtWidgets.QComboBox()
+        self.plate_underside.addItem("Insulated underside (on a roof)", "insulated")
+        self.plate_underside.addItem("Open sheet (both sides cooled)", "open")
+        form.addRow("Plate underside", self.plate_underside)
         self.sky = _optional_spin(600.0, decimals=1)
         self.sky.setToolTip("Downward sky long-wave, W/m2; auto = Swinbank, 0 = none")
         from core.shield_models import SKY_LABELS
@@ -483,9 +500,13 @@ class ShieldStudyPanel(QtWidgets.QWidget):
     # ----------------------------------------------------------------- params
 
     def _bottom_mode_changed(self, *_: Any) -> None:
-        roof = self.bottom_mode.currentData() == BottomMode.ROOF_TEMPERATURE.value
+        mode = self.bottom_mode.currentData()
+        roof = mode == BottomMode.ROOF_TEMPERATURE.value
+        plate = mode == BottomMode.HEATED_PLATE.value
         self.bottom_temp.setEnabled(roof)
-        self.bottom_flux.setEnabled(not roof)
+        self.bottom_flux.setEnabled(not roof and not plate)
+        for widget in (self.plate_absorptivity, self.plate_emissivity, self.plate_underside):
+            widget.setEnabled(plate)
 
     def _browse(self) -> None:
         path, _ = QtWidgets.QFileDialog.getOpenFileName(
@@ -544,6 +565,10 @@ class ShieldStudyPanel(QtWidgets.QWidget):
             bottom_mode=BottomMode(self.bottom_mode.currentData()),
             bottom_flux_w_m2=self.bottom_flux.value(),
             bottom_temperature_k=self.bottom_temp.value(),
+            shield_clearance_m=_optional(self.clearance),
+            plate_solar_absorptivity=self.plate_absorptivity.value(),
+            plate_emissivity=self.plate_emissivity.value(),
+            plate_underside=self.plate_underside.currentData(),
             roof_emissivity=self.roof_emissivity.value(),
             sky_longwave_w_m2=_optional(self.sky),
             cloud_cover=self.cloud.value(),
@@ -612,6 +637,10 @@ class ShieldStudyPanel(QtWidgets.QWidget):
         self.bottom_mode.setCurrentIndex(self.bottom_mode.findData(setup.bottom_mode.value))
         self.bottom_flux.setValue(setup.bottom_flux_w_m2)
         self.bottom_temp.setValue(setup.bottom_temperature_k)
+        _set_optional(self.clearance, setup.shield_clearance_m)
+        self.plate_absorptivity.setValue(setup.plate_solar_absorptivity)
+        self.plate_emissivity.setValue(setup.plate_emissivity)
+        self.plate_underside.setCurrentIndex(max(0, self.plate_underside.findData(setup.plate_underside)))
         self.roof_emissivity.setValue(setup.roof_emissivity)
         _set_optional(self.sky, setup.sky_longwave_w_m2)
         self.cloud.setValue(setup.cloud_cover)
