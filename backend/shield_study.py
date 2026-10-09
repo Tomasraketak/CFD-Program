@@ -344,7 +344,21 @@ def _ccd_coded() -> np.ndarray:
 
 def design_of_experiments(params: ShieldStudyParams) -> list[DesignPoint]:
     """The deterministic design points to solve, unsolved."""
-    if params.doe is DoeKind.CCD:
+    if params.doe is DoeKind.GRID:
+        import itertools
+
+        setup = params.setup
+        baseline = {
+            "wind_speed_ms": setup.wind_speed_ms, "solar_flux_w_m2": setup.solar_flux_w_m2,
+            "bottom_flux_w_m2": setup.baseline_bottom_flux()
+            if setup.bottom_mode is not BottomMode.HEATED_PLATE else setup.bottom_flux_w_m2,
+        }
+        axes = [
+            list(variable.levels) if variable.levels else [baseline[name]]
+            for name, variable in params.variables().items()
+        ]
+        physical = np.array(list(itertools.product(*axes)), dtype=float)
+    elif params.doe is DoeKind.CCD:
         coded = _ccd_coded()
     else:
         from scipy.stats import qmc
@@ -353,7 +367,8 @@ def design_of_experiments(params: ShieldStudyParams) -> list[DesignPoint]:
         coded = 2.0 * sampler.random(params.doe_points) - 1.0
         # Always include the centre, the baseline everything is judged from.
         coded = np.vstack([np.zeros(3), coded])
-    physical = decode(params, coded)
+    if params.doe is not DoeKind.GRID:
+        physical = decode(params, coded)
     return [
         DesignPoint(
             name=f"DP{index}",
@@ -394,8 +409,13 @@ class ResponseSurface:
         self.kind = SurrogateKind(kind or params.surrogate)
         solved = [point for point in points if point.delta_t_k is not None]
         self.x = encode(params, np.array([point.inputs() for point in solved]))
+        # An input held at one value (a grid with a single level) carries no
+        # information; it is left out of the fit and predicts flat along it.
+        self.active = np.ptp(self.x, axis=0) > 1.0e-12 if len(self.x) else np.ones(3, bool)
         self.y = np.array([point.delta_t_k for point in solved], dtype=float)
-        minimum = 10 if self.kind is SurrogateKind.QUADRATIC else 5
+        varied = int(np.sum(self.active))
+        minimum = (1 + varied + varied * (varied + 1) // 2 if self.kind is SurrogateKind.QUADRATIC
+                   else 5)
         if len(self.y) < minimum:
             raise ShieldStudyError(
                 f"a {self.kind.value} response surface needs at least {minimum} "
@@ -412,7 +432,7 @@ class ResponseSurface:
             from scipy.interpolate import RBFInterpolator
 
             self._rbf = RBFInterpolator(
-                self.x, self.y, kernel="thin_plate_spline", degree=1
+                self.x[:, self.active], self.y, kernel="thin_plate_spline", degree=1
             )
             self.coefficients = None
 
@@ -420,7 +440,7 @@ class ResponseSurface:
         """dT at coded inputs."""
         coded = np.atleast_2d(coded)
         if self._rbf is not None:
-            return self._rbf(coded)
+            return self._rbf(coded[:, self.active])
         return _quadratic_features(coded) @ self.coefficients
 
     def predict(self, physical: np.ndarray) -> np.ndarray:
@@ -453,7 +473,7 @@ class ResponseSurface:
             press = residual / (1.0 - leverage)
             # A saturated fit (as many points as terms) has no spare point
             # to leave out; say so with NaN rather than a flattering zero.
-            if len(self.y) <= features.shape[1]:
+            if len(self.y) <= np.linalg.matrix_rank(features):
                 return math.nan
             return float(np.sqrt(np.mean(press**2)))
         from scipy.interpolate import RBFInterpolator
@@ -463,11 +483,12 @@ class ResponseSurface:
             keep = np.arange(len(self.y)) != index
             try:
                 model = RBFInterpolator(
-                    self.x[keep], self.y[keep], kernel="thin_plate_spline", degree=1
+                    self.x[keep][:, self.active], self.y[keep],
+                    kernel="thin_plate_spline", degree=1,
                 )
             except Exception:  # noqa: BLE001 - too few points left
                 return math.nan
-            errors.append(float(model(self.x[index : index + 1])[0] - self.y[index]))
+            errors.append(float(model(self.x[index : index + 1][:, self.active])[0] - self.y[index]))
         return float(np.sqrt(np.mean(np.square(errors))))
 
 

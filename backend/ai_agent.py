@@ -229,6 +229,9 @@ Working rules:
   asks for 0 or a reply carries sky_warning, say so. Suggested scenarios:
   summer day (solar 900-1000, sky 320-340, ground 420-480) and
   conservative clear sky (sky 280).
+- Exact CFD points (e.g. wind 0.5, 1, 2, 5, 10 x sun 500, 1000): study doe
+  'grid' with variables.<name>.levels; a variable without levels stays at
+  its baseline. Not a CCD/LHS study plus add_points.
 - A shield over a sun-heated sheet / roof: setup bottom_mode
   'heated_plate' with shield_clearance_m (e.g. 0.04), plate_solar_absorptivity
   (grey paint 0.65), plate_emissivity (0.9), plate_underside

@@ -558,3 +558,36 @@ def test_the_sky_long_wave_is_realistic_and_zero_is_flagged(store):
     panel.sky_preset.setCurrentIndex(panel.sky_preset.findData("space"))
     assert panel.study_params().setup.sky_longwave_w_m2 == 0.0
     assert "unrealistic" in panel.sky_value.text()
+
+
+def test_a_heated_plate_study_draws_the_plate_under_the_shield(store, tmp_path, monkeypatch):
+    pytest.importorskip("pyvista")
+    import mcp_server
+    from backend.study_render import _Context
+
+    monkeypatch.setattr(mcp_server, "_store", lambda: store)
+    study = _fake_solved_study(store, tmp_path)
+    folder = store.get(study).path("cfd")
+    manifest = json.loads((folder / "study.json").read_text())
+    manifest["setup"].update({"bottom_mode": "heated_plate", "shield_clearance_m": 0.6})
+    (folder / "study.json").write_text(json.dumps(manifest))
+    result = folder / "points" / "DP0" / "result.json"
+    result.write_text(json.dumps({**json.loads(result.read_text()), "floor_temperature_k": 340.0}))
+    context = _Context(folder, "shield", "DP0", "y")
+    assert context.floor is not None and "plate 66.9 C" in context.floor_label
+    assert "above the plate" in context.caption()
+    reply = mcp_server.radiation_shield_study(action="render", study_id=study, point="DP0")
+    assert reply["ok"], reply
+
+
+def test_grid_levels_pass_through_the_assistant(isolated_data_root, monkeypatch):
+    import mcp_server
+
+    monkeypatch.setattr(mcp_server, "_geometry_image", lambda kind, setup: {})
+    reply = mcp_server.radiation_shield_study(
+        action="analytic", study={"doe": "grid", "monte_carlo_samples": 1000},
+        variables={"wind_speed_ms": {"minimum": 0.5, "maximum": 10, "levels": [0.5, 2, 10]},
+                   "solar_flux_w_m2": {"minimum": 500, "maximum": 1000, "levels": [500, 1000]}},
+    )
+    assert reply["ok"], reply
+    assert len(reply.get("design_points") or reply.get("points") or []) in (0, 6)

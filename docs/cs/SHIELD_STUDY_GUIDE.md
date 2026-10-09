@@ -219,6 +219,15 @@ nastaví mezeru ke spodku štítu, např. 0,04 m. Výchozí α_p 0,65, ε_p 0,90
 (šedá barva), spodek izolovaný (teplejší případ). Nezahrnuto: stín štítu
 na plechu a chladnější náběžná hrana plechu.
 
+**Mřížka přesných bodů.** *Design of experiments: Grid* spočte přesně
+hodnoty zapsané ve sloupci *Grid levels* u každého vstupu (oddělené
+čárkou), všechny kombinace: vítr `0.5, 1, 2, 5, 10` a slunce `500, 1000`
+dají 10 bodů. Vstup s prázdným sloupcem zůstane na výchozí hodnotě
+(odezvová plocha ho pak ignoruje). Asistent: `study.doe: "grid"`,
+`variables.<název>.levels`. Rendery studie se střechou nebo vyhřívaným
+plechem kreslí podlahu pod štítem s její teplotou a mezerou a popisek
+uvádí výšku teploměru nad ní.
+
 **Materiál.** Pole *Material* najednou vyplní vodivost i optiku obou
 stran (setup `shield_material`): *Aluminium* (k 167 W/(m K), venku lesklý
 0,15 / 0,1, uvnitř černý 0,95 / 0,9), *ABS print* (k 0,17, venku bílé ABS

@@ -724,3 +724,25 @@ def test_the_heated_plate_floor_is_an_isothermal_wall_in_su2():
     text = build_shield_config(setup, ShieldCfdSettings(), point, {"SHIELD_1": ("T", 300.0)}, 10, False)
     line = next(l for l in text.splitlines() if l.startswith("MARKER_ISOTHERMAL="))
     assert f"{plate_temperature(setup, 2.0, 800.0):.4f}" in line and "SHIELD_1" in line
+
+
+def test_a_grid_doe_solves_exactly_the_listed_levels():
+    from backend.shield_study import design_of_experiments, run_analytic_study
+
+    params = ShieldStudyParams.model_validate({
+        "setup": {"bottom_mode": "heated_plate", "shield_clearance_m": 0.04,
+                  "sky_longwave_w_m2": 330.0},
+        "wind_speed_ms": {"minimum": 0.5, "maximum": 10.0, "scale": "log",
+                          "levels": [0.5, 1, 2, 5, 10]},
+        "solar_flux_w_m2": {"minimum": 500.0, "maximum": 1000.0, "levels": [500, 1000]},
+        "doe": "grid", "monte_carlo_samples": 2000,
+    })
+    points = design_of_experiments(params)
+    assert len(points) == 10
+    assert {(p.wind_speed_ms, p.solar_flux_w_m2) for p in points} == {
+        (w, s) for w in (0.5, 1, 2, 5, 10) for s in (500, 1000)
+    }
+    assert len({p.bottom_flux_w_m2 for p in points}) == 1
+    for surrogate in ("quadratic", "rbf"):
+        result = run_analytic_study(params.model_copy(update={"surrogate": surrogate}))
+        assert np.isfinite(result.surrogate.r_squared)

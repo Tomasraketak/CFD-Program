@@ -37,7 +37,13 @@ except Exception:  # pragma: no cover - optional
     pg = None  # type: ignore[assignment]
     HAVE_CHARTS = False
 
-VARIABLE_COLUMNS = ("Min", "Max", "Distribution", "Mean", "Std", "Mode", "Scale")
+VARIABLE_COLUMNS = ("Min", "Max", "Distribution", "Mean", "Std", "Mode", "Scale", "Grid levels")
+
+
+def _levels(text: str) -> list[float] | None:
+    """'0.5, 1, 2' -> [0.5, 1.0, 2.0]; empty -> None (baseline only)."""
+    parts = [p for p in text.replace(";", ",").split(",") if p.strip()]
+    return [float(p.replace(" ", "")) for p in parts] or None
 
 
 def _spin(low: float, high: float, value: float, decimals: int = 3, step: float = 0.1,
@@ -293,7 +299,13 @@ class ShieldStudyPanel(QtWidgets.QWidget):
                 "std": _optional_spin(1e6),
                 "mode": _optional_spin(1e6),
                 "scale": _combo([s.value for s in VariableScale], variable.scale.value),
+                "levels": QtWidgets.QLineEdit(),
             }
+            widgets["levels"].setPlaceholderText("grid DoE: e.g. 0.5, 1, 2, 5, 10")
+            widgets["levels"].setToolTip(
+                "Design of experiments 'Grid': the exact values to solve at "
+                "(comma-separated); empty = the baseline value only"
+            )
             for column, key in enumerate(widgets):
                 self.variables.setCellWidget(row, column, widgets[key])
             self._variable_widgets[name] = widgets
@@ -307,6 +319,7 @@ class ShieldStudyPanel(QtWidgets.QWidget):
         self.doe = QtWidgets.QComboBox()
         self.doe.addItem("Central composite, face-centred (15 points)", DoeKind.CCD.value)
         self.doe.addItem("Latin hypercube", DoeKind.LHS.value)
+        self.doe.addItem("Grid: exactly the levels listed per input", DoeKind.GRID.value)
         form.addRow("Design of experiments", self.doe)
         self.doe_points = _int_spin(6, 500, defaults.doe_points)
         form.addRow("LHS points", self.doe_points)
@@ -594,6 +607,7 @@ class ShieldStudyPanel(QtWidgets.QWidget):
                 std=_optional(widgets["std"]),
                 mode=_optional(widgets["mode"]),
                 scale=VariableScale(widgets["scale"].currentData()),
+                levels=_levels(widgets["levels"].text()),
             )
         return ShieldStudyParams(
             setup=setup,
@@ -671,6 +685,7 @@ class ShieldStudyPanel(QtWidgets.QWidget):
             _set_optional(widgets["std"], variable.std)
             _set_optional(widgets["mode"], variable.mode)
             widgets["scale"].setCurrentIndex(widgets["scale"].findData(variable.scale.value))
+            widgets["levels"].setText(", ".join(f"{v:g}" for v in (variable.levels or [])))
         self.doe.setCurrentIndex(self.doe.findData(params.doe.value))
         self.doe_points.setValue(params.doe_points)
         self.surrogate.setCurrentIndex(self.surrogate.findData(params.surrogate.value))

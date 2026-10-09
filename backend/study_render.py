@@ -99,6 +99,7 @@ class _Context:
             np.asarray(self.region.point_data[self.velocity]), axis=1)
         self.walls = _object_surface(self.grid, self.low, self.high)
         self.ambient = _ambient(study_dir, kind)
+        self.floor, self.floor_label, self.probe_height = self._floor(study_dir, case)
         self.reading = None
         if self.temperature is not None:
             try:
@@ -107,11 +108,54 @@ class _Context:
             except Exception:  # noqa: BLE001 - caption only
                 self.reading = None
 
+    def _floor(self, study_dir: Path, case: Path):
+        """The heated floor (roof, sun-heated plate) under a shield, if any."""
+        if self.kind != "shield":
+            return None, "", None
+        try:
+            from core.shield_models import ShieldSetup
+
+            setup = ShieldSetup.model_validate(
+                json.loads((study_dir / "study.json").read_text())["setup"]
+            )
+        except Exception:  # noqa: BLE001 - no floor drawn
+            return None, "", None
+        if not setup.floor_is_wall():
+            return None, "", None
+        span = self.span
+        gap = float(self.low[2])
+        if gap < 3.0 * span:
+            # Show the floor: crop down to it.
+            self.crop_low[2] = -0.02 * span
+            b = (self.crop_low[0], self.crop_high[0], self.crop_low[1], self.crop_high[1],
+                 self.crop_low[2], self.crop_high[2])
+            self.region = self.grid.clip_box(bounds=b, invert=False)
+            self.region.point_data["speed"] = np.linalg.norm(
+                np.asarray(self.region.point_data[self.velocity]), axis=1)
+        import pyvista as pv
+
+        floor = pv.Plane(
+            center=(0.5 * (self.crop_low[0] + self.crop_high[0]), 0.5 * (self.crop_low[1] + self.crop_high[1]), 0.0),
+            direction=(0, 0, 1),
+            i_size=float(self.crop_high[0] - self.crop_low[0]),
+            j_size=float(self.crop_high[1] - self.crop_low[1]),
+        )
+        try:
+            temperature = json.loads((case / "result.json").read_text()).get("floor_temperature_k")
+        except (OSError, ValueError):
+            temperature = None
+        name = "plate" if setup.bottom_mode.value == "heated_plate" else "roof"
+        label = name if temperature is None else f"{name} {temperature - 273.15:.1f} C"
+        label += f", {gap * 100:.1f} cm below the shield"
+        return floor, label, float(self.probe[2])
+
     def caption(self) -> str:
         text = self.point
         if self.reading is not None and self.ambient is not None:
             text += (f" | inlet {self.ambient:.2f} K | {self.probe_name} {self.reading:.2f} K "
                      f"(dT {self.reading - self.ambient:+.3f} K)")
+        if self.probe_height is not None:
+            text += f" | {self.probe_name} {self.probe_height * 100:.1f} cm above the {self.floor_label.split(' ')[0]}"
         return text
 
     def temperature_limits(self, values: np.ndarray) -> tuple[float, float]:
@@ -222,6 +266,27 @@ def _draw(plotter, ctx: _Context, quantity: str, compact: bool = False) -> None:
         view = ((0.6, -1.0, 0.7), (0, 0, 1))
         zoom = 1.1
 
+    if ctx.floor is not None:
+        if quantity in ("temperature", "velocity"):
+            # The floor seen edge-on in the cut: a thick strip at z = 0.
+            normal = PLANES[ctx.plane]
+            if normal[2] == 0.0:
+                strip = ctx.floor.slice(normal=normal, origin=ctx.probe)
+                if strip.n_points:
+                    plotter.add_mesh(strip.tube(radius=0.015 * span), color="#5f6670")
+            else:
+                plotter.add_mesh(ctx.floor, color="#5f6670", opacity=0.25)
+        else:
+            import pyvista as pv
+
+            patch = pv.Plane(center=(ctx.probe[0], ctx.probe[1], 0.0), direction=(0, 0, 1),
+                             i_size=2.6 * span, j_size=2.0 * span)
+            plotter.add_mesh(patch, color="#7d858f", opacity=0.55, smooth_shading=True)
+        anchor = np.array([ctx.probe[0] - 0.9 * span, ctx.probe[1], 0.0])
+        plotter.add_point_labels([anchor + np.array([0.0, 0.0, 0.06 * span])], [ctx.floor_label],
+                                 font_size=10 if compact else 13, text_color="white",
+                                 shape_color="#5f6670", shape_opacity=0.9, show_points=False,
+                                 always_visible=True)
     plotter.add_mesh(pv.Sphere(radius=0.035 * span, center=ctx.probe), color="#e53935",
                      smooth_shading=True)
     if quantity != "wall_temperature":

@@ -67,6 +67,7 @@ class DoeKind(str, Enum):
 
     CCD = "ccd"
     LHS = "lhs"
+    GRID = "grid"
 
 
 class SurrogateKind(str, Enum):
@@ -94,6 +95,14 @@ class StudyVariable(StrictModel):
         description=(
             "'uniform' over the range, 'normal' (mean/std, truncated to the "
             "range) or 'triangular' (peak at 'mode')."
+        ),
+    )
+    levels: list[float] | None = Field(
+        default=None,
+        description=(
+            "doe 'grid' only: the exact values to solve at, e.g. [0.5, 1, 2, 5, 10]. "
+            "The grid is every combination of the three variables' levels; null "
+            "= the setup's baseline value only."
         ),
     )
     mean: float | None = Field(
@@ -508,7 +517,9 @@ class ShieldStudyParams(StrictModel):
         description=(
             "'ccd': face-centred central composite, 15 points for three "
             "inputs (DesignXplorer's default). 'lhs': Latin hypercube with "
-            "doe_points points."
+            "doe_points points. 'grid': exactly the listed levels of each "
+            "variable (every combination), e.g. wind [0.5, 1, 2, 5, 10] x sun "
+            "[500, 1000] = 10 points."
         ),
     )
     doe_points: int = Field(

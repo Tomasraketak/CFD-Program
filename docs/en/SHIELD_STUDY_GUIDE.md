@@ -229,6 +229,15 @@ gap to the shield's base, e.g. 0.04 m. Defaults: α_p 0.65, ε_p 0.90
 (grey paint), underside insulated (the hotter case). Not modelled: the
 shield's shadow on the sheet and the sheet's cooler leading edge.
 
+**Grid of exact points.** *Design of experiments: Grid* solves exactly the
+values typed in each input's *Grid levels* column (comma-separated), every
+combination: wind `0.5, 1, 2, 5, 10` and sun `500, 1000` give 10 points.
+An input with an empty column stays at its baseline (one level; the
+response surface then ignores it). Assistant: `study.doe: "grid"`,
+`variables.<name>.levels`. Renders of a study with a roof or heated plate
+draw the floor under the shield with its temperature and the gap, and the
+caption gives the thermometer's height above it.
+
 **Material.** The *Material* combo fills the conductivity and both sides'
 optics at once (setup `shield_material`): *Aluminium* (k 167 W/(m K),
 shiny 0.15 / 0.1 outside, black 0.95 / 0.9 inside), *ABS print* (k 0.17,
