@@ -232,7 +232,11 @@ uvádí výšku teploměru nad ní.
 stran (setup `shield_material`): *Aluminium* (k 167 W/(m K), venku lesklý
 0,15 / 0,1, uvnitř černý 0,95 / 0,9), *ABS print* (k 0,17, venku bílé ABS
 0,25 / 0,90, uvnitř černé ABS 0,95 / 0,92) a *PETG print* (k 0,20, stejné
-barvy). Strany se dělí podle teploměru. Hodnoty lze potom upravit.
+barvy) a *ABS print, aluminium tape outside* (k 0,17, venku lesklá
+hliníková páska 0,15 / 0,05, uvnitř černé ABS). Bílá barva i bílý plast jsou
+bílé jen pro slunce: v tepelném infračerveném pásmu jsou téměř černé
+(ε ≈ 0,9) a pohlcují záření horké střechy či plechu; lesklá kovová páska
+(ε ≈ 0,05, zašpiněná nebo zestárlá víc) ho odráží. Strany se dělí podle teploměru. Hodnoty lze potom upravit.
 
 **Záření mezi deskami** (volba CFD `plate_radiation`, výchozí zapnuto).
 Desky si přes mezery vyměňují dlouhovlnné záření: šedé difúzní plochy,

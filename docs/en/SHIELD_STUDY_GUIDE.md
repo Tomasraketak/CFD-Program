@@ -242,7 +242,11 @@ caption gives the thermometer's height above it.
 optics at once (setup `shield_material`): *Aluminium* (k 167 W/(m K),
 shiny 0.15 / 0.1 outside, black 0.95 / 0.9 inside), *ABS print* (k 0.17,
 white ABS 0.25 / 0.90 outside, black ABS 0.95 / 0.92 inside) and *PETG
-print* (k 0.20, the same colours). The two sides are split by the
+print* (k 0.20, the same colours) and *ABS print, aluminium tape outside*
+(k 0.17, shiny tape 0.15 / 0.05 outside, black ABS inside). White paint and
+plastic are white only to the sun: in the thermal infrared they are nearly
+black (ε ≈ 0.9) and absorb a hot roof's or plate's long-wave; shiny metal
+tape (ε ≈ 0.05, more when dirty or aged) reflects it. The two sides are split by the
 thermometer. Any value can be edited afterwards.
 
 **Radiation between the plates** (CFD option, `plate_radiation`, on by

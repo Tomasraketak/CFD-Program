@@ -188,6 +188,12 @@ MATERIAL_PRESETS: dict[str, dict] = {
         "top_side_solar_absorptivity": 0.25, "top_side_emissivity": 0.9,
         "bottom_side_solar_absorptivity": 0.95, "bottom_side_emissivity": 0.92,
     },
+    "abs_aluminium_tape": {
+        "shield_conductivity_w_mk": 0.17, "optics_orientation": "thermometer",
+        "shield_solar_absorptivity": 0.15, "shield_emissivity": 0.05,
+        "top_side_solar_absorptivity": 0.15, "top_side_emissivity": 0.05,
+        "bottom_side_solar_absorptivity": 0.95, "bottom_side_emissivity": 0.92,
+    },
     "petg_multicolour": {
         "shield_conductivity_w_mk": 0.20, "optics_orientation": "thermometer",
         "shield_solar_absorptivity": 0.25, "shield_emissivity": 0.9,
@@ -199,6 +205,7 @@ MATERIAL_LABELS = {
     "custom": "Custom (the values below)",
     "aluminium": "Aluminium, shiny outside, black inside",
     "abs_multicolour": "ABS print, white outside, black inside",
+    "abs_aluminium_tape": "ABS print, shiny aluminium tape outside, black inside",
     "petg_multicolour": "PETG print, white outside, black inside",
 }
 
@@ -206,12 +213,14 @@ MATERIAL_LABELS = {
 class ShieldSetup(StrictModel):
     """Geometry, domain, surfaces and the baseline condition."""
 
-    shield_material: Literal["custom", "aluminium", "abs_multicolour", "petg_multicolour"] = Field(
+    shield_material: Literal["custom", "aluminium", "abs_multicolour", "abs_aluminium_tape", "petg_multicolour"] = Field(
         default="custom",
         description=(
             "Material preset. 'aluminium' (k 167, shiny 0.15/0.1 outside, black "
             "0.95/0.9 inside), 'abs_multicolour' (k 0.17, white ABS 0.25/0.90 "
-            "outside, black ABS 0.95/0.92 inside), 'petg_multicolour' (k 0.20, "
+            "outside, black ABS 0.95/0.92 inside), 'abs_aluminium_tape' (ABS k 0.17, "
+            "shiny aluminium tape 0.15/0.05 outside -- reflects the infrared of a "
+            "hot roof or plate -- black ABS inside), 'petg_multicolour' (k 0.20, "
             "same colours). It fills shield_conductivity_w_mk, the optics and "
             "optics_orientation='thermometer'; any of those given explicitly "
             "wins. 'custom' = use the fields as given."

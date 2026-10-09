@@ -591,3 +591,10 @@ def test_grid_levels_pass_through_the_assistant(isolated_data_root, monkeypatch)
     )
     assert reply["ok"], reply
     assert len(reply.get("design_points") or reply.get("points") or []) in (0, 6)
+
+
+def test_the_aluminium_tape_preset_reflects_infrared_outside():
+    tape = ShieldSetup(shield_material="abs_aluminium_tape")
+    assert tape.side_optics()["top"] == (0.15, 0.05)
+    assert tape.side_optics()["bottom"] == (0.95, 0.92)
+    assert tape.shield_conductivity_w_mk == pytest.approx(0.17)

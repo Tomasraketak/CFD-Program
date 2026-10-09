@@ -238,7 +238,9 @@ Working rules:
   'insulated'|'open'. The sheet temperature is solved per point from its
   own balance (evaluate rows give plate_temperature_k and inlet_warming_k;
   CFD points give floor_temperature_k); the bottom flux variable is unused.
-- Materials: setup shield_material 'aluminium', 'abs_multicolour' or
+- Materials: setup shield_material 'aluminium', 'abs_multicolour',
+  'abs_aluminium_tape' (ABS with shiny Al tape outside: reflects a hot
+  roof's infrared, which white paint/plastic absorbs) or
   'petg_multicolour' (white outside, black inside, by the thermometer)
   fills conductivity and optics in one go; use it for "printed ABS/PETG".
 - cfd plate_radiation 'on' (default) / 'off': long-wave exchange between
